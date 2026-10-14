@@ -87,6 +87,7 @@ REPL 内命令：`/help` `/clear` `/skills` `/active` `/model X` `/permission as
 | M10 钩子 | PreToolUse（可阻断/改参）/ PostToolUse（可脱敏）/ 会话事件钩子 | 代码注入 `HookManager`；`--trace` 用示例钩子落盘 |
 | #6 可观测性 | 工具调用 trace（工具名/参数摘要/耗时/结果）jsonl | `--trace` 或 `SKILL_AGENT_HOOKS=1` |
 | M7 工具治理 | per-tool 看门狗超时；超长结果落盘转存（可继续 Read）；同轮只读工具并行 | `--spill` / `--parallel-tools`（默认关）|
+| M9 沙箱 | Bash 执行后端三档：宿主 / stdlib rlimit / docker 强隔离；缺依赖 fail-soft 回退宿主 | 默认 `host`；`--sandbox rlimit\|docker` 或 `SKILL_AGENT_SANDBOX` |
 
 ### 扩展工具（M4）
 
@@ -121,6 +122,30 @@ top-k 注入消息尾部。
 
 M8a 规则表可通过 `Config.permission_rules` 传入，例如 `[{"tool":"Bash","match":"rm\\s+-rf","action":"deny"}]`（`match` 支持正则或 glob，`action` ∈ allow/deny/ask，按序首次命中）。
 
+### 沙箱执行后端（M9）
+
+`Bash`（含 `background=true`）的执行后端可切换，默认 `host`（与改造前逐字节一致）：
+
+| 档位 | 依赖 | 隔离 | 说明 |
+|---|---|---|---|
+| `host`（默认） | 无 | 无 | 直接 `subprocess` |
+| `rlimit` | stdlib `resource` | 弱 | `preexec_fn` 限 CPU/地址空间；后台用内联 `ulimit` |
+| `docker` | docker（**系统依赖**，非 pip） | 强 | `--network none`、`--memory/--cpus`、工作目录同路径挂载 |
+
+```bash
+python3 -m skill_agent chat --sandbox rlimit
+SKILL_AGENT_SANDBOX=docker \
+SKILL_AGENT_SANDBOX_SPEC='{"image":"python:3.11-slim","memory":"8g","cpus":"4"}' \
+  python3 -m skill_agent chat
+```
+
+- **fail-soft**：所选档位不可用（未装 docker / 未给镜像）时**回退宿主并打一行提示**，绝不阻断任务；
+  `SKILL_AGENT_SANDBOX_STRICT=1` 可改为 fail-closed（抛错）。
+- **docker 后台任务**采用「宿主监督 pid」：后台脚本先写宿主 pid 再 `exec docker run --rm`，
+  容器生命周期 = 该 pid 生命周期，故 `TaskOutput` 判活无需改动。**须把工作目录与编排 `RUN_DIR`
+  以相同宿主路径挂载**，否则编排脚本的 `.done` 落在容器内、宿主不可见（自动推进/`--resume` 依赖它）。
+- 只拦截 Bash 的两个进程启动点，不改动 `ToolSet.execute` 的权限/钩子治理顺序。
+
 
 ## 架构
 
@@ -133,6 +158,7 @@ agent/
 │   ├── config.py           # 凭证：环境变量 → ~/.claude/settings.json 的 env（与 Claude Code 同源）
 │   ├── skills.py           # SkillRegistry：扫描 .claude/skills、解析 SKILL.md frontmatter
 │   ├── tools.py            # 工具执行器 + 权限门 + 后台任务（Bash background=true）
+│   ├── sandbox.py          # M9：Bash 执行后端（host/rlimit/docker），纯 stdlib、默认关
 │   ├── client.py           # Anthropic Messages API 客户端（SSE 流式 + 重试回退）
 │   ├── agent.py            # agentic 循环：tool_use → 执行 → 续推；context 压缩；事件/取消钩子
 │   └── cli.py              # list / chat / 会话日志

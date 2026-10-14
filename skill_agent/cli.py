@@ -63,6 +63,8 @@ def _common_opts(*, with_cwd: bool = False) -> argparse.ArgumentParser:
                    help="M7：超长工具结果落盘转存（返回可继续 Read 的引用），默认关")
     c.add_argument("--parallel-tools", action="store_true", default=None,
                    help="M7：同轮多个只读工具并行执行（默认关）")
+    c.add_argument("--sandbox", choices=["host", "rlimit", "docker"], default=None,
+                   help="M9：Bash 执行后端（host=宿主默认 / rlimit=资源上限 / docker=强隔离）")
     c.add_argument("--verbose", action="store_true")
     return c
 
@@ -112,8 +114,18 @@ def main(argv=None) -> int:
         cfg.spill_dir = str(default_spill_dir())
     if getattr(args, "parallel_tools", None):
         cfg.parallel_tools = True
+    if getattr(args, "sandbox", None):
+        cfg.sandbox = args.sandbox
     registry = SkillRegistry(cfg.project)
     pmodel = PermissionModel.from_config(cfg, cfg.cwd)
+
+    # ---- M9：可选沙箱执行后端（默认 host，fail-soft 回退并提示） ----
+    from .sandbox import build_backend
+    sandbox_backend, sb_warn = build_backend(cfg)
+    if sb_warn:
+        print(f"[沙箱] {sb_warn}", file=sys.stderr)
+    elif cfg.sandbox != "host":
+        print(f"[沙箱] 执行后端 = {sandbox_backend.name}", file=sys.stderr)
 
     # ---- M10：可选 trace 钩子 ----
     hooks = None
@@ -124,7 +136,8 @@ def main(argv=None) -> int:
 
     tools = ToolSet(registry, cfg.cwd, cfg.permission, verbose=cfg.verbose,
                     permission_model=pmodel, hooks=hooks,
-                    spill_dir=cfg.spill_dir, spill_threshold=cfg.spill_threshold)
+                    spill_dir=cfg.spill_dir, spill_threshold=cfg.spill_threshold,
+                    sandbox=sandbox_backend)
 
     # ---- M4：可选插件工具目录（默认不加载） ----
     if cfg.plugin_dirs:

@@ -68,6 +68,10 @@ class Config:
     spill_dir: str | None = None           # 超长工具结果落盘目录（None=不落盘）
     spill_threshold: int = 30_000          # 超过此字符数才落盘
     parallel_tools: bool = False           # 同轮只读工具并行执行
+    # M9 沙箱执行后端（默认 host → 与改造前逐字节一致）
+    sandbox: str = "host"                  # host | rlimit | docker
+    sandbox_spec: dict | None = None       # rlimit/docker 档位参数（上限/镜像/挂载等）
+    sandbox_strict: bool = False           # 档位不可用时 fail-closed（默认 fail-open 回宿主）
 
     @classmethod
     def load(cls, *, model: str | None = None, project: Path | None = None,
@@ -122,6 +126,9 @@ class Config:
             spill_dir=(os.environ.get("SKILL_AGENT_SPILL_DIR")
                        or (str(default_spill_dir()) if _env_bool("SKILL_AGENT_SPILL") else None)),
             parallel_tools=_env_bool("SKILL_AGENT_PARALLEL_TOOLS"),
+            sandbox=os.environ.get("SKILL_AGENT_SANDBOX", "host"),
+            sandbox_spec=_env_json("SKILL_AGENT_SANDBOX_SPEC"),
+            sandbox_strict=_env_bool("SKILL_AGENT_SANDBOX_STRICT"),
         )
 
 
@@ -148,6 +155,18 @@ def _env_list(name: str, sep: str = ":") -> list | None:
     if not v or not v.strip():
         return None
     return [p for p in v.split(sep) if p.strip()] or None
+
+
+def _env_json(name: str) -> dict | None:
+    """读取 JSON 对象型环境变量（缺失/非法一律返回 None，绝不抛）。"""
+    v = os.environ.get(name)
+    if not v or not v.strip():
+        return None
+    try:
+        obj = json.loads(v)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return obj if isinstance(obj, dict) else None
 
 
 def _auto_project(start: Path) -> Path:

@@ -116,11 +116,15 @@ def build_session(session_id: str, cfg, registry) -> WebSession:
     if cfg.hooks_enabled:
         from skill_agent.observability import build_trace_hooks
         trace_hooks = build_trace_hooks(session_id)
+    # M9：按配置选择沙箱执行后端（webapp 无 argparse，直接读 cfg；fail-soft 回退宿主）
+    from skill_agent.sandbox import build_backend
+    sandbox_backend, _sb_warn = build_backend(cfg)
     session.tools = tools_mod.ToolSet(
         registry, cfg.cwd, permission=cfg.permission,
         verbose=cfg.verbose, confirm_handler=hooks.confirm,
         permission_model=PermissionModel.from_config(cfg, cfg.cwd),
-        hooks=trace_hooks, spill_dir=cfg.spill_dir, spill_threshold=cfg.spill_threshold)
+        hooks=trace_hooks, spill_dir=cfg.spill_dir, spill_threshold=cfg.spill_threshold,
+        sandbox=sandbox_backend)
     agent = Agent(cfg, registry, session.tools)
     agent.on_event = hooks.emit
     agent.cancel_event = session.cancel_event
