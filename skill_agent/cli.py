@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .agent import Agent
 from .config import Config, default_checkpoint_dir, default_session_dir
+from .loopguard import LoopGuard
 from .permissions import PermissionModel
 from .session import attach_all, resume_into
 from .session_store import SessionStore
@@ -52,6 +53,8 @@ def _common_opts(*, with_cwd: bool = False) -> argparse.ArgumentParser:
                    help="M1b：单轮墙钟时长上限（秒），超时熔断")
     c.add_argument("--max-output-tokens", type=int, default=None,
                    help="M1b：单轮累计输出 token 上限，超限熔断")
+    c.add_argument("--loop-guard", action="store_true", default=None,
+                   help="M3：启用死循环/无进展熔断（默认关）")
     c.add_argument("--verbose", action="store_true")
     return c
 
@@ -84,6 +87,8 @@ def main(argv=None) -> int:
         cfg.max_seconds = args.max_seconds
     if getattr(args, "max_output_tokens", None):
         cfg.max_output_tokens = args.max_output_tokens
+    if getattr(args, "loop_guard", None):
+        cfg.loop_guard = True
     if getattr(args, "restrict_paths", None):
         cfg.restrict_paths = True
     if getattr(args, "write_approval", None):
@@ -104,6 +109,8 @@ def main(argv=None) -> int:
         return _list(registry, args)
 
     agent = Agent(cfg, registry, tools)
+    if cfg.loop_guard:
+        agent.loopguard = LoopGuard(enabled=True, warn=cfg.loop_warn, halt=cfg.loop_halt)
 
     # ---- M13：解析 resume / continue ----
     persist = bool(getattr(args, "persist", None)) or bool(getattr(args, "resume", None)) \

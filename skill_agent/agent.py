@@ -14,7 +14,7 @@ from .client import AnthropicClient
 from .config import Config
 from .skills import SkillRegistry
 from .stops import StopAction, classify, make_truncation_result, text_of
-from .tools import ToolSet
+from .tools import ToolSet, ToolResult
 from .tokens import messages_tokens
 
 MAX_TURNS = 60
@@ -89,6 +89,9 @@ class Agent:
         self.session_id = None
         # M2：最近一次终止决策（供 CLI/Web 透出原因）
         self._last_stop = None
+        # M3：死循环/无进展熔断（默认 None → 不启用，行为不变）
+        self.loopguard = None
+        self._guard_halted = False
 
     # ---------------- 对外 ----------------
     @property
@@ -129,6 +132,9 @@ class Agent:
 
     def _run(self, on_delta=None) -> str:
         budget = self._init_budget()
+        self._guard_halted = False
+        if self.loopguard is not None:
+            self.loopguard.reset()
         for step in range(budget["max_turns"]):
             if self.cancel_event is not None and self.cancel_event.is_set():
                 return "（任务已取消）"
@@ -179,6 +185,8 @@ class Agent:
                 msg = {"role": "user", "content": results}
                 self.history.append(msg)
                 self._persist(msg)
+                if self._guard_halted:
+                    return "（已熔断：检测到无进展循环，已停止。）"
                 continue
 
             if decision.action == StopAction.REPAIR_TRUNCATION:
@@ -322,6 +330,11 @@ class Agent:
             if self.on_event is not None:
                 self.on_event({"type": "tool_start", "id": aid, "name": name,
                                "input": json.dumps(args, ensure_ascii=False)[:2000]})
+            # M3：若已熔断，跳过执行并返回可见原因
+            if self.loopguard is not None and self._guard_halted:
+                tr = ToolResult("[已熔断] 检测到无进展循环，本工具调用未执行。", True)
+                results.append(self._tool_result_block(aid, tr, name))
+                continue
             tr = self.tools.execute(name, args)
             if self.on_event is not None:
                 content = tr.content
@@ -333,18 +346,38 @@ class Agent:
                 skill = str(args.get("skill", "")).strip()
                 if skill:
                     self._active_skills.add(skill)
-            content = tr.content
-            if len(content) > MAX_RESULT_CHARS:
-                content = content[:MAX_RESULT_CHARS] + "\n…[结果过长已截断]"
-            results.append({
-                "type": "tool_result", "tool_use_id": aid,
-                "content": content, "is_error": tr.is_error,
-            })
+            # M3：记录进展信号并判定
+            guard_msg = self._guard_record(name, args, tr)
+            results.append(self._tool_result_block(aid, tr, name, guard_msg))
             if self.cfg.verbose:
                 tag = "ok" if not tr.is_error else "ERR"
-                print(f"\n[工具] {name} [{tag}] -> {content.splitlines()[0][:80] if content else ''}",
+                print(f"\n[工具] {name} [{tag}] -> {tr.content.splitlines()[0][:80] if tr.content else ''}",
                       flush=True)
         return results
+
+    def _tool_result_block(self, aid: str, tr, name: str, guard_msg: str = "") -> dict:
+        content = tr.content
+        if len(content) > MAX_RESULT_CHARS:
+            content = content[:MAX_RESULT_CHARS] + "\n…[结果过长已截断]"
+        if guard_msg:                        # 纠偏提示并入同一轮 tool_result（严禁另起 user）
+            content = (content + "\n\n" + guard_msg).strip()
+        return {"type": "tool_result", "tool_use_id": aid,
+                "content": content, "is_error": tr.is_error}
+
+    # ---------------- 死循环熔断（M3） ----------------
+    def _guard_record(self, name: str, args: dict, tr) -> str:
+        if self.loopguard is None or not self.loopguard.enabled:
+            return ""
+        meta = getattr(tr, "meta", None)
+        v = self.loopguard.record(name, args, tr.content, meta)
+        if v.level == "halt":
+            self._guard_halted = True
+            self._notify("loop_guard", v.message)
+            return v.message
+        if v.level == "warn":
+            self._notify("loop_guard", v.message)
+            return v.message
+        return ""
 
     # ---------------- 上下文压缩 ----------------
     def _maybe_compact(self) -> None:

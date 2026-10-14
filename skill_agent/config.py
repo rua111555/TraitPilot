@@ -56,6 +56,10 @@ class Config:
     max_output_tokens: int | None = None   # 本轮累计输出 token 上限
     max_seconds: int | None = None         # 本轮墙钟时长上限（秒）
     warn_ratio: float = 0.8                # 达到上限的此比例时发一次提醒
+    # M3 死循环熔断（默认关）
+    loop_guard: bool = False
+    loop_warn: int = 3                     # 连续无进展达此次数 → 注入纠偏提示
+    loop_halt: int = 6                     # 连续无进展达此次数 → 熔断
 
     @classmethod
     def load(cls, *, model: str | None = None, project: Path | None = None,
@@ -104,6 +108,7 @@ class Config:
             max_turns=_env_int("SKILL_AGENT_MAX_TURNS", max_turns),
             max_output_tokens=_env_int("SKILL_AGENT_MAX_OUTPUT_TOKENS"),
             max_seconds=_env_int("SKILL_AGENT_MAX_SECONDS"),
+            loop_guard=_env_bool("SKILL_AGENT_LOOP_GUARD"),
         )
 
 

@@ -119,6 +119,9 @@ def build_session(session_id: str, cfg, registry) -> WebSession:
     agent = Agent(cfg, registry, session.tools)
     agent.on_event = hooks.emit
     agent.cancel_event = session.cancel_event
+    if cfg.loop_guard:                       # M3：按配置启用死循环熔断
+        from skill_agent.loopguard import LoopGuard
+        agent.loopguard = LoopGuard(enabled=True, warn=cfg.loop_warn, halt=cfg.loop_halt)
 
     # M13：网页默认持久化，支持断线后按 sid 恢复（可用 SKILL_AGENT_PERSIST=0 关闭）
     import os as _os

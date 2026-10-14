@@ -418,6 +418,7 @@ function handleEvent(block){
     case "tool_end": toolEnd(ev); break;
     case "confirm": showConfirm(ev); break;
     case "notice": notice(ev.message||""); break;
+    case "loop_guard": notice(ev.message||""); break;
     case "usage": break;   // 用量事件（M1a）：预留，暂不逐帧渲染
     case "done": finalize(ev); break;
     case "error": addErrorMsg(ev.message||"运行出错"); break;
