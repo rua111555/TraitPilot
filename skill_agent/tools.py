@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -23,6 +24,21 @@ from .validation import validate_args
 
 MAX_OUTPUT = 30_000
 MAX_LINES = 2000
+READ_MAX_LIMIT = 100_000        # M7：分段读取的最大行数（防一次读爆上下文）
+
+# M7：per-tool 默认超时（秒），可被 Bash 的 timeout 参数或预算收窄覆盖
+DEFAULT_TOOL_TIMEOUTS = {"Read": 30, "Write": 30, "Edit": 30,
+                         "Glob": 60, "Grep": 90, "TaskOutput": 20, "Skill": 20}
+
+
+def default_timeout(tool_name: str) -> int:
+    return int(DEFAULT_TOOL_TIMEOUTS.get(tool_name, 120))
+
+
+def timeout_error(tool_name: str, timeout: int) -> ToolResult:
+    """统一的超时报错（被超时保护的 executor 复用）。"""
+    return ToolResult(f"工具 {tool_name} 执行超时（>{timeout}s）。"
+                      f"可缩小输入范围或提高该工具超时后重试。", True)
 
 
 @dataclass
@@ -70,7 +86,7 @@ class ToolSet:
     def __init__(self, registry: SkillRegistry, cwd: Path,
                  permission: str = "auto", verbose: bool = False,
                  confirm_handler=None, permission_model: PermissionModel | None = None,
-                 hooks=None):
+                 hooks=None, spill_dir=None, spill_threshold: int | None = None):
         self.registry = registry
         self.cwd = Path(cwd)
         self.permission = permission            # auto | ask
@@ -82,6 +98,9 @@ class ToolSet:
         self.permission_model = permission_model or PermissionModel()
         # M10：工具钩子（默认 None → 空链，行为不变）
         self.hooks = hooks
+        # M7：结果落盘转存（默认关；开启后超长工具结果写盘并回可继续读取的引用）
+        self.spill_dir = spill_dir
+        self.spill_threshold = int(spill_threshold or MAX_OUTPUT)
         self._bg_tasks: dict[str, dict] = {}    # task_id -> {log, pid, cmd}
         self.max_tokens_warning_shown = False
 
@@ -92,6 +111,8 @@ class ToolSet:
                   self._tool_write(), self._tool_edit(), self._tool_glob(),
                   self._tool_grep(), self._tool_taskoutput()]:
             self.registry_tools.register(t)
+        # M7：为内置工具套上 per-tool 看门狗超时
+        self._attach_timeouts()
 
     # 兼容旧属性名（此前直接访问 ToolSet._tools）
     @property
@@ -157,7 +178,36 @@ class ToolSet:
             replaced = self.hooks.post_tool_use(name, args, result)
             if isinstance(replaced, ToolResult):
                 result = replaced
+        # M7：超长结果落盘转存（默认关；开启后返回可继续 Read 的引用）
+        if result is not None and not result.is_error:
+            result = self._maybe_spill(name, result)
         return result
+
+    # ---------------- M7 结果落盘治理 ----------------
+    def _maybe_spill(self, name: str, result: ToolResult) -> ToolResult:
+        if not self.spill_dir:
+            return result
+        content = result.content or ""
+        if len(content) <= self.spill_threshold:
+            return result
+        try:
+            d = Path(self.spill_dir)
+            d.mkdir(parents=True, exist_ok=True)
+            fid = uuid.uuid4().hex[:8]
+            p = d / f"{name}-{fid}.txt"
+            p.write_text(content, encoding="utf-8")
+        except OSError:
+            return result                     # 落盘失败 → 保留原样（由上层截断兜底）
+        head = content[:2000]
+        total_lines = content.count("\n") + 1
+        new = ToolResult(
+            f"{head}\n\n…[完整结果共 {len(content)} 字节 / {total_lines} 行，已转存：{p}]\n"
+            f"继续查看：Read(file_path=\"{p}\")，可配 offset/limit 分片读取。")
+        new.is_error = result.is_error
+        new.meta = dict(getattr(result, "meta", {}) or {})
+        new.meta.update({"spilled": str(p), "original_size": len(content),
+                         "original_lines": total_lines})
+        return new
 
     # ---------------- executor 实现 ----------------
     def _tool_skill(self) -> Tool:
@@ -213,7 +263,10 @@ class ToolSet:
             out = (proc.stdout or "") + (proc.stderr or "")
             out = out.strip() or f"（无输出，返回码 {proc.returncode}）"
             if len(out) > MAX_OUTPUT:
-                out = out[:MAX_OUTPUT] + f"\n…[输出过长，已截断为 {MAX_OUTPUT} 字符]"
+                # M7：落盘转存开启时，保留完整输出交由 ToolSet._maybe_spill 落盘；
+                # 否则退回旧的头部截断。
+                if not self.spill_dir:
+                    out = out[:MAX_OUTPUT] + f"\n…[输出过长，已截断为 {MAX_OUTPUT} 字符]"
             note = f"退出码 {proc.returncode}。" if proc.returncode != 0 else ""
             res = f"$ {command}\n{out}"
             if note:
@@ -237,6 +290,45 @@ class ToolSet:
                           "required": ["command"]},
             executor=run,
         )
+
+    # ---------------- M7 超时包装 ----------------
+    def _timed(self, name: str, seconds: int):
+        """返回 (对外工具名, executor包装器)：在 executor 外再套一层看门狗超时。
+
+        - 必然捕获 subprocess.TimeoutExpired（Bash 已有内层超时）→ 统一文案
+        - 尽力处理「executor 自身卡住」——用守护线程执行；超时后返回可见报错。
+          （注：python 无法强杀已运行的线程，故 Bash 仍依赖其内层 subprocess 超时；
+           此处主要守护 Read/Grep/Glob 等纯 python 路径。）
+        """
+        def wrap(inner):
+            def run(args: dict) -> ToolResult:
+                box: dict = {}
+
+                def call():
+                    try:
+                        box["r"] = inner(args)
+                    except subprocess.TimeoutExpired:
+                        box["r"] = timeout_error(name, seconds)
+                    except Exception as e:  # noqa: BLE001
+                        box["r"] = ToolResult(f"[异常] {name}：{type(e).__name__}: {e}", True)
+
+                t = threading.Thread(target=call, daemon=True)
+                t.start()
+                t.join(seconds)
+                if t.is_alive():
+                    return timeout_error(name, seconds)
+                return box.get("r", ToolResult(f"{name} 未产生结果", True))
+            return run
+        return name, wrap
+
+    def _attach_timeouts(self) -> None:
+        """为内置工具套上 per-tool 看门狗（Bash 仍用其内层 subprocess 超时，避免重复超时）。"""
+        for nm, tool in list(self.registry_tools._tools.items()):
+            if nm == "Bash":
+                continue
+            if str(getattr(tool, "source", "builtin")) != "builtin":
+                continue
+            tool.executor = self._timed(nm, default_timeout(nm))[1](tool.executor)
 
     def _bash_background(self, command: str, desc: str) -> ToolResult:
         task_id = uuid.uuid4().hex[:10]
@@ -264,17 +356,22 @@ class ToolSet:
             path = self._resolve(args.get("file_path", ""))
             if not path.is_file():
                 return ToolResult(f"文件不存在或不可读：{path}", True)
-            offset = max(int(args.get("offset") or 1), 1)
-            limit = min(int(args.get("limit") or MAX_LINES), MAX_LINES)
+            # M7：分段读取——limit 默认 2000，最大放宽到 READ_MAX_LIMIT，避免「读不完就反复重试」
+            try:
+                offset = max(int(args.get("offset") or 1), 1)
+                limit = min(int(args.get("limit") or MAX_LINES), READ_MAX_LIMIT)
+            except (TypeError, ValueError):
+                return ToolResult("offset/limit 必须是整数。", True)
             try:
                 lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
             except OSError as e:
                 return ToolResult(f"读取失败：{e}", True)
             total = len(lines)
-            # 行号前缀
             chosen = lines[offset - 1: offset - 1 + limit]
             body = "\n".join(f"{i + offset}\t{l}" for i, l in enumerate(chosen))
             head = f"文件：{path}（共 {total} 行，显示 {offset}-{offset + len(chosen) - 1}）"
+            if offset - 1 + limit < total:
+                head += f"；还有 {total - (offset - 1 + limit)} 行未显示，可用 offset={offset + len(chosen)} 继续"
             if not body.strip():
                 body = "（空文件或无内容）"
             tr = ToolResult(head + "\n" + body)

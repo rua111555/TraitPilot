@@ -92,6 +92,8 @@ class Agent:
         # M3：死循环/无进展熔断（默认 None → 不启用，行为不变）
         self.loopguard = None
         self._guard_halted = False
+        # M7：同轮多个只读工具并行执行（默认关 → 与改造前一致的串行顺序）
+        self.parallel_tools = bool(getattr(cfg, "parallel_tools", False))
 
     # ---------------- 对外 ----------------
     @property
@@ -320,40 +322,68 @@ class Agent:
         return None if unbound else union
 
     def _execute_tools(self, blocks: list[dict]) -> list[dict]:
-        results: list[dict] = []
+        # M7：同轮多个无副作用工具（Read/Grep/Glob/TaskOutput）并行执行；其余串行。
+        outcomes: dict[str, dict] = {}
+        para, serial = [], []
         for b in blocks:
-            name = b.get("name", "")
-            aid = b.get("id", "")
-            args = b.get("input") or {}
-            if not isinstance(args, dict):
-                args = {}
-            if self.on_event is not None:
-                self.on_event({"type": "tool_start", "id": aid, "name": name,
-                               "input": json.dumps(args, ensure_ascii=False)[:2000]})
-            # M3：若已熔断，跳过执行并返回可见原因
-            if self.loopguard is not None and self._guard_halted:
-                tr = ToolResult("[已熔断] 检测到无进展循环，本工具调用未执行。", True)
-                results.append(self._tool_result_block(aid, tr, name))
-                continue
-            tr = self.tools.execute(name, args)
-            if self.on_event is not None:
-                content = tr.content
-                if len(content) > 4000:
-                    content = content[:4000] + "\n…（过长已截断）"
-                self.on_event({"type": "tool_end", "id": aid, "name": name,
-                               "is_error": tr.is_error, "result": content})
+            (para if (self.parallel_tools and _is_readonly(b.get("name", ""))) else serial).append(b)
+        if para:
+            outcomes.update(self._exec_parallel(para))
+        for b in serial:
+            outcomes[b.get("id", "")] = self._exec_one(b, allow_parallel_skip=True)
+        return [outcomes.get(b.get("id", ""), self._tool_result_block(
+            b.get("id", ""), ToolResult("（内部错误：无结果）", True), b.get("name", "")))
+            for b in blocks]
+
+    # ---------------- 单个工具执行（串行/并行共用） ----------------
+    def _exec_one(self, b: dict, allow_parallel_skip: bool = False) -> dict:
+        name = b.get("name", "")
+        aid = b.get("id", "")
+        args = b.get("input") or {}
+        if not isinstance(args, dict):
+            args = {}
+        if self.on_event is not None:
+            self.on_event({"type": "tool_start", "id": aid, "name": name,
+                           "input": json.dumps(args, ensure_ascii=False)[:2000]})
+        # M3：若已熔断，跳过执行并返回可见原因
+        if self.loopguard is not None and self._guard_halted:
+            tr = ToolResult("[已熔断] 检测到无进展循环，本工具调用未执行。", True)
+            return self._tool_result_block(aid, tr, name)
+        tr = self.tools.execute(name, args)
+        if self.on_event is not None:
+            content = tr.content
+            if len(content) > 4000:
+                content = content[:4000] + "\n…（过长已截断）"
+            self.on_event({"type": "tool_end", "id": aid, "name": name,
+                           "is_error": tr.is_error, "result": content})
+        # 副作用：激活 skill 与死循环判定只在**串行**路径做（避免并发下竞态）
+        guard_msg = ""
+        if allow_parallel_skip:
             if name == "Skill" and not tr.is_error:
                 skill = str(args.get("skill", "")).strip()
                 if skill:
                     self._active_skills.add(skill)
-            # M3：记录进展信号并判定
             guard_msg = self._guard_record(name, args, tr)
-            results.append(self._tool_result_block(aid, tr, name, guard_msg))
-            if self.cfg.verbose:
-                tag = "ok" if not tr.is_error else "ERR"
-                print(f"\n[工具] {name} [{tag}] -> {tr.content.splitlines()[0][:80] if tr.content else ''}",
-                      flush=True)
-        return results
+        if self.cfg.verbose:
+            tag = "ok" if not tr.is_error else "ERR"
+            print(f"\n[工具] {name} [{tag}] -> {tr.content.splitlines()[0][:80] if tr.content else ''}",
+                  flush=True)
+        return self._tool_result_block(aid, tr, name, guard_msg)
+
+    def _exec_parallel(self, blocks: list[dict]) -> dict:
+        """并行执行一组**只读**工具。只读工具无共享状态，故不做 guard 记录、不激活 skill。"""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        outcomes: dict[str, dict] = {}
+        with ThreadPoolExecutor(max_workers=min(len(blocks), 8)) as ex:
+            futs = {ex.submit(self._exec_one, b, False): b for b in blocks}
+            for f in as_completed(futs):
+                b = futs[f]
+                try:
+                    outcomes[b.get("id", "")] = f.result()
+                except Exception as e:  # noqa: BLE001
+                    outcomes[b.get("id", "")] = self._tool_result_block(
+                        b.get("id", ""), ToolResult(f"[并行执行异常] {e}", True), b.get("name", ""))
+        return outcomes
 
     def _tool_result_block(self, aid: str, tr, name: str, guard_msg: str = "") -> dict:
         content = tr.content
@@ -466,6 +496,14 @@ class Agent:
                     return i
             i += 1
         return start
+
+
+# M7：同轮可安全并行的只读工具（无副作用、无共享状态）
+_READONLY_TOOLS = frozenset({"Read", "Glob", "Grep", "TaskOutput"})
+
+
+def _is_readonly(name: str) -> bool:
+    return name in _READONLY_TOOLS
 
 
 def _new_usage(model: str = "") -> dict:

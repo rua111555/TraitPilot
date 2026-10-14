@@ -64,6 +64,10 @@ class Config:
     plugin_dirs: list | None = None        # 扩展工具规格目录（*.json）
     plugin_allow: list | None = None       # 只加载这些插件工具名（None=全部）
     hooks_enabled: bool = False            # 预留：外部钩子由调用方注入 HookManager
+    # M7 工具治理（默认关）
+    spill_dir: str | None = None           # 超长工具结果落盘目录（None=不落盘）
+    spill_threshold: int = 30_000          # 超过此字符数才落盘
+    parallel_tools: bool = False           # 同轮只读工具并行执行
 
     @classmethod
     def load(cls, *, model: str | None = None, project: Path | None = None,
@@ -115,6 +119,9 @@ class Config:
             loop_guard=_env_bool("SKILL_AGENT_LOOP_GUARD"),
             plugin_dirs=_env_list("SKILL_AGENT_PLUGIN_DIRS"),
             hooks_enabled=_env_bool("SKILL_AGENT_HOOKS"),
+            spill_dir=(os.environ.get("SKILL_AGENT_SPILL_DIR")
+                       or (str(default_spill_dir()) if _env_bool("SKILL_AGENT_SPILL") else None)),
+            parallel_tools=_env_bool("SKILL_AGENT_PARALLEL_TOOLS"),
         )
 
 
@@ -169,3 +176,10 @@ def default_checkpoint_dir() -> Path:
 def default_memory_dir(project: Path) -> Path:
     """M12：项目级记忆目录（core.md + archival.db）。"""
     return Path(project) / ".skill-agent" / "memory"
+
+
+def default_spill_dir() -> Path:
+    """M7：超长工具结果落盘目录。"""
+    d = Path.home() / ".skill-agent" / "spill"
+    d.mkdir(parents=True, exist_ok=True)
+    return d

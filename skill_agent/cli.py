@@ -59,6 +59,10 @@ def _common_opts(*, with_cwd: bool = False) -> argparse.ArgumentParser:
                    help="M4：加载扩展工具规格目录（*.json，可重复）；默认禁用以防扩大执行面")
     c.add_argument("--trace", action="store_true", default=None,
                    help="M10：把 Pre/Post 工具调用与用量落盘到 ~/.skill-agent/traces/")
+    c.add_argument("--spill", action="store_true", default=None,
+                   help="M7：超长工具结果落盘转存（返回可继续 Read 的引用），默认关")
+    c.add_argument("--parallel-tools", action="store_true", default=None,
+                   help="M7：同轮多个只读工具并行执行（默认关）")
     c.add_argument("--verbose", action="store_true")
     return c
 
@@ -103,6 +107,11 @@ def main(argv=None) -> int:
         cfg.memory_enabled = True
     if getattr(args, "plugin_dir", None):
         cfg.plugin_dirs = list(args.plugin_dir)
+    if getattr(args, "spill", None):
+        from .config import default_spill_dir
+        cfg.spill_dir = str(default_spill_dir())
+    if getattr(args, "parallel_tools", None):
+        cfg.parallel_tools = True
     registry = SkillRegistry(cfg.project)
     pmodel = PermissionModel.from_config(cfg, cfg.cwd)
 
@@ -114,7 +123,8 @@ def main(argv=None) -> int:
         hooks = build_trace_hooks(getattr(cfg, "session_id", None) or new_session_id())
 
     tools = ToolSet(registry, cfg.cwd, cfg.permission, verbose=cfg.verbose,
-                    permission_model=pmodel, hooks=hooks)
+                    permission_model=pmodel, hooks=hooks,
+                    spill_dir=cfg.spill_dir, spill_threshold=cfg.spill_threshold)
 
     # ---- M4：可选插件工具目录（默认不加载） ----
     if cfg.plugin_dirs:
