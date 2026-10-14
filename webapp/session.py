@@ -89,6 +89,7 @@ class WebSession:
                 "type": "done", "final": final,
                 "messages": len(self.agent.history),
                 "active": self.agent.active_skills,
+                "usage": self.agent.usage_bar,
             })
         except Exception as e:  # noqa: BLE001
             self.event_queue.put({"type": "error", "message": f"{type(e).__name__}: {e}"})

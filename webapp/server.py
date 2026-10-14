@@ -90,6 +90,16 @@ def _fetch_models() -> list[str]:
     return ids
 
 
+@app.get("/api/usage")
+def api_usage():
+    """M1a：返回某会话本轮累计用量。"""
+    sid = request.args.get("session")
+    s = _sessions().get(sid) if sid else None
+    if not s:
+        return jsonify({"ok": False, "error": "session not found"}), 404
+    return jsonify({"ok": True, "usage": s.agent.usage_bar})
+
+
 @app.get("/api/skills")
 def api_skills():
     reg = CFG_REF["registry"]

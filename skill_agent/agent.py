@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 from .client import AnthropicClient
@@ -66,11 +67,18 @@ class Agent:
         # 网页模式注入：事件回调 + 取消信号（CLI 不设，行为不变）
         self.on_event = None
         self.cancel_event = None
+        # M1a：本轮运行的 local 用量累加器（绝不写入共享 Config，避免多 Web 会话串扰）
+        self._usage: dict = _new_usage()
 
     # ---------------- 对外 ----------------
     @property
     def active_skills(self):
         return sorted(self._active_skills)
+
+    @property
+    def usage_bar(self) -> dict:
+        """当前累计用量的只读快照（M1a，供 CLI /cost 与 Web /api/usage）。"""
+        return dict(self._usage)
 
     def reset_skills(self) -> None:
         self._active_skills.clear()
@@ -79,9 +87,11 @@ class Agent:
         self.history = []
         self.reset_skills()
         self._compacted = False
+        self._usage = _new_usage()
 
     def answer(self, user_text: str, on_delta=None) -> str:
         """执行一个用户请求（可能多轮工具调用），返回最终文本。"""
+        self._usage = _new_usage(self.cfg.model)   # 每轮用户请求重置用量累计
         self.history.append({"role": "user", "content": user_text})
         try:
             return self._run(on_delta=on_delta)
@@ -98,10 +108,12 @@ class Agent:
             if self._compacted:
                 system += "\n\n（注：较早的对话内容已因长度被安全压缩略去，请基于当前可见内容继续。）"
 
+            t0 = time.monotonic()
             blocks, stop_reason, out_tokens = self.client.create(
                 system=system, tools=tools, messages=self.history,
                 stream=self.cfg.stream, on_delta=on_delta,
             )
+            self._record_usage(out_tokens, time.monotonic() - t0)
             # 去伪：忽略空的 thinking 块
             blocks = [b for b in blocks if b.get("type") != "empty"]
             assistant = {"role": "assistant", "content": blocks}
@@ -120,6 +132,20 @@ class Agent:
             text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
             return text.strip() or "（模型未返回文本内容）"
         return "（达到最大工具轮次，已停止）"
+
+    # ---------------- 用量采集（M1a） ----------------
+    def _record_usage(self, out_tokens: int, latency_s: float) -> None:
+        """累计本轮用量并 emit usage 事件。纯被动累加，不做任何限流/终止判定。"""
+        if not isinstance(out_tokens, int) or out_tokens < 0:
+            out_tokens = 0
+        u = self._usage
+        u["steps"] += 1
+        u["output_tokens"] += out_tokens
+        u["latency_ms"] += int(latency_s * 1000)
+        if self.on_event is not None:
+            self.on_event({"type": "usage", "step": u["steps"],
+                           "output_tokens": out_tokens, "total_output_tokens": u["output_tokens"],
+                           "latency_ms": int(latency_s * 1000)})
 
     # ---------------- 工具执行 ----------------
     def _allowed_set(self) -> set[str] | None:
@@ -198,6 +224,11 @@ class Agent:
                     return i
             i += 1
         return start
+
+
+def _new_usage(model: str = "") -> dict:
+    """M1a：本轮运行的用量累加器（local，绝不挂共享 Config）。"""
+    return {"model": model, "steps": 0, "output_tokens": 0, "latency_ms": 0}
 
 
 def _has_tool_use(msg: dict) -> bool:

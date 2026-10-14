@@ -145,7 +145,7 @@ def _oneshot(agent: Agent, cfg: Config, prompt: str) -> int:
 
 
 # ---------------- REPL ----------------
-COMMANDS = {"/exit", "/quit", "/clear", "/skills", "/active", "/help", "/model", "/permission"}
+COMMANDS = {"/exit", "/quit", "/clear", "/skills", "/active", "/help", "/model", "/permission", "/cost"}
 
 
 def _repl(agent: Agent, cfg: Config, registry: SkillRegistry, tools: ToolSet) -> int:
@@ -200,10 +200,14 @@ def _handle_command(agent: Agent, cfg: Config, registry: SkillRegistry, line: st
     cmd, _, arg = parts[0], parts[0], (parts[1] if len(parts) > 1 else "")
     if cmd == "/help":
         print("命令：/exit 退出 · /clear 清空对话 · /skills 列技能 · /active 当前激活"
-              " · /drop <skill> 移除激活 · /model X 换模型 · /permission ask|auto")
+              " · /drop <skill> 移除激活 · /model X 换模型 · /permission ask|auto · /cost 本轮用量")
     elif cmd == "/clear":
         agent.clear()
         print("上下文已清空。")
+    elif cmd == "/cost":
+        u = agent.usage_bar
+        print(f"本轮用量：模型 {u['model']} · 模型轮次 {u['steps']} · "
+              f"输出 token {u['output_tokens']} · 累计延迟 {u['latency_ms']} ms")
     elif cmd == "/skills":
         print(registry.listing())
     elif cmd == "/active":
