@@ -83,6 +83,21 @@ REPL 内命令：`/help` `/clear` `/skills` `/active` `/model X` `/permission as
 | M2 终止契约 | `stop_reason` 分类→决策（continue/repair_truncation/pause_turn/refuse/finalize），透出终止原因 | 恒开（更严格，含截断修复）|
 | M1b 预算熔断 | 轮次/墙钟时长/输出 token 上限，发请求前熔断，到点只停调用不杀后台 | 默认不限，`--max-turns`/`--max-seconds`/`--max-output-tokens` |
 | M3 死循环熔断 | 无进展循环检测（动作/观测指纹 + meta 进展信号），轮询工具白名单 | 默认关，`--loop-guard` 或 `SKILL_AGENT_LOOP_GUARD=1` |
+| M4 工具注册表 | 工具以数据登记、可运行时挂载；声明式插件目录（`*.json` 规格） | `--plugin-dir DIR`（默认不加载，防扩大执行面）|
+| M10 钩子 | PreToolUse（可阻断/改参）/ PostToolUse（可脱敏）/ 会话事件钩子 | 代码注入 `HookManager`；`--trace` 用示例钩子落盘 |
+| #6 可观测性 | 工具调用 trace（工具名/参数摘要/耗时/结果）jsonl | `--trace` 或 `SKILL_AGENT_HOOKS=1` |
+
+### 扩展工具（M4）
+
+在目录放一个 `*.json` 规格即可挂载新工具（不必改源码）：
+
+```json
+{"name":"Hello","description":"示例","input_schema":{"type":"object","properties":{"who":{"type":"string"}}},
+ "path":"/abs/hello.py","executor":"make_executor"}
+```
+
+`hello.py` 里定义 `make_executor()` 返回 `callable(args)->ToolResult`。用
+`--plugin-dir <dir>` 加载（默认禁用；动态工具与内置工具同权限执行，故须显式开启）。
 
 ### 会话恢复（M13）
 
