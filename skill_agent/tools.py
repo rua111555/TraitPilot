@@ -169,13 +169,16 @@ class ToolSet:
             timeout = min(max(timeout, 1), 3600)
             if args.get("background"):
                 return self._bash_background(command, str(args.get("description", "")))
+            t0 = time.monotonic()
             try:
                 proc = subprocess.run(
                     command, shell=True, executable="/bin/bash",
                     capture_output=True, text=True, timeout=timeout, cwd=str(self.cwd),
                 )
             except subprocess.TimeoutExpired:
-                return ToolResult(f"命令超时（>{timeout}s）：\n$ {command}", True)
+                res = ToolResult(f"命令超时（>{timeout}s）：\n$ {command}", True)
+                res.meta = {"duration_ms": int((time.monotonic() - t0) * 1000), "timed_out": True}
+                return res
             out = (proc.stdout or "") + (proc.stderr or "")
             out = out.strip() or f"（无输出，返回码 {proc.returncode}）"
             if len(out) > MAX_OUTPUT:
@@ -184,7 +187,10 @@ class ToolSet:
             res = f"$ {command}\n{out}"
             if note:
                 res += "\n" + note
-            return ToolResult(res, is_error=proc.returncode != 0)
+            tr = ToolResult(res, is_error=proc.returncode != 0)
+            tr.meta = {"duration_ms": int((time.monotonic() - t0) * 1000),
+                       "exit_code": proc.returncode}
+            return tr
         return Tool(
             name="Bash",
             description=(
@@ -215,10 +221,12 @@ class ToolSet:
               f'nohup /bin/bash "{d.joinpath("command.sh")}" > "{log}" 2>&1 &' ],
         )
         self._bg_tasks[task_id] = {"log": log, "pid": pidf, "cmd": command}
-        return ToolResult(
+        res = ToolResult(
             f"已在后台启动（task_id={task_id}）。\n日志：{log}\n"
             "后续可用 TaskOutput(log_path=...) 或 Read/Bash 查看进度；"
             "编排管线请按各自 SKILL.md 用 .done/.pid 标记确认完成。")
+        res.meta = {"task_id": task_id, "log": str(log), "pid_file": str(pidf)}
+        return res
 
     def _tool_read(self) -> Tool:
         def run(args: dict) -> ToolResult:
@@ -238,7 +246,14 @@ class ToolSet:
             head = f"文件：{path}（共 {total} 行，显示 {offset}-{offset + len(chosen) - 1}）"
             if not body.strip():
                 body = "（空文件或无内容）"
-            return ToolResult(head + "\n" + body)
+            tr = ToolResult(head + "\n" + body)
+            try:
+                st = path.stat()
+                tr.meta = {"path": str(path), "lines": total,
+                           "size": st.st_size, "mtime": st.st_mtime}
+            except OSError:
+                tr.meta = {"path": str(path), "lines": total}
+            return tr
         return Tool(
             name="Read",
             description="读取文本文件，默认前2000行，可用 offset/limit 分段。",
@@ -261,7 +276,13 @@ class ToolSet:
             except OSError as e:
                 return ToolResult(f"写入失败：{e}", True)
             size = len(content.encode("utf-8"))
-            return ToolResult(f"已写入 {path}（{size} 字节）。")
+            tr = ToolResult(f"已写入 {path}（{size} 字节）。")
+            try:
+                st = path.stat()
+                tr.meta = {"path": str(path), "size": st.st_size, "mtime": st.st_mtime}
+            except OSError:
+                tr.meta = {"path": str(path), "size": size}
+            return tr
         return Tool(
             name="Write",
             description="创建或覆盖文件（含父目录）。",
@@ -292,7 +313,13 @@ class ToolSet:
                 path.write_text(new_text, encoding="utf-8")
             except OSError as e:
                 return ToolResult(f"写入失败：{e}", True)
-            return ToolResult(f"已编辑 {path}。")
+            tr = ToolResult(f"已编辑 {path}。")
+            try:
+                st = path.stat()
+                tr.meta = {"path": str(path), "size": st.st_size, "mtime": st.st_mtime}
+            except OSError:
+                tr.meta = {"path": str(path)}
+            return tr
         return Tool(
             name="Edit",
             description="精确字符串替换（单次/全部 replace_all）。",
@@ -404,16 +431,22 @@ class ToolSet:
             tail = all_lines[-lines:]
             # 进程存活判断（配合 pid 文件）
             alive = ""
+            pid_alive = None
             pidf = p.parent / "pid"
             if pidf.is_file():
                 pid = pidf.read_text().strip()
                 try:
                     os.kill(int(pid), 0)
                     alive = f"（进程 {pid} 运行中）"
+                    pid_alive = True
                 except (ProcessLookupError, ValueError, PermissionError, OSError):
                     alive = "（进程已结束）"
+                    pid_alive = False
             body = "\n".join(tail) or "（日志为空）"
-            return ToolResult(f"日志：{p}{alive}\n---- 末 {len(tail)} 行 ----\n{body}")
+            tr = ToolResult(f"日志：{p}{alive}\n---- 末 {len(tail)} 行 ----\n{body}")
+            tr.meta = {"path": str(p), "lines_total": len(all_lines),
+                       "lines_tail": len(tail), "pid_alive": pid_alive}
+            return tr
         return Tool(
             name="TaskOutput",
             description="查看后台任务日志的末尾行数（配合 Bash background=true）。",
