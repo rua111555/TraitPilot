@@ -51,12 +51,17 @@ class Config:
     # M13 会话持久化（默认关）
     persist: bool = False                  # 逐条消息落盘 + 支持 resume
     session_id: str | None = None
+    # M1b 预算熔断（默认 None/0 = 不限制 → 行为与改造前一致）
+    max_turns: int | None = None           # 覆盖内置 MAX_TURNS
+    max_output_tokens: int | None = None   # 本轮累计输出 token 上限
+    max_seconds: int | None = None         # 本轮墙钟时长上限（秒）
+    warn_ratio: float = 0.8                # 达到上限的此比例时发一次提醒
 
     @classmethod
     def load(cls, *, model: str | None = None, project: Path | None = None,
              cwd: Path | None = None, permission: str | None = None,
              max_tokens: int | None = None, stream: bool | None = None,
-             verbose: bool = False) -> "Config":
+             verbose: bool = False, max_turns: int | None = None) -> "Config":
         user_env = _read_user_settings_env()
 
         base_url = (os.environ.get("ANTHROPIC_BASE_URL")
@@ -96,6 +101,9 @@ class Config:
             summary_model=os.environ.get("SKILL_AGENT_SUMMARY_MODEL") or None,
             persist=_env_bool("SKILL_AGENT_PERSIST"),
             session_id=os.environ.get("SKILL_AGENT_SESSION_ID") or None,
+            max_turns=_env_int("SKILL_AGENT_MAX_TURNS", max_turns),
+            max_output_tokens=_env_int("SKILL_AGENT_MAX_OUTPUT_TOKENS"),
+            max_seconds=_env_int("SKILL_AGENT_MAX_SECONDS"),
         )
 
 
@@ -104,6 +112,16 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if v is None:
         return default
     return v.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_int(name: str, default=None):
+    v = os.environ.get(name)
+    if v is None or not str(v).strip():
+        return default
+    try:
+        return int(v)
+    except ValueError:
+        return default
 
 
 def _auto_project(start: Path) -> Path:

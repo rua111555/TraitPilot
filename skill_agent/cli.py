@@ -46,6 +46,12 @@ def _common_opts(*, with_cwd: bool = False) -> argparse.ArgumentParser:
                    help="M12：开启摘要式上下文压缩（替代丢弃旧消息）")
     c.add_argument("--memory", action="store_true", default=None,
                    help="M12：开启分层记忆（core + archival 检索）")
+    c.add_argument("--max-turns", type=int, default=None,
+                   help="M1b：单轮最多模型轮次（默认 60）")
+    c.add_argument("--max-seconds", type=int, default=None,
+                   help="M1b：单轮墙钟时长上限（秒），超时熔断")
+    c.add_argument("--max-output-tokens", type=int, default=None,
+                   help="M1b：单轮累计输出 token 上限，超限熔断")
     c.add_argument("--verbose", action="store_true")
     return c
 
@@ -72,7 +78,12 @@ def main(argv=None) -> int:
         model=args.model, project=args.project, cwd=args.cwd,
         permission=args.permission, max_tokens=args.max_tokens,
         stream=not args.no_stream, verbose=args.verbose,
+        max_turns=getattr(args, "max_turns", None),
     )
+    if getattr(args, "max_seconds", None):
+        cfg.max_seconds = args.max_seconds
+    if getattr(args, "max_output_tokens", None):
+        cfg.max_output_tokens = args.max_output_tokens
     if getattr(args, "restrict_paths", None):
         cfg.restrict_paths = True
     if getattr(args, "write_approval", None):

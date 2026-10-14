@@ -128,9 +128,14 @@ class Agent:
             self._active_skills.clear()   # 新的一轮用户请求，白名单复位
 
     def _run(self, on_delta=None) -> str:
-        for step in range(MAX_TURNS):
+        budget = self._init_budget()
+        for step in range(budget["max_turns"]):
             if self.cancel_event is not None and self.cancel_event.is_set():
                 return "（任务已取消）"
+            # M1b：发请求前的预算熔断（绝不在工具执行中途硬切）
+            stop = self._budget_gate(budget, step)
+            if stop:
+                return stop
             self._maybe_compact()
             tools = self.tools.schemas_for(self._allowed_set())
             # M12：core memory 作稳定前缀；recall 命中放尾部（不破坏 prompt caching）
@@ -201,6 +206,46 @@ class Agent:
                 text = (text + "\n\n" + decision.user_message).strip()
             return text or "（模型未返回文本内容）"
         return "（达到最大工具轮次，已停止）"
+
+    # ---------------- 预算（M1b） ----------------
+    def _init_budget(self) -> dict:
+        cfg = self.cfg
+        return {
+            "max_turns": int(getattr(cfg, "max_turns", None) or MAX_TURNS),
+            "max_output_tokens": getattr(cfg, "max_output_tokens", None) or 0,
+            "max_seconds": getattr(cfg, "max_seconds", None) or 0,
+            "warn_ratio": float(getattr(cfg, "warn_ratio", 0.8) or 0.8),
+            "t0": time.monotonic(),
+            "warned": False,
+        }
+
+    def _budget_gate(self, b: dict, step: int) -> str | None:
+        """返回终止文案（已到上限）或 None。只在发请求前调用。"""
+        u = self._usage
+        # 1) 输出 token 上限
+        if b["max_output_tokens"] and u["output_tokens"] >= b["max_output_tokens"]:
+            return self._budget_stop(b, f"已达输出 token 上限 {b['max_output_tokens']}（累计 {u['output_tokens']}）")
+        # 2) 墙钟时长上限
+        if b["max_seconds"]:
+            elapsed = time.monotonic() - b["t0"]
+            if elapsed >= b["max_seconds"]:
+                return self._budget_stop(b, f"已达时长上限 {b['max_seconds']}s（实际 {elapsed:.0f}s）")
+        # 3) 预警（只提醒一次）
+        if not b["warned"]:
+            msg = ""
+            if b["max_output_tokens"] and u["output_tokens"] >= b["max_output_tokens"] * b["warn_ratio"]:
+                msg = f"输出 token 已用 {u['output_tokens']}/{b['max_output_tokens']}（接近上限）"
+            elif b["max_seconds"] and (time.monotonic() - b["t0"]) >= b["max_seconds"] * b["warn_ratio"]:
+                msg = f"时长已用 {time.monotonic() - b['t0']:.0f}s/{b['max_seconds']}s（接近上限）"
+            if msg:
+                b["warned"] = True
+                self._notify("notice", f"预算提醒：{msg}")
+        return None
+
+    def _budget_stop(self, b: dict, why: str) -> str:
+        # 关键：不杀后台进程，仅停止继续轮询/调用
+        self._notify("notice", f"预算熔断：{why}。后台任务（若有）仍在运行，可用 TaskOutput 查看。")
+        return f"（预算熔断：{why}。已停止继续调用；后台任务不受影响。）"
 
     # ---------------- 事件通知（M2 termination surface） ----------------
     def _notify(self, kind: str, message: str) -> None:
