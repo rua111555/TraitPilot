@@ -273,6 +273,14 @@ function addErrorMsg(text){
 
 function clearThinking(){ if(curThinkEl){ curThinkEl.remove(); curThinkEl=null; } }
 
+function notice(text){
+  if(!text) return;
+  const d=document.createElement("div");
+  d.className="msg assist";
+  d.innerHTML=`<div class="bubble"><div class="md"><p style="color:var(--warn)">ℹ️ ${escapeHtml(text)}</p></div></div>`;
+  chatEl.appendChild(d); scrollBottom();
+}
+
 /* 增量节流渲染：不每 token 全量重渲染，集中于 ~200ms 间隔；源文超限只渲染尾部窗口 */
 function scheduleRender(){
   if(curRenderTimer) return;
@@ -340,7 +348,8 @@ function finalize(ev){
   curTextBox._buf=finalText; curTextBox.innerHTML=md(finalText);   // 全文只在此处渲染一次
   const tail=document.createElement("div");
   tail.className="tail";
-  tail.textContent = `完成 · ${ev.messages||""} 条上下文消息` + (ev.active&&ev.active.length?` · 激活 skill: ${ev.active.join(", ")}`:"");
+  const stopTxt = ev.stop_reason && ev.stop_reason!=="end_turn" ? ` · 终止=${ev.stop_reason}` : "";
+  tail.textContent = `完成 · ${ev.messages||""} 条上下文消息` + stopTxt + (ev.active&&ev.active.length?` · 激活 skill: ${ev.active.join(", ")}`:"");
   curFlow.appendChild(tail);
   curAssist=null; curFlow=null; curTextBox=null; scrollBottom();
 }
@@ -408,6 +417,8 @@ function handleEvent(block){
     case "tool_start": toolStart(ev); break;
     case "tool_end": toolEnd(ev); break;
     case "confirm": showConfirm(ev); break;
+    case "notice": notice(ev.message||""); break;
+    case "usage": break;   // 用量事件（M1a）：预留，暂不逐帧渲染
     case "done": finalize(ev); break;
     case "error": addErrorMsg(ev.message||"运行出错"); break;
   }

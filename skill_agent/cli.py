@@ -151,7 +151,8 @@ def _open_session_log(cfg: Config):
     f = open(cfg.session_log, "a", encoding="utf-8")
     f.write(json.dumps({"t": time.strftime("%Y-%m-%d %H:%M:%S"),
                         "model": cfg.model, "project": str(cfg.project),
-                        "base_url": cfg.base_url}) + "\n")
+                        "base_url": cfg.base_url,
+                        "session_id": getattr(cfg, "session_id", None)}) + "\n")
     return f
 
 
@@ -163,9 +164,13 @@ def _dump_history(f, history: list[dict]) -> None:
             pass
 
 
-def _finish_log(f, history) -> None:
+def _finish_log(f, history, stop=None) -> None:
     _dump_history(f, history)
-    f.write(json.dumps({"t": time.strftime("%Y-%m-%d %H:%M:%S"), "end": True}) + "\n")
+    rec = {"t": time.strftime("%Y-%m-%d %H:%M:%S"), "end": True}
+    if stop is not None:
+        rec["stop_reason"] = getattr(stop, "reason_code", None)
+        rec["truncated"] = getattr(stop, "truncated", False)
+    f.write(json.dumps(rec) + "\n")
     f.close()
 
 
@@ -196,7 +201,7 @@ def _oneshot(agent: Agent, cfg: Config, prompt: str) -> int:
             print(final)
     if cfg.verbose:
         print(f"\n[信息] 模型轮次 {len(agent.history)} 条消息；会话日志 {cfg.session_log}")
-    _finish_log(logf, agent.history)
+    _finish_log(logf, agent.history, agent._last_stop)
     return 0
 
 
@@ -247,7 +252,7 @@ def _repl(agent: Agent, cfg: Config, registry: SkillRegistry, tools: ToolSet) ->
             else:
                 print(final)
         print("─" * 40)
-    _finish_log(logf, agent.history)
+    _finish_log(logf, agent.history, agent._last_stop)
     return 0
 
 

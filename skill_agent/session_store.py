@@ -80,6 +80,11 @@ class SessionStore:
                     continue   # 容忍尾行损坏
                 if isinstance(obj, dict) and obj.get("_meta"):
                     meta = obj
+                elif isinstance(obj, dict) and obj.get("_merge"):
+                    # pause_turn 合并续推：并入上一条 assistant
+                    if raw and raw[-1].get("role") == "assistant":
+                        raw[-1]["content"] = list(raw[-1].get("content") or []) + \
+                            list(obj.get("content") or [])
                 elif isinstance(obj, dict) and obj.get("_prefix"):
                     # M12：压缩产生的边界前缀 → 作为「本轮起点」覆盖之前消息
                     prefix = obj.get("message")

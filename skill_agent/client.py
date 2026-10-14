@@ -138,7 +138,9 @@ class AnthropicClient:
                     try:
                         blk["input"] = json.loads(blk["_buf"])
                     except json.JSONDecodeError:
-                        pass
+                        # M2：标记解析失败（可能被 max_tokens 截断），交由 StopController 决定修复
+                        blk["_parse_error"] = True
+                        blk["_raw"] = blk.get("_buf", "")
                 blk.pop("_buf", None)
             elif t == "message_delta":
                 dr = ev.get("delta", {})

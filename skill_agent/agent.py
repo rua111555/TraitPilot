@@ -13,6 +13,7 @@ from pathlib import Path
 from .client import AnthropicClient
 from .config import Config
 from .skills import SkillRegistry
+from .stops import StopAction, classify, make_truncation_result, text_of
 from .tools import ToolSet
 from .tokens import messages_tokens
 
@@ -86,6 +87,8 @@ class Agent:
         # M13：会话持久化（默认 None → 纯内存，行为不变）
         self.store = None
         self.session_id = None
+        # M2：最近一次终止决策（供 CLI/Web 透出原因）
+        self._last_stop = None
 
     # ---------------- 对外 ----------------
     @property
@@ -116,6 +119,7 @@ class Agent:
     def answer(self, user_text: str, on_delta=None) -> str:
         """执行一个用户请求（可能多轮工具调用），返回最终文本。"""
         self._usage = _new_usage(self.cfg.model)   # 每轮用户请求重置用量累计
+        self._last_stop = None
         self.history.append({"role": "user", "content": user_text})
         self._persist({"role": "user", "content": user_text})
         try:
@@ -144,12 +148,25 @@ class Agent:
             self._record_usage(out_tokens, time.monotonic() - t0)
             # 去伪：忽略空的 thinking 块
             blocks = [b for b in blocks if b.get("type") != "empty"]
-            assistant = {"role": "assistant", "content": blocks}
-            self.history.append(assistant)
-            self._persist(assistant)
 
-            tool_blocks = [b for b in blocks if b.get("type") == "tool_use"]
-            if tool_blocks and stop_reason in ("tool_use", "max_tokens", ""):
+            # M2：由 StopController 决定下一步（替代原 stop_reason 白名单）
+            decision = classify(stop_reason, blocks)
+            self._last_stop = decision
+            if decision.warn:
+                self._notify("notice", f"（协议提示：{decision.warn}，stop_reason={stop_reason}）")
+
+            # 追加 assistant；若上一条已是 assistant（仅 pause_turn 续推会出现）则**合并**，
+            # 避免制造连续两条同 role 消息
+            if self.history and self.history[-1].get("role") == "assistant":
+                self.history[-1]["content"] = list(self.history[-1].get("content") or []) + blocks
+                self._persist_merge(blocks)
+            else:
+                assistant = {"role": "assistant", "content": blocks}
+                self.history.append(assistant)
+                self._persist(assistant)
+
+            if decision.action == StopAction.CONTINUE_TOOLS:
+                tool_blocks = [b for b in blocks if b.get("type") == "tool_use"]
                 results = self._execute_tools(tool_blocks)
                 if not results:
                     # 防御：模型声明 tool_use 但没有可执行块 → 终止防死循环
@@ -159,10 +176,36 @@ class Agent:
                 self._persist(msg)
                 continue
 
-            # 无工具调用：返回最终回答
-            text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
-            return text.strip() or "（模型未返回文本内容）"
+            if decision.action == StopAction.REPAIR_TRUNCATION:
+                # 为本轮所有被截断的 tool_use 合成配对 tool_result，让模型重试
+                results = [make_truncation_result(b.get("id", ""), decision.user_message)
+                           for b in blocks if b.get("type") == "tool_use"]
+                if results:
+                    msg = {"role": "user", "content": results}
+                    self.history.append(msg)
+                    self._persist(msg)
+                    self._notify("notice", decision.user_message)
+                    continue
+                return decision.user_message or "（工具参数被截断，未能继续）"
+
+            if decision.action == StopAction.RESUME_SERVER_TOOL:
+                # pause_turn：原样回传 assistant，**不追加 user**，直接再请求
+                continue
+
+            if decision.action == StopAction.REFUSE:
+                return decision.user_message or "（模型拒绝继续）"
+
+            # FINALIZE / ABORT
+            text = text_of(blocks)
+            if decision.truncated and decision.user_message:
+                text = (text + "\n\n" + decision.user_message).strip()
+            return text or "（模型未返回文本内容）"
         return "（达到最大工具轮次，已停止）"
+
+    # ---------------- 事件通知（M2 termination surface） ----------------
+    def _notify(self, kind: str, message: str) -> None:
+        if self.on_event is not None and message:
+            self.on_event({"type": kind, "message": message})
 
     # ---------------- 分层记忆（M12） ----------------
     def _recall_for_context(self, limit: int = 5) -> str:
@@ -182,6 +225,15 @@ class Agent:
             return
         try:
             self.store.append(self.session_id, message)
+        except Exception:
+            pass
+
+    def _persist_merge(self, blocks: list) -> None:
+        """pause_turn 合并续推：追加一个「并入上一条 assistant」的块增量。"""
+        if self.store is None or not self.session_id:
+            return
+        try:
+            self.store.append(self.session_id, {"_merge": True, "content": blocks})
         except Exception:
             pass
 
