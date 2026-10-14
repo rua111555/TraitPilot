@@ -18,6 +18,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import sandbox as sandbox_mod
 from .permissions import PermissionModel
 from .skills import SkillRegistry
 from .validation import validate_args
@@ -86,7 +87,8 @@ class ToolSet:
     def __init__(self, registry: SkillRegistry, cwd: Path,
                  permission: str = "auto", verbose: bool = False,
                  confirm_handler=None, permission_model: PermissionModel | None = None,
-                 hooks=None, spill_dir=None, spill_threshold: int | None = None):
+                 hooks=None, spill_dir=None, spill_threshold: int | None = None,
+                 sandbox=None):
         self.registry = registry
         self.cwd = Path(cwd)
         self.permission = permission            # auto | ask
@@ -101,6 +103,8 @@ class ToolSet:
         # M7：结果落盘转存（默认关；开启后超长工具结果写盘并回可继续读取的引用）
         self.spill_dir = spill_dir
         self.spill_threshold = int(spill_threshold or MAX_OUTPUT)
+        # M9：Bash 执行后端（默认 HostBackend → 与改造前逐字节一致）
+        self.sandbox = sandbox or sandbox_mod.HostBackend()
         self._bg_tasks: dict[str, dict] = {}    # task_id -> {log, pid, cmd}
         self.max_tokens_warning_shown = False
 
@@ -251,11 +255,9 @@ class ToolSet:
             if args.get("background"):
                 return self._bash_background(command, str(args.get("description", "")))
             t0 = time.monotonic()
+            argv, kw = self.sandbox.fg(command, self.cwd, timeout)
             try:
-                proc = subprocess.run(
-                    command, shell=True, executable="/bin/bash",
-                    capture_output=True, text=True, timeout=timeout, cwd=str(self.cwd),
-                )
+                proc = subprocess.run(argv, capture_output=True, text=True, **kw)
             except subprocess.TimeoutExpired:
                 res = ToolResult(f"命令超时（>{timeout}s）：\n$ {command}", True)
                 res.meta = {"duration_ms": int((time.monotonic() - t0) * 1000), "timed_out": True}
@@ -336,13 +338,13 @@ class ToolSet:
         d.mkdir(parents=True, exist_ok=True)
         log = d / "output.log"
         pidf = d / "pid"
-        (d / "command.sh").write_text(command, encoding="utf-8")
-        # nohup + 写 PID，兼容 Bash(python后台) 场景
-        script = f'cd "{self.cwd}" && echo $$ > "{pidf}"\nexec bash -c {json.dumps(command)}\n'
-        subprocess.Popen(
-            [ "/bin/bash", "-c",
-              f'nohup /bin/bash "{d.joinpath("command.sh")}" > "{log}" 2>&1 &' ],
-        )
+        # M9：把真实启动脚本（含 cd + 写 pid）落到 command.sh —— 修复此前「command.sh 写的是
+        # 原始 command、script 从未被使用」导致后台不写 pid、TaskOutput.pid_alive 恒 None、
+        # 且不 cd 进 self.cwd 的既有缺陷。脚本由执行后端给出（HostBackend 与改造前语义一致）。
+        script, launch_argv = self.sandbox.bg(
+            command, self.cwd, task_id, pidf, log, d / "command.sh")
+        (d / "command.sh").write_text(script, encoding="utf-8")
+        subprocess.Popen(launch_argv, cwd=str(self.cwd))
         self._bg_tasks[task_id] = {"log": log, "pid": pidf, "cmd": command}
         res = ToolResult(
             f"已在后台启动（task_id={task_id}）。\n日志：{log}\n"
