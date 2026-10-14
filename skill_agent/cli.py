@@ -9,8 +9,10 @@ import time
 from pathlib import Path
 
 from .agent import Agent
-from .config import Config, default_session_dir
+from .config import Config, default_checkpoint_dir, default_session_dir
 from .permissions import PermissionModel
+from .session import attach_all, resume_into
+from .session_store import SessionStore
 from .skills import SkillRegistry
 from .tools import ToolSet
 
@@ -34,6 +36,16 @@ def _common_opts(*, with_cwd: bool = False) -> argparse.ArgumentParser:
     c.add_argument("--write-approval", action="store_true", default=None,
                    help="M8a：把 Write/Edit 纳入审批门")
     c.add_argument("--no-stream", action="store_true", help="关闭流式输出")
+    c.add_argument("--persist", action="store_true", default=None,
+                   help="M13：逐条消息落盘，支持 --resume/--continue 恢复")
+    c.add_argument("--resume", default=None, metavar="SID",
+                   help="M13：恢复指定会话 id 的上下文")
+    c.add_argument("--continue", dest="cont", action="store_true", default=None,
+                   help="M13：恢复最近一次会话")
+    c.add_argument("--summary-compact", action="store_true", default=None,
+                   help="M12：开启摘要式上下文压缩（替代丢弃旧消息）")
+    c.add_argument("--memory", action="store_true", default=None,
+                   help="M12：开启分层记忆（core + archival 检索）")
     c.add_argument("--verbose", action="store_true")
     return c
 
@@ -65,6 +77,10 @@ def main(argv=None) -> int:
         cfg.restrict_paths = True
     if getattr(args, "write_approval", None):
         cfg.write_approval = True
+    if getattr(args, "summary_compact", None):
+        cfg.summary_compaction = True
+    if getattr(args, "memory", None):
+        cfg.memory_enabled = True
     registry = SkillRegistry(cfg.project)
     pmodel = PermissionModel.from_config(cfg, cfg.cwd)
     tools = ToolSet(registry, cfg.cwd, cfg.permission, verbose=cfg.verbose,
@@ -77,6 +93,32 @@ def main(argv=None) -> int:
         return _list(registry, args)
 
     agent = Agent(cfg, registry, tools)
+
+    # ---- M13：解析 resume / continue ----
+    persist = bool(getattr(args, "persist", None)) or bool(getattr(args, "resume", None)) \
+        or bool(getattr(args, "cont", None))
+    if persist:
+        cfg.persist = True
+    resume_sid = None
+    if getattr(args, "resume", None):
+        resume_sid = args.resume
+    elif getattr(args, "cont", None):
+        store0 = SessionStore(default_checkpoint_dir())
+        sessions = store0.sessions()
+        if not sessions:
+            print("[resume] 没有可恢复的会话（先加 --persist 跑一次）。", file=sys.stderr)
+        else:
+            resume_sid = sessions[0]["id"]
+
+    attach_all(agent, cfg, session_id=resume_sid)
+    if resume_sid and agent.store is not None and agent.store.exists(resume_sid):
+        info = resume_into(agent, agent.store, resume_sid)
+        print(f"[resume] 已恢复会话 {resume_sid}：{info['restored']} 条消息"
+              f"（丢弃未完成轮次 {info['discarded']}）", file=sys.stderr)
+    if agent.store is not None:
+        print(f"[persist] 会话 id={agent.session_id}（继续：--resume {agent.session_id}）",
+              file=sys.stderr)
+
     if args.prompt:
         return _oneshot(agent, cfg, args.prompt)
     return _repl(agent, cfg, registry, tools)

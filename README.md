@@ -77,6 +77,28 @@ REPL 内命令：`/help` `/clear` `/skills` `/active` `/model X` `/permission as
 | M1a 用量采集 | 累计 token/延迟，emit `usage` 事件，`/cost` + `GET /api/usage` | 恒开（纯被动） |
 | M3a 进展信号 | `ToolResult.meta` 填充 exit_code/size/mtime/pid_alive 等（只记不判） | 恒开 |
 | M8a 权限模型 | allow/deny/ask 规则表、工作区路径边界、写审批 | 默认关，`--restrict-paths`/`--write-approval` 或 `SKILL_AGENT_RESTRICT_PATHS`/`SKILL_AGENT_WRITE_APPROVAL` 开启 |
+| M12 摘要压缩 | 命中阈值时保留最近 K 条、更早区间压成结构化前情摘要（保留阶段号/参数/路径/pid/审批结论） | 默认关，`--summary-compact` 或 `SKILL_AGENT_SUMMARY_COMPACTION=1` |
+| M12 分层记忆 | core.md（稳定前缀）+ archival（SQLite FTS5 检索，注入尾部） | 默认关，`--memory` 或 `SKILL_AGENT_MEMORY=1` |
+| M13 会话持久化 | 逐条消息落盘（append-only jsonl），恢复时修复悬挂 tool_use 并截到安全边界 | CLI `--persist`；Web 默认开（`SKILL_AGENT_PERSIST=0` 关）|
+
+### 会话恢复（M13）
+
+```bash
+python3 -m skill_agent chat --persist                 # 落盘，开始时会打印会话 id
+python3 -m skill_agent chat --continue                # 恢复最近一次会话
+python3 -m skill_agent chat --resume 20261014T101530-a1b2   # 按 id 恢复
+```
+
+落盘位置 `~/.skill-agent/contexts/<sid>.jsonl`。恢复会做校验：若崩溃发生在
+「assistant 已落盘、tool_result 未落盘」之间，会剔除悬挂的 tool_use 并回退到最后一个
+「可安全续跑」的 assistant 边界（避免 Messages API 因配对不符 400）；崩溃导致的未完成
+轮次会被丢弃并在恢复时提示条数。
+
+### 记忆（M12）
+
+core.md 位于 `<project>/.skill-agent/memory/core.md`，可手工编辑，会被注入 system prompt
+的稳定前缀（利于 prompt caching）；archival 事实存于同目录 `archival.db`，按最新提问检索
+top-k 注入消息尾部。
 
 M8a 规则表可通过 `Config.permission_rules` 传入，例如 `[{"tool":"Bash","match":"rm\\s+-rf","action":"deny"}]`（`match` 支持正则或 glob，`action` ∈ allow/deny/ask，按序首次命中）。
 

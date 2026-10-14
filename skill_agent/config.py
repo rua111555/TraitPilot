@@ -44,6 +44,13 @@ class Config:
     extra_roots: list | None = None        # 系统必要路径白名单（如 ~/.claude）
     write_approval: bool = False           # 把 Write/Edit 纳入审批
     permission_rules: list | None = None   # [{tool, match, action}]
+    # M12 上下文压缩 / 分层记忆（默认关）
+    summary_compaction: bool = False       # 摘要式压缩（需注入 summary 模型调用）
+    memory_enabled: bool = False           # core + archival 记忆
+    summary_model: str | None = None       # 用于生成摘要的模型（默认同主模型）
+    # M13 会话持久化（默认关）
+    persist: bool = False                  # 逐条消息落盘 + 支持 resume
+    session_id: str | None = None
 
     @classmethod
     def load(cls, *, model: str | None = None, project: Path | None = None,
@@ -84,6 +91,11 @@ class Config:
             verbose=verbose,
             restrict_paths=_env_bool("SKILL_AGENT_RESTRICT_PATHS"),
             write_approval=_env_bool("SKILL_AGENT_WRITE_APPROVAL"),
+            summary_compaction=_env_bool("SKILL_AGENT_SUMMARY_COMPACTION"),
+            memory_enabled=_env_bool("SKILL_AGENT_MEMORY"),
+            summary_model=os.environ.get("SKILL_AGENT_SUMMARY_MODEL") or None,
+            persist=_env_bool("SKILL_AGENT_PERSIST"),
+            session_id=os.environ.get("SKILL_AGENT_SESSION_ID") or None,
         )
 
 
@@ -108,3 +120,15 @@ def default_session_dir() -> Path:
     d = Path.home() / ".skill-agent" / "sessions"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def default_checkpoint_dir() -> Path:
+    """M13：会话 checkpoint 存储目录。"""
+    d = Path.home() / ".skill-agent" / "contexts"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def default_memory_dir(project: Path) -> Path:
+    """M12：项目级记忆目录（core.md + archival.db）。"""
+    return Path(project) / ".skill-agent" / "memory"

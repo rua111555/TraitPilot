@@ -14,15 +14,18 @@ from .client import AnthropicClient
 from .config import Config
 from .skills import SkillRegistry
 from .tools import ToolSet
+from .tokens import messages_tokens
 
 MAX_TURNS = 60
 COMPACT_MIN_MESSAGES = 40
 COMPACT_MAX_CHARS = 600_000
+COMPACT_KEEP_RECENT = 12        # M12：摘要式压缩时原样保留的最近消息条数
 MAX_RESULT_CHARS = 100_000
 
 
-def _system_prompt(cfg: Config, listing: str) -> str:
-    return f"""你是 SkillAgent —— 一个自主运行的编程 / 生信分析智能体，运行在用户的 Linux 机器上。
+def _system_prompt(cfg: Config, listing: str,
+                   core_memory: str = "", recall: str = "") -> str:
+    base = f"""你是 SkillAgent —— 一个自主运行的编程 / 生信分析智能体，运行在用户的 Linux 机器上。
 你通过 Anthropic Messages API 的 tool_use 循环工作，并像 Claude Code 那样按需加载
 `.claude/skills` 下的技能指令来完成任务。模型：{cfg.model}；工作目录：{cfg.cwd}。
 
@@ -50,6 +53,12 @@ def _system_prompt(cfg: Config, listing: str) -> str:
 ## 输出
 所有回答用 GitHub Flavored Markdown；要点化、精简；引用文件用 `路径:行号` 形式。
 """
+    # M12：core memory 为稳定前缀（利于 prompt caching）；recall 命中放在尾部（动态）
+    if core_memory:
+        base += f"\n## 长期记忆（core，可经 Memory 工具编辑）\n{core_memory}\n"
+    if recall:
+        base += f"\n{recall}\n"
+    return base
 
 
 class Agent:
@@ -69,6 +78,14 @@ class Agent:
         self.cancel_event = None
         # M1a：本轮运行的 local 用量累加器（绝不写入共享 Config，避免多 Web 会话串扰）
         self._usage: dict = _new_usage()
+        # M12：上下文压缩 / 分层记忆（默认关闭 → 行为与改造前一致）
+        self.summarize = None            # 由入口注入：callable(prompt) -> str | None
+        self.summary_compressor = None   # SummaryCompressor 实例
+        self.memory = None               # MemoryStore 实例
+        self._prev_summary = ""          # 滚动摘要
+        # M13：会话持久化（默认 None → 纯内存，行为不变）
+        self.store = None
+        self.session_id = None
 
     # ---------------- 对外 ----------------
     @property
@@ -89,10 +106,18 @@ class Agent:
         self._compacted = False
         self._usage = _new_usage()
 
+    def restore(self, messages: list[dict]) -> int:
+        """M13：把已校验的历史灌回内存（供 resume）。返回恢复的消息条数。"""
+        self.history = [m for m in messages if isinstance(m, dict) and m.get("role")]
+        self._compacted = False
+        self._active_skills.clear()
+        return len(self.history)
+
     def answer(self, user_text: str, on_delta=None) -> str:
         """执行一个用户请求（可能多轮工具调用），返回最终文本。"""
         self._usage = _new_usage(self.cfg.model)   # 每轮用户请求重置用量累计
         self.history.append({"role": "user", "content": user_text})
+        self._persist({"role": "user", "content": user_text})
         try:
             return self._run(on_delta=on_delta)
         finally:
@@ -104,9 +129,12 @@ class Agent:
                 return "（任务已取消）"
             self._maybe_compact()
             tools = self.tools.schemas_for(self._allowed_set())
-            system = _system_prompt(self.cfg, self.registry.listing())
+            # M12：core memory 作稳定前缀；recall 命中放尾部（不破坏 prompt caching）
+            core = self.memory.get_core() if self.memory else ""
+            recall = self._recall_for_context()
+            system = _system_prompt(self.cfg, self.registry.listing(), core, recall)
             if self._compacted:
-                system += "\n\n（注：较早的对话内容已因长度被安全压缩略去，请基于当前可见内容继续。）"
+                system += "\n\n（注：较早的对话内容已因长度被压缩为前情摘要，请基于当前可见内容继续。）"
 
             t0 = time.monotonic()
             blocks, stop_reason, out_tokens = self.client.create(
@@ -118,6 +146,7 @@ class Agent:
             blocks = [b for b in blocks if b.get("type") != "empty"]
             assistant = {"role": "assistant", "content": blocks}
             self.history.append(assistant)
+            self._persist(assistant)
 
             tool_blocks = [b for b in blocks if b.get("type") == "tool_use"]
             if tool_blocks and stop_reason in ("tool_use", "max_tokens", ""):
@@ -125,13 +154,36 @@ class Agent:
                 if not results:
                     # 防御：模型声明 tool_use 但没有可执行块 → 终止防死循环
                     break
-                self.history.append({"role": "user", "content": results})
+                msg = {"role": "user", "content": results}
+                self.history.append(msg)
+                self._persist(msg)
                 continue
 
             # 无工具调用：返回最终回答
             text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
             return text.strip() or "（模型未返回文本内容）"
         return "（达到最大工具轮次，已停止）"
+
+    # ---------------- 分层记忆（M12） ----------------
+    def _recall_for_context(self, limit: int = 5) -> str:
+        """按最新 user 文本检索 archival 记忆，渲染为可注入尾部的块。"""
+        if not self.memory:
+            return ""
+        query = ""
+        for m in reversed(self.history):
+            if m.get("role") == "user" and isinstance(m.get("content"), str):
+                query = m["content"]
+                break
+        return self.memory.render_context(query, limit) if query else ""
+
+    def _persist(self, message: dict) -> None:
+        """M13：把每条消息追加落盘（store 为 None 时为空操作）。"""
+        if self.store is None or not self.session_id:
+            return
+        try:
+            self.store.append(self.session_id, message)
+        except Exception:
+            pass
 
     # ---------------- 用量采集（M1a） ----------------
     def _record_usage(self, out_tokens: int, latency_s: float) -> None:
@@ -203,14 +255,74 @@ class Agent:
         if not h:
             return
         budget_hit = sum(_msg_bytes(m) for m in h) > COMPACT_MAX_CHARS
-        if len(h) > COMPACT_MIN_MESSAGES or budget_hit:
-            cut = self._safe_cut(len(h) - COMPACT_MIN_MESSAGES) if len(h) > COMPACT_MIN_MESSAGES else 0
+        over_msgs = len(h) > COMPACT_MIN_MESSAGES
+        # M12：可选摘要式压缩（默认关；未注入 summarize/compressor 时等价于旧行为）
+        if (over_msgs or budget_hit) and self.summary_compressor is not None \
+                and self.summarize is not None:
+            if self._summary_compact():
+                return
+        if over_msgs or budget_hit:
+            cut = self._safe_cut(len(h) - COMPACT_MIN_MESSAGES) if over_msgs else 0
             if budget_hit and cut > 0:
                 # 还不够就多裁一段
                 cut = self._safe_cut(cut)
             if cut > 0:
                 self.history = h[cut:]
                 self._compacted = True
+
+    def _summary_compact(self) -> bool:
+        """摘要式压缩：保留最近 K 条，把更早区间压成一条结构化摘要。成功返回 True。"""
+        h = self.history
+        target = len(h) - COMPACT_KEEP_RECENT
+        if target <= 0:
+            return False
+        cut = self._safe_cut(target)
+        if cut <= 0:
+            return False
+        early, recent = h[:cut], h[cut:]
+        # 必须落在合法边界：cut 处应为 user，且前一条不是带 tool_use 的 assistant
+        if recent and recent[0].get("role") == "user" and not _has_tool_use(early[-1]):
+            prompt = self.summary_compressor.render_prompt(early, self._prev_summary)
+            try:
+                summary = self.summarize(prompt)
+            except Exception:
+                summary = None
+            if summary and summary.strip():
+                self._prev_summary = summary.strip()
+                # 把摘要并入最近窗口的首条 user 消息，避免制造连续两条 user
+                recent = list(recent)
+                recent[0] = self.summary_compressor.prepend_to_message(
+                    recent[0], self.summary_compressor.prefix_text(summary))
+                self.history = recent
+                self._compacted = True
+                self._prev_summary = summary.strip()
+                self._persist_prefix(recent[0])
+                self._remember_phase_facts(summary)
+                return True
+        return False   # 任何不满足 → 回退旧逻辑
+
+    def _persist_prefix(self, message: dict) -> None:
+        """把压缩后的边界写进持久化日志（供 resume 时不重复压缩）。"""
+        if self.store is None or not self.session_id:
+            return
+        try:
+            self.store.append(self.session_id, {"_prefix": True, "message": message})
+        except Exception:
+            pass
+
+    def _remember_phase_facts(self, summary: str) -> None:
+        """把摘要中携带的关键事实（路径/pid/.done 等）抽进 archival 记忆。"""
+        if not self.memory:
+            return
+        import re as _re
+        for pat, kind in (
+            (r"(/[\w./\-]+\.(?:done|pid))", "marker"),
+            (r"\b(task_id|pid)\s*[=:]\s*\S+", "task"),
+            (r"(/[\w./\-]+(?:\.vcf\.gz|\.bed|\.bim|\.fam|\.grm|\.log|\.csv))", "path"),
+        ):
+            for m in _re.findall(pat, summary)[:20]:
+                self.memory.remember(m if isinstance(m, str) else str(m),
+                                     kind=kind, source="summary")
 
     def _safe_cut(self, start: int) -> int:
         """start 起向后找到第一个「合法消息边界」：role=user，且前一条 assistant 无 tool_use。"""

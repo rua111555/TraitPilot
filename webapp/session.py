@@ -6,6 +6,8 @@ import threading
 import time
 import uuid
 
+from skill_agent.config import default_checkpoint_dir
+
 
 class Hooks:
     """从 agent 线程回调到 WebSession 的桥（文本增量 / 工具事件 / 命令确认）。"""
@@ -103,6 +105,8 @@ def build_session(session_id: str, cfg, registry) -> WebSession:
     from skill_agent import tools as tools_mod
     from skill_agent.agent import Agent
     from skill_agent.permissions import PermissionModel
+    from skill_agent.session import attach_all, resume_into
+    from skill_agent.session_store import SessionStore, new_session_id
 
     session = WebSession(session_id, cfg, registry, tools=None, hooks=None)
     hooks = Hooks(session)
@@ -114,5 +118,29 @@ def build_session(session_id: str, cfg, registry) -> WebSession:
     agent = Agent(cfg, registry, session.tools)
     agent.on_event = hooks.emit
     agent.cancel_event = session.cancel_event
+
+    # M13：网页默认持久化，支持断线后按 sid 恢复（可用 SKILL_AGENT_PERSIST=0 关闭）
+    import os as _os
+    if _os.environ.get("SKILL_AGENT_PERSIST", "1") != "0":
+        store = SessionStore(default_checkpoint_dir())
+        if not store.exists(session_id):
+            store.append_meta(session_id, {"model": cfg.model, "permission": cfg.permission,
+                                           "created": time.strftime("%Y-%m-%d %H:%M:%S")})
+        else:
+            resume_into(agent, store, session_id)   # 命中磁盘 id → 恢复
+        agent.store = store
+        agent.session_id = session_id
+
+    # M12：按配置装配记忆/压缩
+    if cfg.memory_enabled:
+        from skill_agent.compaction import SummaryCompressor
+        from skill_agent.config import default_memory_dir
+        from skill_agent.memory import MemoryStore
+        agent.memory = MemoryStore(default_memory_dir(cfg.project))
+        if cfg.summary_compaction:
+            agent.summary_compressor = SummaryCompressor()
+            from skill_agent.session import _make_summarizer
+            agent.summarize = _make_summarizer(cfg)
+
     session.agent = agent
     return session
