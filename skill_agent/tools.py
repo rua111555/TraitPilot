@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .skills import SkillRegistry
+from .validation import validate_args
 
 MAX_OUTPUT = 30_000
 MAX_LINES = 2000
@@ -27,6 +28,9 @@ MAX_LINES = 2000
 class ToolResult:
     content: str
     is_error: bool = False
+    # M3a：进展信号（只记不判，供后续 LoopGuard 使用；默认空，不影响既有位置调用）。
+    # 约定字段：duration_ms / exit_code / path / size / mtime / lines / pid_alive ...
+    meta: dict = field(default_factory=dict)
 
 
 # 危险命令告警（不拦截，仅提示；ask 模式下会转化为确认）
@@ -93,6 +97,10 @@ class ToolSet:
         tool = self._tools.get(name)
         if tool is None:
             return ToolResult(f"未知工具 {name}", True)
+        # M6：executor 前按 schema 做输入校验，畸形参数直接返回结构化报错让模型自纠
+        verr = validate_args(tool.input_schema, args)
+        if verr:
+            return ToolResult(verr, True)
         # 权限门：仅对 Bash 做交互确认/危险告警
         if name == "Bash":
             reason = self._check_danger(args.get("command", ""))
