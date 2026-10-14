@@ -60,6 +60,10 @@ class Config:
     loop_guard: bool = False
     loop_warn: int = 3                     # 连续无进展达此次数 → 注入纠偏提示
     loop_halt: int = 6                     # 连续无进展达此次数 → 熔断
+    # M4 可插拔工具 / M10 钩子（默认关）
+    plugin_dirs: list | None = None        # 扩展工具规格目录（*.json）
+    plugin_allow: list | None = None       # 只加载这些插件工具名（None=全部）
+    hooks_enabled: bool = False            # 预留：外部钩子由调用方注入 HookManager
 
     @classmethod
     def load(cls, *, model: str | None = None, project: Path | None = None,
@@ -109,6 +113,8 @@ class Config:
             max_output_tokens=_env_int("SKILL_AGENT_MAX_OUTPUT_TOKENS"),
             max_seconds=_env_int("SKILL_AGENT_MAX_SECONDS"),
             loop_guard=_env_bool("SKILL_AGENT_LOOP_GUARD"),
+            plugin_dirs=_env_list("SKILL_AGENT_PLUGIN_DIRS"),
+            hooks_enabled=_env_bool("SKILL_AGENT_HOOKS"),
         )
 
 
@@ -127,6 +133,14 @@ def _env_int(name: str, default=None):
         return int(v)
     except ValueError:
         return default
+
+
+def _env_list(name: str, sep: str = ":") -> list | None:
+    """以分隔符拆分的路径列表（默认用 ':'，兼容 Linux PATH 风格）。"""
+    v = os.environ.get(name)
+    if not v or not v.strip():
+        return None
+    return [p for p in v.split(sep) if p.strip()] or None
 
 
 def _auto_project(start: Path) -> Path:

@@ -112,10 +112,15 @@ def build_session(session_id: str, cfg, registry) -> WebSession:
     session = WebSession(session_id, cfg, registry, tools=None, hooks=None)
     hooks = Hooks(session)
     session.hooks = hooks
+    trace_hooks = None
+    if cfg.hooks_enabled:
+        from skill_agent.observability import build_trace_hooks
+        trace_hooks = build_trace_hooks(session_id)
     session.tools = tools_mod.ToolSet(
         registry, cfg.cwd, permission=cfg.permission,
         verbose=cfg.verbose, confirm_handler=hooks.confirm,
-        permission_model=PermissionModel.from_config(cfg, cfg.cwd))
+        permission_model=PermissionModel.from_config(cfg, cfg.cwd),
+        hooks=trace_hooks)
     agent = Agent(cfg, registry, session.tools)
     agent.on_event = hooks.emit
     agent.cancel_event = session.cancel_event

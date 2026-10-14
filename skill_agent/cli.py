@@ -55,6 +55,10 @@ def _common_opts(*, with_cwd: bool = False) -> argparse.ArgumentParser:
                    help="M1b：单轮累计输出 token 上限，超限熔断")
     c.add_argument("--loop-guard", action="store_true", default=None,
                    help="M3：启用死循环/无进展熔断（默认关）")
+    c.add_argument("--plugin-dir", action="append", default=None, metavar="DIR",
+                   help="M4：加载扩展工具规格目录（*.json，可重复）；默认禁用以防扩大执行面")
+    c.add_argument("--trace", action="store_true", default=None,
+                   help="M10：把 Pre/Post 工具调用与用量落盘到 ~/.skill-agent/traces/")
     c.add_argument("--verbose", action="store_true")
     return c
 
@@ -97,10 +101,30 @@ def main(argv=None) -> int:
         cfg.summary_compaction = True
     if getattr(args, "memory", None):
         cfg.memory_enabled = True
+    if getattr(args, "plugin_dir", None):
+        cfg.plugin_dirs = list(args.plugin_dir)
     registry = SkillRegistry(cfg.project)
     pmodel = PermissionModel.from_config(cfg, cfg.cwd)
+
+    # ---- M10：可选 trace 钩子 ----
+    hooks = None
+    if getattr(args, "trace", None):
+        from .observability import build_trace_hooks
+        from .session_store import new_session_id
+        hooks = build_trace_hooks(getattr(cfg, "session_id", None) or new_session_id())
+
     tools = ToolSet(registry, cfg.cwd, cfg.permission, verbose=cfg.verbose,
-                    permission_model=pmodel)
+                    permission_model=pmodel, hooks=hooks)
+
+    # ---- M4：可选插件工具目录（默认不加载） ----
+    if cfg.plugin_dirs:
+        from .registry import load_plugin_dir
+        loaded = []
+        for d in cfg.plugin_dirs:
+            loaded += load_plugin_dir(tools.registry_tools, d, allow=cfg.plugin_allow)
+        if loaded:
+            print(f"[插件] 已加载扩展工具：{', '.join(loaded)}", file=sys.stderr)
+
     if getattr(pmodel, "enabled", False):
         print(f"[权限] 结构化策略已启用：路径边界={pmodel.restrict_paths} "
               f"写审批={pmodel.write_approval} 规则={len(pmodel.rules)}", file=sys.stderr)

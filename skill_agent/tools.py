@@ -69,7 +69,8 @@ class ToolSet:
 
     def __init__(self, registry: SkillRegistry, cwd: Path,
                  permission: str = "auto", verbose: bool = False,
-                 confirm_handler=None, permission_model: PermissionModel | None = None):
+                 confirm_handler=None, permission_model: PermissionModel | None = None,
+                 hooks=None):
         self.registry = registry
         self.cwd = Path(cwd)
         self.permission = permission            # auto | ask
@@ -79,32 +80,46 @@ class ToolSet:
         # M8a：结构化权限模型（默认 disabled —— restrict_paths/write_approval/rules 全关，
         # 未显式开启时行为与改造前完全一致）
         self.permission_model = permission_model or PermissionModel()
+        # M10：工具钩子（默认 None → 空链，行为不变）
+        self.hooks = hooks
         self._bg_tasks: dict[str, dict] = {}    # task_id -> {log, pid, cmd}
         self.max_tokens_warning_shown = False
 
-        self._tools: dict[str, Tool] = {}
+        # M4：可插拔工具注册表（内置工具经 register 登记，行为与硬编码字面量一致）
+        from .registry import ToolRegistry
+        self.registry_tools = ToolRegistry()
         for t in [self._tool_skill(), self._tool_bash(), self._tool_read(),
                   self._tool_write(), self._tool_edit(), self._tool_glob(),
                   self._tool_grep(), self._tool_taskoutput()]:
-            self._tools[t.name] = t
+            self.registry_tools.register(t)
+
+    # 兼容旧属性名（此前直接访问 ToolSet._tools）
+    @property
+    def _tools(self) -> dict:
+        return self.registry_tools._tools
+
+    # M4：运行时挂载/卸载工具（供插件目录与后续 MCP 适配层复用）
+    def register_tool(self, tool, source: str = "plugin") -> None:
+        self.registry_tools.register(tool, source=source)
 
     # ---------------- schema 对外 ----------------
     def schemas_for(self, allowed: set[str] | None = None) -> list[dict]:
         """active skill 的 allowed-tools 白名单没有命中任何本套件工具时视为不限制。"""
-        if allowed:
-            names = {n for n in allowed if n in self._tools}
-            names |= {"Skill", "TaskOutput"}          # 保底可见
-            return [t.api_schema for n, t in self._tools.items() if n in names]
-        return [t.api_schema for t in self._tools.values()]
+        return self.registry_tools.schemas(allowed)
 
     def execute(self, name: str, args: dict) -> ToolResult:
-        tool = self._tools.get(name)
+        tool = self.registry_tools.get(name)
         if tool is None:
             return ToolResult(f"未知工具 {name}", True)
         # M6：executor 前按 schema 做输入校验，畸形参数直接返回结构化报错让模型自纠
         verr = validate_args(tool.input_schema, args)
         if verr:
             return ToolResult(verr, True)
+        # M10：PreToolUse 钩子（在权限门之前——钩子属策略扩展，权限门是内建安全兜底）
+        if self.hooks is not None and not self.hooks.empty:
+            blocked = self.hooks.pre_tool_use(name, args)
+            if blocked is not None:
+                return blocked if isinstance(blocked, ToolResult) else ToolResult(str(blocked), True)
         # M8a：结构化 deny 规则（默认无规则→不生效）
         deny = self.permission_model.is_denied(name, args)
         if deny:
@@ -132,11 +147,17 @@ class ToolSet:
                     if ans not in ("y", "yes"):
                         return ToolResult("用户拒绝执行该操作。", True)
         try:
-            return tool.executor(args)
+            result = tool.executor(args)
         except ToolError as e:
-            return ToolResult(f"[ToolError] {e}", True)
+            result = ToolResult(f"[ToolError] {e}", True)
         except Exception as e:  # noqa: BLE001
-            return ToolResult(f"[异常] {name} 执行失败：{type(e).__name__}: {e}", True)
+            result = ToolResult(f"[异常] {name} 执行失败：{type(e).__name__}: {e}", True)
+        # M10：PostToolUse 钩子（可脱敏/改写结果）
+        if self.hooks is not None and not self.hooks.empty and result is not None:
+            replaced = self.hooks.post_tool_use(name, args, result)
+            if isinstance(replaced, ToolResult):
+                result = replaced
+        return result
 
     # ---------------- executor 实现 ----------------
     def _tool_skill(self) -> Tool:
