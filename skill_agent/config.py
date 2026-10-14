@@ -38,6 +38,12 @@ class Config:
     stream: bool = True
     verbose: bool = False
     session_log: Path | None = None
+    # M8a 结构化权限（默认全部关闭 → 行为与改造前一致）
+    restrict_paths: bool = False           # 工作区路径边界
+    permission_roots: list | None = None   # 额外允许根
+    extra_roots: list | None = None        # 系统必要路径白名单（如 ~/.claude）
+    write_approval: bool = False           # 把 Write/Edit 纳入审批
+    permission_rules: list | None = None   # [{tool, match, action}]
 
     @classmethod
     def load(cls, *, model: str | None = None, project: Path | None = None,
@@ -76,7 +82,16 @@ class Config:
             permission=permission or os.environ.get("SKILL_AGENT_PERMISSION", "auto"),
             stream=True if stream is None else stream,
             verbose=verbose,
+            restrict_paths=_env_bool("SKILL_AGENT_RESTRICT_PATHS"),
+            write_approval=_env_bool("SKILL_AGENT_WRITE_APPROVAL"),
         )
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    return v.strip().lower() in ("1", "true", "yes", "on")
 
 
 def _auto_project(start: Path) -> Path:

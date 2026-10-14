@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .agent import Agent
 from .config import Config, default_session_dir
+from .permissions import PermissionModel
 from .skills import SkillRegistry
 from .tools import ToolSet
 
@@ -28,6 +29,10 @@ def _common_opts(*, with_cwd: bool = False) -> argparse.ArgumentParser:
     c.add_argument("--max-tokens", type=int, default=None, help="单次响应上限 token")
     c.add_argument("--permission", choices=["auto", "ask"], default=None,
                    help="auto=危险命令仅告警；ask=每个 Bash 都询问（交互模式）")
+    c.add_argument("--restrict-paths", action="store_true", default=None,
+                   help="M8a：启用工作区路径边界（越界拒绝）")
+    c.add_argument("--write-approval", action="store_true", default=None,
+                   help="M8a：把 Write/Edit 纳入审批门")
     c.add_argument("--no-stream", action="store_true", help="关闭流式输出")
     c.add_argument("--verbose", action="store_true")
     return c
@@ -56,8 +61,17 @@ def main(argv=None) -> int:
         permission=args.permission, max_tokens=args.max_tokens,
         stream=not args.no_stream, verbose=args.verbose,
     )
+    if getattr(args, "restrict_paths", None):
+        cfg.restrict_paths = True
+    if getattr(args, "write_approval", None):
+        cfg.write_approval = True
     registry = SkillRegistry(cfg.project)
-    tools = ToolSet(registry, cfg.cwd, cfg.permission, verbose=cfg.verbose)
+    pmodel = PermissionModel.from_config(cfg, cfg.cwd)
+    tools = ToolSet(registry, cfg.cwd, cfg.permission, verbose=cfg.verbose,
+                    permission_model=pmodel)
+    if getattr(pmodel, "enabled", False):
+        print(f"[权限] 结构化策略已启用：路径边界={pmodel.restrict_paths} "
+              f"写审批={pmodel.write_approval} 规则={len(pmodel.rules)}", file=sys.stderr)
 
     if args.command == "list":
         return _list(registry, args)

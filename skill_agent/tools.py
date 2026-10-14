@@ -17,6 +17,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .permissions import PermissionModel
 from .skills import SkillRegistry
 from .validation import validate_args
 
@@ -68,13 +69,16 @@ class ToolSet:
 
     def __init__(self, registry: SkillRegistry, cwd: Path,
                  permission: str = "auto", verbose: bool = False,
-                 confirm_handler=None):
+                 confirm_handler=None, permission_model: PermissionModel | None = None):
         self.registry = registry
         self.cwd = Path(cwd)
         self.permission = permission            # auto | ask
         self.verbose = verbose
         # 网页模式：由外部桥接确认（CLI 传 None 走原 input() 逻辑）
         self.confirm_handler = confirm_handler
+        # M8a：结构化权限模型（默认 disabled —— restrict_paths/write_approval/rules 全关，
+        # 未显式开启时行为与改造前完全一致）
+        self.permission_model = permission_model or PermissionModel()
         self._bg_tasks: dict[str, dict] = {}    # task_id -> {log, pid, cmd}
         self.max_tokens_warning_shown = False
 
@@ -101,26 +105,32 @@ class ToolSet:
         verr = validate_args(tool.input_schema, args)
         if verr:
             return ToolResult(verr, True)
-        # 权限门：仅对 Bash 做交互确认/危险告警
-        if name == "Bash":
-            reason = self._check_danger(args.get("command", ""))
-            need_confirm = (self.permission == "ask") or bool(reason)
-            if need_confirm:
-                if self.confirm_handler is not None:
-                    # 网页模式：交给前端弹窗确认
-                    ok = self.confirm_handler(args.get("command", ""), reason or "ask-all")
-                    if not ok:
-                        return ToolResult("用户拒绝执行该命令。", True)
-                else:
-                    # CLI 模式：危险命令告警；ask 模式逐条询问
-                    if reason:
-                        print(f"\n[权限] 注意：命令可能危险 → {reason}", file=sys.stderr, flush=True)
-                    if self.permission == "ask":
-                        if not sys.stdin.isatty():
-                            return ToolResult("交互确认不可用（无 TTY），命令已拒绝——请用 --permission auto 或进入交互模式。", True)
-                        ans = input(f"[权限] 允许执行? [y/N]  {args.get('command','')[:120]}... \n> ").strip().lower()
-                        if ans not in ("y", "yes"):
-                            return ToolResult("用户拒绝执行该命令。", True)
+        # M8a：结构化 deny 规则（默认无规则→不生效）
+        deny = self.permission_model.is_denied(name, args)
+        if deny:
+            return ToolResult(f"命令被权限策略拒绝：{deny}", True)
+        # 权限门：危险命令告警 + 交互确认（Bash 默认；写操作需显式开启）
+        reason = self._check_danger(args.get("command", "")) if name == "Bash" else ""
+        p_confirm, p_reason = self.permission_model.needs_confirm(name, args)
+        need_confirm = (self.permission == "ask" and name == "Bash") or bool(reason) or p_confirm
+        if need_confirm:
+            detail = reason or p_reason
+            preview = self.permission_model.preview(name, args)
+            if self.confirm_handler is not None:
+                # 网页模式：交给前端弹窗确认
+                ok = self.confirm_handler(preview, detail or "ask-all")
+                if not ok:
+                    return ToolResult("用户拒绝执行该操作。", True)
+            else:
+                # CLI 模式：危险命令告警；ask 模式逐条询问
+                if detail:
+                    print(f"\n[权限] {name} 需确认 → {detail}", file=sys.stderr, flush=True)
+                if self.permission == "ask" or p_confirm:
+                    if not sys.stdin.isatty():
+                        return ToolResult("交互确认不可用（无 TTY），操作已拒绝——请用 --permission auto 或进入交互模式。", True)
+                    ans = input(f"[权限] 允许执行? [y/N]  {name}: {preview[:120]}\n> ").strip().lower()
+                    if ans not in ("y", "yes"):
+                        return ToolResult("用户拒绝执行该操作。", True)
         try:
             return tool.executor(args)
         except ToolError as e:
@@ -472,6 +482,10 @@ class ToolSet:
         if not p.is_absolute():
             p = self.cwd / p
         p = p.resolve()
+        # M8a：工作区路径边界（默认关闭；开启时越界抛 ToolError，被 execute 捕获为可见报错）
+        reason = self.permission_model.check_path(p)
+        if reason:
+            raise ToolError(reason)
         return p
 
     def summarize_tasks(self) -> str:

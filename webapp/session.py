@@ -102,13 +102,15 @@ def build_session(session_id: str, cfg, registry) -> WebSession:
     """构建一个带 hooks 的会话（tools/agent 绑定到本会话）。"""
     from skill_agent import tools as tools_mod
     from skill_agent.agent import Agent
+    from skill_agent.permissions import PermissionModel
 
     session = WebSession(session_id, cfg, registry, tools=None, hooks=None)
     hooks = Hooks(session)
     session.hooks = hooks
     session.tools = tools_mod.ToolSet(
         registry, cfg.cwd, permission=cfg.permission,
-        verbose=cfg.verbose, confirm_handler=hooks.confirm)
+        verbose=cfg.verbose, confirm_handler=hooks.confirm,
+        permission_model=PermissionModel.from_config(cfg, cfg.cwd))
     agent = Agent(cfg, registry, session.tools)
     agent.on_event = hooks.emit
     agent.cancel_event = session.cancel_event
