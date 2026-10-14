@@ -1,0 +1,4 @@
+# Skill-Agent 依赖（本机 anaconda3 base / Agent 环境均已预装）
+requests>=2.31
+PyYAML>=6.0
+flask>=3.0          # 仅 Web 前端需要（本机已装 3.1.2）

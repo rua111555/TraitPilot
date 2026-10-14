@@ -1,0 +1,95 @@
+"""配置：与 Claude Code 复用同一组配置来源，不写死 token。
+
+读取优先级：
+  1) 环境变量（ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY）
+  2) Claude Code 的用户级 ~/.claude/settings.json 的 env 块（单一来源，兼容已有配置）
+"""
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+DEFAULT_MODEL = "claude-opus-4-5"
+DEFAULT_MAX_TOKENS = 8192
+
+
+def _read_user_settings_env() -> dict:
+    """从 ~/.claude/settings.json 的 env 块取 ANTHROPIC_* 变量。"""
+    try:
+        raw = Path.home() / ".claude" / "settings.json"
+        sid = json.loads(raw.read_text(encoding="utf-8"))
+        return {k: v for k, v in (sid.get("env") or {}).items()
+                if k.startswith("ANTHROPIC_")}
+    except Exception:
+        return {}
+
+
+@dataclass
+class Config:
+    base_url: str
+    api_key: str
+    model: str
+    max_tokens: int = DEFAULT_MAX_TOKENS
+    cwd: Path = Path(".")          # 工具执行的 cwd（默认=项目根）
+    project: Path = Path(".")      # 扫描 .claude/skills 的项目目录
+    permission: str = "auto"       # auto | ask（ask=每个 Bash 都询问）
+    stream: bool = True
+    verbose: bool = False
+    session_log: Path | None = None
+
+    @classmethod
+    def load(cls, *, model: str | None = None, project: Path | None = None,
+             cwd: Path | None = None, permission: str | None = None,
+             max_tokens: int | None = None, stream: bool | None = None,
+             verbose: bool = False) -> "Config":
+        user_env = _read_user_settings_env()
+
+        base_url = (os.environ.get("ANTHROPIC_BASE_URL")
+                    or user_env.get("ANTHROPIC_BASE_URL")
+                    or "https://api.anthropic.com").rstrip("/")
+        api_key = (os.environ.get("ANTHROPIC_AUTH_TOKEN")
+                   or os.environ.get("ANTHROPIC_API_KEY")
+                   or user_env.get("ANTHROPIC_AUTH_TOKEN")
+                   or user_env.get("ANTHROPIC_API_KEY"))
+        if not api_key:
+            raise SystemExit(
+                "缺少 API 凭证：请在 ~/.claude/settings.json 的 env 块配置 "
+                "ANTHROPIC_AUTH_TOKEN（或设置环境变量 ANTHROPIC_AUTH_TOKEN / "
+                "ANTHROPIC_API_KEY），与 Claude Code 相同。"
+            )
+
+        # 项目根：显式指定 > 环境变量 > 从 cwd 向上找含 .claude/skills 的目录 > 直接取 cwd
+        if project is None:
+            project = _auto_project(cwd or Path.cwd())
+        if cwd is None:
+            cwd = project
+
+        return cls(
+            base_url=base_url,
+            api_key=api_key,
+            model=model or os.environ.get("SKILL_AGENT_MODEL") or DEFAULT_MODEL,
+            max_tokens=max_tokens or DEFAULT_MAX_TOKENS,
+            cwd=cwd,
+            project=project,
+            permission=permission or os.environ.get("SKILL_AGENT_PERMISSION", "auto"),
+            stream=True if stream is None else stream,
+            verbose=verbose,
+        )
+
+
+def _auto_project(start: Path) -> Path:
+    p = start.resolve()
+    if p.is_file():
+        p = p.parent
+    for d in [p, *p.parents]:
+        if (d / ".claude" / "skills").is_dir():
+            return d
+    return p
+
+
+def default_session_dir() -> Path:
+    d = Path.home() / ".skill-agent" / "sessions"
+    d.mkdir(parents=True, exist_ok=True)
+    return d

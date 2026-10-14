@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SkillAgent</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e232c; --border:#2a303b;
+    --text:#e6e9ef; --muted:#9aa3b2; --accent:#e07856; --accent2:#f0a486;
+    --ok:#4ade80; --err:#f87171; --warn:#facc15;
+    --code:#12161d;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.6 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:#333b48;border-radius:6px}
+  ::-webkit-scrollbar-track{background:transparent}
+
+  .app{display:flex;height:100vh}
+
+  /* ---------- 侧栏 ---------- */
+  aside{width:288px;min-width:288px;background:var(--panel);border-right:1px solid var(--border);
+    display:flex;flex-direction:column}
+  .brand{padding:18px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+  .brand .logo{width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,var(--accent),#b95f46);
+    display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff;font-size:15px}
+  .brand .t1{font-weight:700;font-size:15px}
+  .brand .t2{font-size:11px;color:var(--muted)}
+  .skill-head{padding:12px 16px 6px;font-size:11px;color:var(--muted);letter-spacing:.08em;
+    display:flex;justify-content:space-between;align-items:center}
+  #skillList{flex:1;overflow:auto;padding:4px 8px 16px}
+  .skill{background:var(--panel2);border:1px solid var(--border);border-radius:10px;
+    padding:9px 10px;margin:6px 4px;cursor:pointer;transition:border-color .15s}
+  .skill:hover{border-color:var(--accent)}
+  .skill .nm{font-weight:600;font-size:12.5px;display:flex;align-items:center;gap:6px}
+  .skill .inv{font-size:9px;border:1px solid var(--border);color:var(--muted);border-radius:4px;padding:0 4px}
+  .skill .inv.y{color:var(--ok);border-color:rgba(74,222,128,.4)}
+  .skill .dsc{font-size:11px;color:var(--muted);margin-top:3px;display:-webkit-box;-webkit-line-clamp:2;
+    -webkit-box-orient:vertical;overflow:hidden}
+  .skill .tools{font-size:10px;color:#7d8796;margin-top:5px;word-break:break-all}
+  .skill .go{margin-top:6px;font-size:11px;color:var(--accent);display:none}
+  .skill:hover .go{display:block}
+
+  /* ---------- 主区 ---------- */
+  main{flex:1;display:flex;flex-direction:column;min-width:0}
+  header{padding:10px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;
+    background:var(--panel)}
+  header .hd{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  header select{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;
+    padding:5px 8px;font-size:12px;outline:none}
+  header .spacer{flex:1}
+  header .badge{font-size:11px;color:var(--muted);border:1px solid var(--border);padding:3px 8px;border-radius:20px}
+  #connDot{width:8px;height:8px;border-radius:50%;background:var(--warn);display:inline-block}
+  #connDot.on{background:var(--ok)}
+  header button.ghost{background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:8px;
+    font-size:12px;padding:5px 10px;cursor:pointer}
+  header button.ghost:hover{color:var(--text);border-color:var(--accent)}
+
+  #chat{flex:1;overflow:auto;padding:22px 26px 10px}
+  .msg{max-width:860px;margin:0 auto 20px}
+  .msg.user .bubble{background:#272e3a;color:var(--text);
+    border:1px solid var(--border);border-radius:16px 16px 4px 16px;padding:11px 14px;
+    white-space:pre-wrap;word-break:break-word;font-size:13.5px}
+  .msg.assist .bubble{background:var(--panel);border:1px solid var(--border);border-radius:4px 16px 16px 16px;
+    padding:4px 16px 12px}
+  .msg-role{font-size:11px;color:var(--muted);margin:6px 2px 4px}
+  .msg.assist .flow{word-break:break-word}
+  .md p{margin:.55em 0}
+  .md code{background:var(--code);border:1px solid var(--border);border-radius:5px;padding:1px 5px;
+    font:12px "SFMono-Regular",Consolas,monospace}
+  .md pre{background:var(--code);border:1px solid var(--border);border-radius:10px;padding:12px;overflow:auto}
+  .md pre code{background:none;border:none;padding:0;display:block}
+  .md h1,.md h2,.md h3,.md h4{line-height:1.35;margin:.8em 0 .4em}
+  .md h1{font-size:18px}.md h2{font-size:16px}.md h3{font-size:14px}
+  .md table{border-collapse:collapse;margin:.6em 0;font-size:12.5px;display:block;overflow:auto;max-width:100%}
+  .md th,.md td{border:1px solid var(--border);padding:5px 10px;text-align:left}
+  .md th{background:var(--panel2)}
+  .md ul,.md ol{padding-left:22px;margin:.5em 0}
+  .md blockquote{border-left:3px solid var(--accent);margin:.6em 0;padding:2px 14px;color:var(--muted)}
+  .md a{color:var(--accent2)}
+  .md .dur{color:#7d8796;font-size:11px;margin-top:6px}
+  .bubble .tail{color:#7d8796;font-size:11px;margin-top:6px}
+
+  /* 工具卡 */
+  .tool-card{border:1px solid var(--border);border-radius:10px;margin:8px 0;
+    background:var(--panel2);overflow:hidden}
+  .tool-card .hd{display:flex;align-items:center;gap:8px;padding:7px 10px;cursor:pointer;
+    user-select:none;font-size:12.5px}
+  .tool-card .ico{width:22px;height:22px;border-radius:6px;display:flex;align-items:center;justify-content:center}
+  .tool-card .nm{font-weight:600}
+  .tool-card .status{margin-left:auto;color:var(--muted);font-size:11px;display:flex;align-items:center;gap:6px}
+  .tool-card .st-ok{color:var(--ok)}.tool-card .st-err{color:var(--err)}.tool-card .st-run{color:var(--warn)}
+  .tc-spin{width:12px;height:12px;border:2px solid var(--border);border-top-color:var(--accent);
+    border-radius:50%;animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .tool-card .body{display:none;border-top:1px solid var(--border);padding:10px;font-size:12px}
+  .tool-card.open .body{display:block}
+  .tool-card .lab{color:var(--muted);font-size:10.5px;margin:6px 0 4px}
+  .tool-card pre{background:var(--code);border:1px solid var(--border);border-radius:8px;padding:8px 10px;
+    overflow:auto;margin:0;font:12px/1.55 "SFMono-Regular",Consolas,monospace;white-space:pre-wrap;word-break:break-word}
+
+  .thinking{color:var(--muted);font-size:12.5px;padding:8px 2px;display:flex;align-items:center;gap:8px}
+  .thinking .dot{width:9px;height:9px;border-radius:50%;background:var(--accent);animation:pulse 1.2s infinite}
+  @keyframes pulse{0%,100%{opacity:.25}50%{opacity:1}}
+  .empty{color:var(--muted);font-size:12.5px;padding:8px 2px}
+
+  /* 输入区 */
+  footer{padding:12px 22px 16px;background:transparent}
+  .composer{max-width:860px;margin:0 auto;background:var(--panel);border:1px solid var(--border);
+    border-radius:14px;display:flex;align-items:flex-end;gap:10px;padding:10px 12px}
+  textarea{flex:1;background:transparent;border:none;outline:none;color:var(--text);resize:none;
+    font:14px/1.5 inherit}
+  #sendBtn{background:var(--accent);border:none;color:#fff;border-radius:10px;width:38px;height:38px;
+    font-size:16px;cursor:pointer;flex-shrink:0;transition:opacity .15s}
+  #sendBtn:hover{background:var(--accent2)}
+  #sendBtn:disabled{opacity:.35;cursor:not-allowed}
+  .hint{max-width:860px;margin:8px auto 0;font-size:11px;color:var(--muted)}
+
+  /* 模态框 */
+  .overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:50}
+  .overlay.show{display:flex}
+  .modal{background:var(--panel);border:1px solid var(--border);border-radius:14px;max-width:620px;width:92%;
+    max-height:80vh;display:flex;flex-direction:column}
+  .modal .mh{padding:14px 18px;border-bottom:1px solid var(--border);font-weight:700;display:flex;align-items:center;gap:8px}
+  .modal .mb{padding:14px 18px;overflow:auto}
+  .modal .mb .why{color:var(--warn);font-size:12px;margin-bottom:8px}
+  .modal .mb pre{background:var(--code);border:1px solid var(--border);border-radius:10px;padding:12px;
+    overflow:auto;white-space:pre-wrap;word-break:break-word;font:12.5px monospace;margin:0}
+  .modal .mf{padding:12px 18px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px}
+  .modal button{border-radius:9px;padding:8px 18px;border:1px solid var(--border);cursor:pointer;font-size:13px}
+  #rejectBtn{background:transparent;color:var(--muted)}
+  #approveBtn{background:var(--accent);color:#fff;border-color:transparent}
+
+  .empty-state{max-width:860px;margin:40px auto;color:var(--muted);text-align:center}
+  .empty-state .big{font-size:15px;color:var(--text);margin-bottom:6px}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <div class="brand">
+      <div class="logo">S</div>
+      <div>
+        <div class="t1">SkillAgent</div>
+        <div class="t2" id="proj">…</div>
+      </div>
+    </div>
+    <div class="skill-head"><span>可用 SKILLS</span><span id="skCount"></span></div>
+    <div id="skillList"><div class="empty">加载中…</div></div>
+  </aside>
+
+  <main>
+    <header>
+      <div class="hd">
+        <span class="badge"><span id="connDot"></span> <span id="connTxt">连接</span></span>
+        <span class="badge" id="modelBadge">—</span>
+        <select id="modelSel" title="模型"></select>
+        <select id="permSel" title="权限">
+          <option value="auto">权限：危险命令询问</option>
+          <option value="ask">权限：每条命令询问</option>
+        </select>
+      </div>
+      <div class="spacer"></div>
+      <button class="ghost" id="clearBtn">清空对话</button>
+      <button class="ghost" id="newBtn">新建会话</button>
+    </header>
+
+    <div id="chat"></div>
+
+    <footer>
+      <div class="composer">
+        <textarea id="input" rows="1" placeholder="输入任务，如：用 gwas-pipeline 跑 ET277 关联分析…  (Enter 发送，Shift+Enter 换行)"></textarea>
+        <button id="sendBtn" title="发送">➤</button>
+      </div>
+      <div class="hint" id="hint"></div>
+    </footer>
+  </main>
+</div>
+
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <div class="mh">⚠️ 需要你批准执行命令</div>
+    <div class="mb">
+      <div class="why" id="why">该命令触发权限确认</div>
+      <pre id="cmdText"></pre>
+    </div>
+    <div class="mf">
+      <button id="rejectBtn">拒绝</button>
+      <button id="approveBtn">允许执行</button>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const SID = (localStorage.sid && sessionStorage.sid===localStorage.sid)
+  ? localStorage.sid : (localStorage.sid = crypto.randomUUID().slice(0,12));
+sessionStorage.sid = localStorage.sid;
+
+const ICONS = {Skill:"📘",Bash:"🖥️",Read:"📄",Write:"✏️",Edit:"🔧",Glob:"🗂️",Grep:"🔍",TaskOutput:"⏱️"};
+const state = {busy:false, model:"", permission:"auto", pendingConfirm:null};
+
+/* ---------------- 初始化 ---------------- */
+(async function init(){
+  try{
+    const cfg = await (await fetch("/api/config")).json();
+    state.model = cfg.model;
+    $("#modelBadge").textContent = cfg.model;
+    $("#proj").textContent = "project · " + cfg.project;
+    $("#modelSel").innerHTML = cfg.models.map(m=>`<option value="${m}">${m}</option>`).join("");
+    $("#modelSel").value = cfg.model;
+    $("#permSel").value = cfg.permission;
+    $("#hint").textContent = `API ${cfg.base_url}`;
+    $("#connDot").classList.add("on"); $("#connTxt").textContent = "已连接";
+    renderSkills(await (await fetch("/api/skills")).json());
+  }catch(e){ $("#connTxt").textContent = "连接失败"; }
+})();
+
+function renderSkills(skills){
+  $("#skCount").textContent = skills.length + " 个";
+  $("#skillList").innerHTML = skills.map(s=>`
+    <div class="skill" data-name="${s.name}" title="${escapeHtml(s.description)}">
+      <div class="nm">${s.name}${s.model_invocable?'<span class="inv y">可自动调</span>':""}
+        ${s.allowed_tools.includes("Bash")?'<span class="inv">bash</span>':""}</div>
+      <div class="dsc">${escapeHtml(s.description)}</div>
+      ${s.allowed_tools.length?`<div class="tools">tools: ${s.allowed_tools.join(", ")}</div>`:""}
+      <div class="go">↳ 点此预填「加载该 skill」指令</div>
+    </div>`).join("");
+  document.querySelectorAll("#skillList .skill").forEach(el=>{
+    el.addEventListener("click", ()=>{
+      const name = el.dataset.name;
+      $("#input").value = `用 Skill(${name}) 加载「${name}」并按它的方法执行。`;
+      autosize(); $("#input").focus();
+    });
+  });
+}
+
+/* ---------------- 会话 ---------------- */
+let curAssist=null, curFlow=null, curTextBox=null, curThinkEl=null;
+let curRenderTimer=null;
+const RENDER_MAX = 120000;          // 流式渲染的源文上限（超出只渲染尾部窗口）
+const FINAL_MAX  = 500000;          // 最终整段渲染上限
+const chatEl = $("#chat");
+
+function addUserMsg(text){
+  const d=document.createElement("div");
+  d.className="msg user";
+  d.innerHTML=`<div class="msg-role">你</div><div class="bubble">${escapeHtml(text)}</div>`;
+  chatEl.appendChild(d); scrollBottom();
+}
+function addAssistMsg(){
+  curAssist=document.createElement("div");
+  curAssist.className="msg assist";
+  curAssist.innerHTML=`<div class="msg-role">SkillAgent</div><div class="bubble"><div class="flow"></div></div>`;
+  chatEl.appendChild(curAssist);
+  curFlow=curAssist.querySelector(".flow"); curTextBox=null;
+  curThinkEl=document.createElement("div");
+  curThinkEl.className="thinking";
+  curThinkEl.innerHTML=`<span class="dot"></span>思考中…（模型计算中，首次输出可能需 10–60 秒）`;
+  curFlow.appendChild(curThinkEl);
+  scrollBottom();
+}
+function addErrorMsg(text){
+  const d=document.createElement("div");
+  d.className="msg assist";
+  d.innerHTML=`<div class="msg-role">SkillAgent</div><div class="bubble"><div class="md"><p style="color:var(--err)">${escapeHtml(text)}</p></div></div>`;
+  chatEl.appendChild(d); scrollBottom();
+}
+
+function clearThinking(){ if(curThinkEl){ curThinkEl.remove(); curThinkEl=null; } }
+
+/* 增量节流渲染：不每 token 全量重渲染，集中于 ~200ms 间隔；源文超限只渲染尾部窗口 */
+function scheduleRender(){
+  if(curRenderTimer) return;
+  curRenderTimer=setTimeout(()=>{ curRenderTimer=null; doRender(); }, 200);
+}
+function flushRender(){
+  if(curRenderTimer){ clearTimeout(curRenderTimer); curRenderTimer=null; doRender(); }
+}
+function doRender(){
+  if(!curTextBox) return;
+  let buf=curTextBox._buf||"";
+  if(buf.length>RENDER_MAX) buf="…[内容过长，流式预览已截断]\n\n"+buf.slice(-RENDER_MAX);
+  try{
+    curTextBox.innerHTML=md(buf);
+    throttleScroll();
+  }catch(e){
+    // 渲染失败只降级显示纯文本，不让页面崩掉
+    console.error("render 失败，降级为纯文本：", e);
+    curTextBox.textContent = buf;
+  }
+}
+
+function textDelta(d){
+  clearThinking();
+  if(!curTextBox){ curTextBox=document.createElement("div"); curTextBox.className="md"; curFlow.appendChild(curTextBox); }
+  curTextBox._buf=(curTextBox._buf||"")+d;
+  scheduleRender();
+}
+function toolStart(ev){
+  clearThinking();
+  if(curTextBox) flushRender();          // 渲染挂起缓冲后再插入工具卡
+  curTextBox=null;
+  const card=document.createElement("div");
+  card.className="tool-card open"; card.dataset.id=ev.id;
+  let inp = safeJson(ev.input||{});
+  card.innerHTML=`
+    <div class="hd"><span class="ico">${ICONS[ev.name]||"🧰"}</span>
+      <span class="nm">${ev.name}</span>
+      <span class="status st-run"><span class="tc-spin"></span>运行中</span></div>
+    <div class="body">
+      <div class="lab">调用参数</div><pre>${escapeHtml(inp)}</pre>
+      <div class="lab">结果</div><pre class="res">（等待返回…）</pre>
+    </div>`;
+  const hd=card.querySelector(".hd");
+  hd.addEventListener("click",()=>card.classList.toggle("open"));
+  curFlow.appendChild(card);
+}
+function toolEnd(ev){
+  const card=curFlow?curFlow.querySelector(`.tool-card[data-id="${ev.id}"]`):null;
+  if(!card) return;
+  const st=card.querySelector(".status");
+  st.innerHTML = ev.is_error ? `<span class="st-err">✗ 出错</span>` : `<span class="st-ok">✓ 完成</span>`;
+  const res=card.querySelector(".res");
+  res.textContent = (ev.result||"(空)");
+  res.style.color = ev.is_error ? "var(--err)" : "";
+  if(ev.is_error) card.classList.add("open");
+}
+
+function finalize(ev){
+  clearThinking();
+  flushRender();
+  const full=(ev.final||"");
+  const finalText = full.length>FINAL_MAX ? full.slice(0,FINAL_MAX)+"\n…[最终内容过长，已截断]" : full;
+  if(!curTextBox){ curTextBox=document.createElement("div"); curTextBox.className="md"; curFlow.appendChild(curTextBox); }
+  curTextBox._buf=finalText; curTextBox.innerHTML=md(finalText);   // 全文只在此处渲染一次
+  const tail=document.createElement("div");
+  tail.className="tail";
+  tail.textContent = `完成 · ${ev.messages||""} 条上下文消息` + (ev.active&&ev.active.length?` · 激活 skill: ${ev.active.join(", ")}`:"");
+  curFlow.appendChild(tail);
+  curAssist=null; curFlow=null; curTextBox=null; scrollBottom();
+}
+
+async function send(){
+  const text=$("#input").value.trim();
+  if(!text||state.busy) return;
+  setBusy(true);
+  addUserMsg(text); $("#input").value=""; autosize();
+  addAssistMsg();
+  const body={session:SID,message:text,model:state.model,permission:state.permission};
+  try{
+    const res=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if(!res.ok || !res.body){
+      const j=await res.json().catch(()=>({}));
+      addErrorMsg(j.error||"请求失败 ("+res.status+")");
+      return;
+    }
+    await consume(res);
+  }catch(e){
+    if(document.hidden) return;
+    console.error("[chat] 读取响应流失败：", e);
+    if(e && e.name === "AbortError") return;   // 用户刷新/取消请求，不算错误
+    const alloc = e instanceof RangeError;     // 浏览器读流时分配内存失败 ≠ 后端断连
+    const tag = `${(e && e.name) || "Error"}: ${(e && e.message) || e}`;
+    addErrorMsg(alloc
+      ? `响应流分配内存失败（${tag}）。通常是连接被中途截断/损坏所致，请重试或刷新页面。`
+      : `连接中断（${tag}）。`);
+  }
+  finally{ setBusy(false); }
+}
+
+async function consume(res){
+  const reader=res.body.getReader(); const dec=new TextDecoder();
+  let buf="";
+  while(true){
+    let value;
+    try{
+      const r=await reader.read();
+      if(r.done) break;
+      value=r.value;
+    }catch(e){
+      // 网络中途断开 / 流损坏：先尽力处理已收到的完整事件，再把原始错误抛给 send() 统一呈现
+      if(buf.trim()) handleEventSafe(buf);
+      throw e;
+    }
+    buf+=dec.decode(value,{stream:true});
+    let i;
+    while((i=buf.indexOf("\n\n"))>=0){ const blk=buf.slice(0,i); buf=buf.slice(i+2); handleEventSafe(blk); }
+  }
+  if(buf.trim()) handleEventSafe(buf);
+}
+
+function handleEvent(block){
+  const lines=block.split("\n");
+  let type="message", data="";
+  for(const l of lines){
+    if(l.startsWith("event:")) type=l.slice(6).trim();
+    else if(l.startsWith("data:")) data+=l.slice(5);
+  }
+  if(type==="message") return;
+  let ev; try{ ev=JSON.parse(data); }catch(e){ return; }
+  switch(ev.type){
+    case "text": textDelta(ev.delta||""); break;
+    case "tool_start": toolStart(ev); break;
+    case "tool_end": toolEnd(ev); break;
+    case "confirm": showConfirm(ev); break;
+    case "done": finalize(ev); break;
+    case "error": addErrorMsg(ev.message||"运行出错"); break;
+  }
+}
+function handleEventSafe(block){
+  try{ handleEvent(block); }
+  catch(e){
+    // 单帧渲染失败不再中断整个连接（此前会白屏报"连接中断"）
+    console.warn("event 处理失败，已跳过：", e && e.message);
+  }
+}
+
+/* ---------------- 确认 ---------------- */
+function showConfirm(ev){
+  state.pendingConfirm=ev;
+  $("#cmdText").textContent=ev.command||"";
+  const why = ev.reason==="ask-all" ? "权限模式为「每条命令询问」" : "⚠️ 该命令可能危险，需要批准";
+  $("#why").textContent = why;
+  $("#overlay").classList.add("show");
+}
+$("#approveBtn").addEventListener("click", async()=>{ await answerConfirm(true); });
+$("#rejectBtn").addEventListener("click", async()=>{ await answerConfirm(false); });
+async function answerConfirm(approve){
+  const ev=state.pendingConfirm; state.pendingConfirm=null;
+  $("#overlay").classList.remove("show");
+  if(!ev) return;
+  await fetch("/api/confirm",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({session:SID,uid:ev.uid,approve})});
+}
+
+/* ---------------- 控件 ---------------- */
+$("#modelSel").addEventListener("change", e=>{ state.model=e.target.value; $("#modelBadge").textContent=state.model; });
+$("#permSel").addEventListener("change", e=>{ state.permission=e.target.value; });
+$("#clearBtn").addEventListener("click", async()=>{
+  if(state.busy) return;
+  chatEl.innerHTML=""; curAssist=curFlow=curTextBox=null;
+  await fetch("/api/clear",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session:SID})});
+});
+$("#newBtn").addEventListener("click", ()=>{ location.reload(); });
+
+const inputEl=$("#input"), sendBtn=$("#sendBtn");
+inputEl.addEventListener("keydown", e=>{
+  if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); send(); }
+});
+inputEl.addEventListener("input", autosize);
+sendBtn.addEventListener("click", send);
+function autosize(){ inputEl.style.height="auto"; inputEl.style.height=Math.min(inputEl.scrollHeight,180)+"px"; }
+function setBusy(b){ state.busy=b; sendBtn.disabled=b; inputEl.disabled=b; }
+
+/* ---------------- 滚动 ---------------- */
+let stick=true;
+function nearBottom(){ const d=chatEl.scrollHeight-chatEl.scrollTop-chatEl.clientHeight; return d<80; }
+function scrollBottom(){ chatEl.scrollTop=chatEl.scrollHeight; }
+let tmr=null;
+function throttleScroll(){ if(tmr) return; tmr=setTimeout(()=>{ tmr=null; if(nearBottom()) scrollBottom(); },120); }
+chatEl.addEventListener("scroll", ()=>{ stick=nearBottom(); });
+
+/* ---------------- 工具 ---------------- */
+function escapeHtml(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function safeJson(o){
+  try{ return typeof o==="string"?o:JSON.stringify(o,null,2); }catch(e){ return String(o); }
+}
+
+/* ---- 轻量 Markdown（离线、XSS 安全：先转义再排版）---- */
+function md(src){
+  const lines=String(src).replace(/\r\n/g,"\n").split("\n");
+  let out=[], i=0, guard=0;
+  const esc = escapeHtml;
+  const inline = s => s.split("`").map((seg,i)=> i%2 ? `<code>${escapeHtml(seg)}</code>` : escapeHtml(seg)).join("")
+    .replace(/\*\*([^*]+)\*\*/g,"<strong>$1</strong>")
+    .replace(/\*([^*]+)\*/g,"<em>$1</em>")
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g,(m,t,u)=>u.startsWith("http")
+      ?`<a href="${u}" target="_blank" rel="noopener">${t}</a>`
+      :`<code>${t} (${u})</code>`);
+  while(i<lines.length){
+    const l=lines[i];
+    if(/^```/.test(l)){                 // 代码块
+      const buf=[]; i++;
+      while(i<lines.length && !/^```/.test(lines[i])){ buf.push(lines[i]); i++; }
+      i++;
+      out.push(`<pre><code>${escapeHtml(buf.join("\n"))}</code></pre>`); continue;
+    }
+    if(i+1<lines.length && /^\|[\s:|-]+\|$/.test(lines[i+1]) && l.startsWith("|")){  // 表格
+      const hdr=l.slice(1,-1).split("|").map(s=>s.trim());
+      const recs=[];
+      i+=2;
+      while(i<lines.length && lines[i].startsWith("|")){
+        recs.push(lines[i].slice(1,-1).split("|").map(s=>inline(s.trim()))); i++;
+      }
+      out.push(`<div class="tw"><table><thead><tr>${hdr.map(h=>`<th>${inline(h)}</th>`).join("")}</tr></thead>`
+        +`<tbody>${recs.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
+      continue;
+    }
+    const h=l.match(/^(#{1,6})\s+(.*)/);
+    if(h){ out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); i++; continue; }
+    if(l.startsWith("> ")){ const b=[]; while(i<lines.length&&lines[i].startsWith("> ")){ b.push(lines[i].slice(2)); i++; } out.push(`<blockquote>${md(b.join("\n"))}</blockquote>`); continue; }
+    if(/^[-*+]\s+/.test(l)){ const items=[]; while(i<lines.length&&/^[-*+]\s+/.test(lines[i])){ items.push(inline(lines[i].replace(/^[-*+]\s+/,""))); i++; } out.push(`<ul>${items.map(x=>`<li>${x}</li>`).join("")}</ul>`); continue; }
+    if(/^\d+\.\s+/.test(l)){ const items=[]; while(i<lines.length&&/^\d+\.\s+/.test(lines[i])){ items.push(inline(lines[i].replace(/^\d+\.\s+/,""))); i++; } out.push(`<ol>${items.map(x=>`<li>${x}</li>`).join("")}</ol>`); continue; }
+    if(l.trim()===""){ i++; continue; }          // 段落
+    const par=[]; while(i<lines.length && lines[i].trim()!=="" && !/^```/.test(lines[i])
+       && !/^\|/.test(lines[i]) && !/^#{1,6}\s/.test(lines[i]) && !/^[-*+]\s/.test(lines[i])
+       && !/^\d+\.\s/.test(lines[i]) && !/^> /.test(lines[i])){ par.push(lines[i]); i++; }
+    out.push(`<p>${par.map(inline).join("<br>")}</p>`);
+  }
+  return out.join("\n");
+}
+</script>
+</body>
+</html>

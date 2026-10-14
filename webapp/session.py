@@ -1,0 +1,115 @@
+"""WebAgent 会话：承载一次对某用户的对话，桥接线程中的 agent 运行与 SSE 事件流。"""
+from __future__ import annotations
+
+import queue
+import threading
+import time
+import uuid
+
+
+class Hooks:
+    """从 agent 线程回调到 WebSession 的桥（文本增量 / 工具事件 / 命令确认）。"""
+
+    def __init__(self, session: "WebSession"):
+        self.session = session
+
+    @property
+    def cancelled(self) -> bool:
+        return self.session.cancel_event.is_set()
+
+    def emit(self, ev: dict) -> None:
+        self.session.event_queue.put(ev)
+
+    def confirm(self, command: str, reason: str) -> bool:
+        return self.session.ask_confirm(command, reason)
+
+
+class WebSession:
+    def __init__(self, session_id: str, cfg, registry, tools, hooks: Hooks):
+        self.id = session_id
+        self.cfg = cfg
+        self.registry = registry
+        self.tools = tools
+        self.hooks = hooks
+        self.agent = None                     # 由 SessionManager 构建（共享 hooks）
+        self.event_queue: queue.SimpleQueue = queue.SimpleQueue()
+        self.cancel_event = threading.Event()
+        self.busy = False
+        self._confirms: dict[str, threading.Event] = {}
+        self._answers: dict[str, bool] = {}
+        self.created_at = time.time()
+        self.last_model = cfg.model
+        self.last_permission = cfg.permission
+
+    # ---------- 参数 ----------
+    def set_params(self, model: str | None = None, permission: str | None = None) -> None:
+        if model and model != self.cfg.model:
+            self.cfg.model = model
+            self.agent.client.model = model
+        if permission and permission != self.cfg.permission:
+            self.cfg.permission = permission
+            self.tools.permission = permission
+
+    def cancel(self) -> None:
+        self.cancel_event.set()
+        for uid, ev in list(self._confirms.items()):
+            self._answers[uid] = False
+            ev.set()
+
+    # ---------- 确认桥 ----------
+    def ask_confirm(self, command: str, reason: str) -> bool:
+        uid = uuid.uuid4().hex[:8]
+        ev = threading.Event()
+        self._confirms[uid] = ev
+        self.event_queue.put({
+            "type": "confirm", "uid": uid, "command": command, "reason": reason})
+        ev.wait()
+        self._confirms.pop(uid, None)
+        return self._answers.pop(uid, False)
+
+    def resolve_confirm(self, uid: str, approve: bool) -> bool:
+        ev = self._confirms.get(uid)
+        if ev is None:
+            return False
+        self._answers[uid] = approve
+        ev.set()
+        return True
+
+    # ---------- 运行 ----------
+    def run(self, user_text: str) -> None:
+        """在独立线程中被调用；事件经由 event_queue 提供给 SSE。"""
+        self.cancel_event.clear()
+        self.busy = True
+        try:
+            final = self.agent.answer(
+                user_text,
+                on_delta=lambda t: self.event_queue.put({"type": "text", "delta": t}),
+            )
+            self.event_queue.put({
+                "type": "done", "final": final,
+                "messages": len(self.agent.history),
+                "active": self.agent.active_skills,
+            })
+        except Exception as e:  # noqa: BLE001
+            self.event_queue.put({"type": "error", "message": f"{type(e).__name__}: {e}"})
+        finally:
+            self.event_queue.put({"type": "__end__"})
+            self.busy = False
+
+
+def build_session(session_id: str, cfg, registry) -> WebSession:
+    """构建一个带 hooks 的会话（tools/agent 绑定到本会话）。"""
+    from skill_agent import tools as tools_mod
+    from skill_agent.agent import Agent
+
+    session = WebSession(session_id, cfg, registry, tools=None, hooks=None)
+    hooks = Hooks(session)
+    session.hooks = hooks
+    session.tools = tools_mod.ToolSet(
+        registry, cfg.cwd, permission=cfg.permission,
+        verbose=cfg.verbose, confirm_handler=hooks.confirm)
+    agent = Agent(cfg, registry, session.tools)
+    agent.on_event = hooks.emit
+    agent.cancel_event = session.cancel_event
+    session.agent = agent
+    return session
