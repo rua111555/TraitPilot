@@ -61,11 +61,25 @@ cd /home/chenyuxi/skill/agent
 | `--project <dir>` | 含 `.claude/skills` 的项目根（默认自动向上探测） |
 | `--cwd <dir>` | Bash 等工具的执行目录（默认=项目根） |
 | `--permission auto\|ask` | `auto`（默认）：危险命令仅告警；`ask`：每个 Bash 先询问 |
+| `--restrict-paths` | 启用工作区路径边界（越界拒绝；默认关）|
+| `--write-approval` | 把 Write/Edit 纳入审批门（默认关）|
 | `--no-stream` | 关闭流式输出 |
 | `list --json` | 以 JSON 导出技能清单（含 allowed-tools / 是否可自动调用） |
 
-REPL 内命令：`/help` `/clear` `/skills` `/active` `/model X` `/permission ask` `/exit`。
+REPL 内命令：`/help` `/clear` `/skills` `/active` `/model X` `/permission ask` `/cost` `/exit`。
 每轮对话自动归档到 `~/.skill-agent/sessions/<时间戳>.jsonl`（含全部工具调用，可回溯）。
+
+### 已落地的 harness 增补（见 `docs/harness-gap-analysis.md`）
+
+| 模块 | 内容 | 开关 |
+|------|------|------|
+| M6 输入校验 | executor 前按 `input_schema` 校验 required/type/enum，畸形参数结构化报错 | 恒开（宽容优先） |
+| M1a 用量采集 | 累计 token/延迟，emit `usage` 事件，`/cost` + `GET /api/usage` | 恒开（纯被动） |
+| M3a 进展信号 | `ToolResult.meta` 填充 exit_code/size/mtime/pid_alive 等（只记不判） | 恒开 |
+| M8a 权限模型 | allow/deny/ask 规则表、工作区路径边界、写审批 | 默认关，`--restrict-paths`/`--write-approval` 或 `SKILL_AGENT_RESTRICT_PATHS`/`SKILL_AGENT_WRITE_APPROVAL` 开启 |
+
+M8a 规则表可通过 `Config.permission_rules` 传入，例如 `[{"tool":"Bash","match":"rm\\s+-rf","action":"deny"}]`（`match` 支持正则或 glob，`action` ∈ allow/deny/ask，按序首次命中）。
+
 
 ## 架构
 
