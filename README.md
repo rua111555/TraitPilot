@@ -80,6 +80,9 @@ REPL 内命令：`/help` `/clear` `/skills` `/active` `/model X` `/permission as
 | M12 摘要压缩 | 命中阈值时保留最近 K 条、更早区间压成结构化前情摘要（保留阶段号/参数/路径/pid/审批结论） | 默认关，`--summary-compact` 或 `SKILL_AGENT_SUMMARY_COMPACTION=1` |
 | M12 分层记忆 | core.md（稳定前缀）+ archival（SQLite FTS5 检索，注入尾部） | 默认关，`--memory` 或 `SKILL_AGENT_MEMORY=1` |
 | M13 会话持久化 | 逐条消息落盘（append-only jsonl），恢复时修复悬挂 tool_use 并截到安全边界 | CLI `--persist`；Web 默认开（`SKILL_AGENT_PERSIST=0` 关）|
+| M2 终止契约 | `stop_reason` 分类→决策（continue/repair_truncation/pause_turn/refuse/finalize），透出终止原因 | 恒开（更严格，含截断修复）|
+| M1b 预算熔断 | 轮次/墙钟时长/输出 token 上限，发请求前熔断，到点只停调用不杀后台 | 默认不限，`--max-turns`/`--max-seconds`/`--max-output-tokens` |
+| M3 死循环熔断 | 无进展循环检测（动作/观测指纹 + meta 进展信号），轮询工具白名单 | 默认关，`--loop-guard` 或 `SKILL_AGENT_LOOP_GUARD=1` |
 
 ### 会话恢复（M13）
 
