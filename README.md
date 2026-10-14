@@ -1,5 +1,8 @@
 # SkillAgent — 可调用 Claude Code skills 的本机 Agent
 
+> 📖 **详细使用文档见 [`docs/usage.md`](docs/usage.md)**（安装/凭证、三种入口、全部参数与环境变量、
+> REPL 命令、Web 前端、各 harness 模块、技能机制、端到端示例、故障排查）。本文是快速上手版。
+
 一个**完整、可用**的单 Agent 系统，沿用 Claude Code 的技能模型，让你现有 `.claude/skills`
 （WGS / GWAS 两大管线 + 表型提取等 18 个技能）能在**你自己的 Agent** 中被自主调用，
 而无需依赖 Claude Code。
