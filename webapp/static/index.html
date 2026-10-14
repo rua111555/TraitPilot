@@ -119,6 +119,12 @@
   #sendBtn:disabled{opacity:.35;cursor:not-allowed}
   .hint{max-width:860px;margin:8px auto 0;font-size:11px;color:var(--muted)}
 
+  /* 快捷指令 chips */
+  .chips{max-width:860px;margin:0 auto 8px;display:flex;flex-wrap:wrap;gap:6px}
+  .chip{background:var(--panel2);border:1px solid var(--border);color:var(--muted);border-radius:20px;
+    font-size:11.5px;padding:3px 11px;cursor:pointer;transition:color .15s,border-color .15s}
+  .chip:hover{color:var(--text);border-color:var(--accent)}
+
   /* 模态框 */
   .overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:50}
   .overlay.show{display:flex}
@@ -162,8 +168,11 @@
           <option value="auto">权限：危险命令询问</option>
           <option value="ask">权限：每条命令询问</option>
         </select>
+        <span class="badge" id="usageBadge" title="本轮用量（M1a）">tokens 0</span>
       </div>
       <div class="spacer"></div>
+      <button class="ghost" id="stopBtn" style="display:none;color:var(--err);border-color:rgba(248,113,113,.5)">停止</button>
+      <button class="ghost" id="exportBtn">导出对话</button>
       <button class="ghost" id="clearBtn">清空对话</button>
       <button class="ghost" id="newBtn">新建会话</button>
     </header>
@@ -171,6 +180,7 @@
     <div id="chat"></div>
 
     <footer>
+      <div class="chips" id="chips"></div>
       <div class="composer">
         <textarea id="input" rows="1" placeholder="输入任务，如：用 gwas-pipeline 跑 ET277 关联分析…  (Enter 发送，Shift+Enter 换行)"></textarea>
         <button id="sendBtn" title="发送">➤</button>
@@ -201,8 +211,15 @@ const SID = (localStorage.sid && sessionStorage.sid===localStorage.sid)
   ? localStorage.sid : (localStorage.sid = crypto.randomUUID().slice(0,12));
 sessionStorage.sid = localStorage.sid;
 
-const ICONS = {Skill:"📘",Bash:"🖥️",Read:"📄",Write:"✏️",Edit:"🔧",Glob:"🗂️",Grep:"🔍",TaskOutput:"⏱️"};
-const state = {busy:false, model:"", permission:"auto", pendingConfirm:null};
+const ICONS = {Skill:"📘",Bash:"🖥️",Read:"📄",Write:"✏️",Edit:"🔧",Glob:"🗂️",Grep:"🔍",TaskOutput:"⏱️",Search:"🔎",RepoMap:"🗺️",TodoWrite:"✅"};
+const state = {busy:false, model:"", permission:"auto", pendingConfirm:null, controller:null};
+
+const CHIPS = [
+  ["列出技能", "列出当前项目可用的全部 skill，并简述每个的用途。"],
+  ["GWAS 流程", "用 gwas-pipeline skill 说明标准流程，先不要真正跑数据。"],
+  ["WGS 流程", "用 wgs-expressive-pipeline skill 说明标准流程与各阶段产物，先不要真正跑数据。"],
+  ["表型", "列出 phenotype-extract 提供哪些表型，并说明如何提取 IMF。"],
+];
 
 /* ---------------- 初始化 ---------------- */
 (async function init(){
@@ -218,7 +235,20 @@ const state = {busy:false, model:"", permission:"auto", pendingConfirm:null};
     $("#connDot").classList.add("on"); $("#connTxt").textContent = "已连接";
     renderSkills(await (await fetch("/api/skills")).json());
   }catch(e){ $("#connTxt").textContent = "连接失败"; }
+  renderChips();
 })();
+
+function renderChips(){
+  $("#chips").innerHTML = CHIPS.map(([label,text],i)=>
+    `<span class="chip" data-i="${i}" title="${escapeHtml(text)}">${escapeHtml(label)}</span>`).join("");
+  document.querySelectorAll("#chips .chip").forEach(el=>{
+    el.addEventListener("click", ()=>{
+      if(state.busy) return;
+      $("#input").value = CHIPS[+el.dataset.i][1];
+      autosize(); $("#input").focus();
+    });
+  });
+}
 
 function renderSkills(skills){
   $("#skCount").textContent = skills.length + " 个";
@@ -349,9 +379,18 @@ function finalize(ev){
   const tail=document.createElement("div");
   tail.className="tail";
   const stopTxt = ev.stop_reason && ev.stop_reason!=="end_turn" ? ` · 终止=${ev.stop_reason}` : "";
+  if(ev.usage) setUsage(ev.usage);
   tail.textContent = `完成 · ${ev.messages||""} 条上下文消息` + stopTxt + (ev.active&&ev.active.length?` · 激活 skill: ${ev.active.join(", ")}`:"");
   curFlow.appendChild(tail);
   curAssist=null; curFlow=null; curTextBox=null; scrollBottom();
+}
+
+function setUsage(u){
+  if(!u) return;
+  const t=(u.output_tokens!=null?u.output_tokens:0);
+  const ms=(u.latency_ms!=null?u.latency_ms:0);
+  $("#usageBadge").textContent = `tokens ${t} · ${(ms/1000).toFixed(1)}s · ${u.steps||0} 轮`;
+  $("#usageBadge").title = `模型 ${u.model||""} · 输出 token ${t} · 累计延迟 ${ms}ms · 模型轮次 ${u.steps||0}`;
 }
 
 async function send(){
@@ -361,8 +400,10 @@ async function send(){
   addUserMsg(text); $("#input").value=""; autosize();
   addAssistMsg();
   const body={session:SID,message:text,model:state.model,permission:state.permission};
+  state.controller=new AbortController();
   try{
-    const res=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const res=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(body),signal:state.controller.signal});
     if(!res.ok || !res.body){
       const j=await res.json().catch(()=>({}));
       addErrorMsg(j.error||"请求失败 ("+res.status+")");
@@ -370,16 +411,16 @@ async function send(){
     }
     await consume(res);
   }catch(e){
+    if(e && e.name === "AbortError"){ addErrorMsg("已停止本轮任务。"); return; }  // 用户点「停止」
     if(document.hidden) return;
     console.error("[chat] 读取响应流失败：", e);
-    if(e && e.name === "AbortError") return;   // 用户刷新/取消请求，不算错误
     const alloc = e instanceof RangeError;     // 浏览器读流时分配内存失败 ≠ 后端断连
     const tag = `${(e && e.name) || "Error"}: ${(e && e.message) || e}`;
     addErrorMsg(alloc
       ? `响应流分配内存失败（${tag}）。通常是连接被中途截断/损坏所致，请重试或刷新页面。`
       : `连接中断（${tag}）。`);
   }
-  finally{ setBusy(false); }
+  finally{ state.controller=null; setBusy(false); }
 }
 
 async function consume(res){
@@ -419,7 +460,7 @@ function handleEvent(block){
     case "confirm": showConfirm(ev); break;
     case "notice": notice(ev.message||""); break;
     case "loop_guard": notice(ev.message||""); break;
-    case "usage": break;   // 用量事件（M1a）：预留，暂不逐帧渲染
+    case "usage": setUsage(ev); break;   // M1a：实时用量
     case "done": finalize(ev); break;
     case "error": addErrorMsg(ev.message||"运行出错"); break;
   }
@@ -450,15 +491,58 @@ async function answerConfirm(approve){
     body:JSON.stringify({session:SID,uid:ev.uid,approve})});
 }
 
+/* ---------------- 停止 / 导出 ---------------- */
+async function stopRun(){
+  if(!state.busy) return;
+  try{ if(state.controller) state.controller.abort(); }catch(e){}
+  try{
+    await fetch("/api/cancel",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({session:SID})});
+  }catch(e){}
+  $("#stopBtn").style.display="none";
+}
+
+function exportChat(){
+  const lines=[];
+  chatEl.querySelectorAll(".msg").forEach(m=>{
+    const who = m.classList.contains("user") ? "你" : "SkillAgent";
+    const bubble = m.querySelector(".bubble");
+    if(!bubble) return;
+    // 工具卡内容
+    const cards=[...bubble.querySelectorAll(".tool-card")].map(c=>{
+      const nm=c.querySelector(".nm")?.textContent||"tool";
+      const args=c.querySelector(".body pre")?.textContent||"";
+      const res=c.querySelector(".res")?.textContent||"";
+      return `  [工具 ${nm}] 参数: ${args.replace(/\s+/g," ").slice(0,300)}\n  结果: ${res.slice(0,800)}`;
+    });
+    // 正文（排除工具卡，取 .md 文本）
+    const mdEls=[...bubble.querySelectorAll(".md")];
+    const body=mdEls.map(e=>e.innerText.trim()).filter(Boolean).join("\n");
+    let block=`### ${who}\n${body}`;
+    if(cards.length) block+="\n"+cards.join("\n");
+    if(block.trim()) lines.push(block);
+  });
+  const header=`# SkillAgent 对话导出\n\n- 时间：${new Date().toLocaleString()}\n- 模型：${state.model}\n- 项目：${$("#proj").textContent}\n\n---\n\n`;
+  const blob=new Blob([header+lines.join("\n\n---\n\n")],{type:"text/markdown;charset=utf-8"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download=`skillagent-${SID}-${Date.now()}.md`;
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),3000);
+}
+
 /* ---------------- 控件 ---------------- */
 $("#modelSel").addEventListener("change", e=>{ state.model=e.target.value; $("#modelBadge").textContent=state.model; });
 $("#permSel").addEventListener("change", e=>{ state.permission=e.target.value; });
 $("#clearBtn").addEventListener("click", async()=>{
   if(state.busy) return;
   chatEl.innerHTML=""; curAssist=curFlow=curTextBox=null;
+  $("#usageBadge").textContent="tokens 0";
   await fetch("/api/clear",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session:SID})});
 });
 $("#newBtn").addEventListener("click", ()=>{ location.reload(); });
+$("#stopBtn").addEventListener("click", stopRun);
+$("#exportBtn").addEventListener("click", exportChat);
 
 const inputEl=$("#input"), sendBtn=$("#sendBtn");
 inputEl.addEventListener("keydown", e=>{
@@ -467,7 +551,11 @@ inputEl.addEventListener("keydown", e=>{
 inputEl.addEventListener("input", autosize);
 sendBtn.addEventListener("click", send);
 function autosize(){ inputEl.style.height="auto"; inputEl.style.height=Math.min(inputEl.scrollHeight,180)+"px"; }
-function setBusy(b){ state.busy=b; sendBtn.disabled=b; inputEl.disabled=b; }
+function setBusy(b){
+  state.busy=b; sendBtn.disabled=b; inputEl.disabled=b;
+  $("#stopBtn").style.display=b ? "" : "none";
+  document.querySelectorAll("#chips .chip").forEach(c=>c.style.pointerEvents=b?"none":"");
+}
 
 /* ---------------- 滚动 ---------------- */
 let stick=true;

@@ -137,6 +137,18 @@ def api_confirm():
     return jsonify({"ok": ok})
 
 
+@app.post("/api/cancel")
+def api_cancel():
+    """停止某会话正在运行的轮次（协作式：置 cancel_event 并拒绝所有待确认命令）。"""
+    data = request.get_json(silent=True) or {}
+    sid = data.get("session")
+    s = _sessions().get(sid) if sid else None
+    if not s:
+        return jsonify({"ok": False, "error": "session not found"}), 404
+    s.cancel()
+    return jsonify({"ok": True})
+
+
 @app.post("/api/chat")
 def api_chat():
     data = request.get_json(silent=True) or {}

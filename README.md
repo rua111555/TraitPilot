@@ -47,6 +47,11 @@ cd /home/chenyuxi/skill/agent
 
 - **单文件前端**（无构建、无 node），REST + SSE 流式：聊天气泡、实时工具调用卡片
   （Skill/Bash/Read/Write…）、技能侧栏（点技能可预填调用指令）、模型/权限切换。
+- **快捷提问**：输入框上方 4 个预设 chip（列技能 / 说明 GWAS 流程 / 检索参数位置 / 当前会话用量），点一下即发送。
+- **实时用量徽标**：顶部随流式更新本轮模型轮次与输出 token（接 M1a `usage` 事件）。
+- **停止按钮**：运行中「发送」变「停止」，点按会 abort 本次流并 `POST /api/cancel`，
+  协作式终止当前轮次（拒绝所有待确认命令，后台任务不被杀）。
+- **导出对话**：一键把消息与工具卡片导出为 Markdown 文件下载。
 - **命令审批弹窗**：`权限=危险命令询问`（默认，危险命令才弹）或 `每条命令询问`（==CLI 的
   ask）；点「允许/拒绝」回复 `/api/confirm`，未答复即断开连接会自动拒绝并终止任务。
 - **联网访问**：页面能执行本机命令，默认仅绑定 `127.0.0.1`。远程使用请 SSH 端口转发：
@@ -191,9 +196,9 @@ agent/
 │   ├── agent.py            # agentic 循环：tool_use → 执行 → 续推；context 压缩；事件/取消钩子
 │   └── cli.py              # list / chat / 会话日志
 └── webapp/
-    ├── server.py           # Flask：/api/chat(SSE) /confirm /skills /models /config + 静态页
+    ├── server.py           # Flask：/api/chat(SSE) /confirm /cancel /usage /skills /models /config + 静态页
     ├── session.py          # WebSession：事件桥 + 命令确认桥（线程 ↔ SSE）
-    └── static/index.html   # 单文件前端（无构建、纯浏览器 JS，含轻量 Markdown 渲染）
+    └── static/index.html   # 单文件前端（无构建、纯浏览器 JS，含轻量 Markdown 渲染/停止/导出/用量徽标）
 ```
 
 ### 与 Claude Code 相同的技能机制

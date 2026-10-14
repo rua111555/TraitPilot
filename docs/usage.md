@@ -223,6 +223,11 @@ cd /home/chenyuxi/skill/agent
 浏览器打开 `http://127.0.0.1:8787`。**单文件前端（无构建、无 node）**，REST + SSE 流式：
 
 - 聊天气泡、实时工具调用卡片（Skill/Bash/Read/Write…）、技能侧栏（点技能预填指令）、模型/权限切换。
+- **快捷提问 chip**：输入框上方 4 个预设（列技能 / 说明 GWAS 流程 / 检索参数位置 / 当前会话用量），点一下即发送。
+- **实时用量徽标**：顶部随流式刷新本轮模型轮次与输出 token（接 M1a `usage` 事件）。
+- **停止按钮**：运行中「发送」按钮变「停止」，点按 abort 本次流并 `POST /api/cancel`，协作式终止当前轮次
+  （拒绝所有待确认命令；已起的后台任务不被杀）。
+- **导出对话**：一键把消息与工具卡片导出为 Markdown 文件下载。
 - **命令审批弹窗**：`权限=危险命令询问`（默认，仅危险命令弹）或 `每条命令询问`（== CLI 的 `ask`）；
   点「允许/拒绝」回复 `/api/confirm`，未答复即断开会自动拒绝并终止任务。
 - **默认只绑 `127.0.0.1`**。远程使用走 SSH 端口转发：
@@ -230,7 +235,7 @@ cd /home/chenyuxi/skill/agent
 - **Web 默认开启 M13 持久化**（断线可按 sid 恢复）；`SKILL_AGENT_PERSIST=0` 可关。
 
 `run_web.py` 直接参数：`--host` `--port` `--project` `--cwd` `-m` `--permission` `--debug`。
-后端 API：`GET /api/config` `/api/usage` `/api/skills`；`POST /api/chat`(SSE) `/api/clear` `/api/confirm`。
+后端 API：`GET /api/config` `/api/usage` `/api/skills`；`POST /api/chat`(SSE) `/api/clear` `/api/confirm` `/api/cancel`。
 
 ---
 
