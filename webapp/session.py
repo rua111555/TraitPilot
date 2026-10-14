@@ -123,13 +123,27 @@ def build_session(session_id: str, cfg, registry) -> WebSession:
     from skill_agent.idempotency import IdempotencyGuard
     idem = IdempotencyGuard(enabled=bool(getattr(cfg, "idempotency", False)),
                             mode=getattr(cfg, "idempotency_mode", "reuse"))
+    # #11：按配置装配检索索引（默认关，不挂载 Search/RepoMap）
+    _retrieval = None
+    if bool(getattr(cfg, "retrieval", False)):
+        from pathlib import Path
+        from skill_agent.config import default_index_dir
+        from skill_agent.retrieval import CodeIndex
+        _idx_root = Path(cfg.index_dir) if getattr(cfg, "index_dir", None) \
+            else default_index_dir(cfg.project)
+        _retrieval = CodeIndex(_idx_root, enabled=True,
+                               include_dirs=getattr(cfg, "retrieval_roots", None),
+                               extra_excludes=getattr(cfg, "retrieval_excludes", None))
+        if not _retrieval.enabled:
+            _retrieval = None
     session.tools = tools_mod.ToolSet(
         registry, cfg.cwd, permission=cfg.permission,
         verbose=cfg.verbose, confirm_handler=hooks.confirm,
         permission_model=PermissionModel.from_config(cfg, cfg.cwd),
         hooks=trace_hooks, spill_dir=cfg.spill_dir, spill_threshold=cfg.spill_threshold,
         sandbox=sandbox_backend, idempotency=idem,
-        enable_todo=bool(getattr(cfg, "todo", False)))
+        enable_todo=bool(getattr(cfg, "todo", False)),
+        enable_retrieval=bool(getattr(cfg, "retrieval", False)), retrieval=_retrieval)
     agent = Agent(cfg, registry, session.tools)
     agent.on_event = hooks.emit
     agent.cancel_event = session.cancel_event

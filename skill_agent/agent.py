@@ -505,7 +505,8 @@ class Agent:
 
 
 # M7：同轮可安全并行的只读工具（无副作用、无共享状态）
-_READONLY_TOOLS = frozenset({"Read", "Glob", "Grep", "TaskOutput"})
+_READONLY_TOOLS = frozenset({"Read", "Glob", "Grep", "TaskOutput",
+                             "Search", "RepoMap"})
 
 
 def _is_readonly(name: str) -> bool:

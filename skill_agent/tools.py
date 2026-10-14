@@ -30,7 +30,8 @@ READ_MAX_LIMIT = 100_000        # M7：分段读取的最大行数（防一次�
 
 # M7：per-tool 默认超时（秒），可被 Bash 的 timeout 参数或预算收窄覆盖
 DEFAULT_TOOL_TIMEOUTS = {"Read": 30, "Write": 30, "Edit": 30,
-                         "Glob": 60, "Grep": 90, "TaskOutput": 20, "Skill": 20}
+                         "Glob": 60, "Grep": 90, "TaskOutput": 20, "Skill": 20,
+                         "Search": 60, "RepoMap": 60}
 
 
 def default_timeout(tool_name: str) -> int:
@@ -89,7 +90,8 @@ class ToolSet:
                  permission: str = "auto", verbose: bool = False,
                  confirm_handler=None, permission_model: PermissionModel | None = None,
                  hooks=None, spill_dir=None, spill_threshold: int | None = None,
-                 sandbox=None, idempotency=None, enable_todo: bool = False):
+                 sandbox=None, idempotency=None, enable_todo: bool = False,
+                 enable_retrieval: bool = False, retrieval=None):
         self.registry = registry
         self.cwd = Path(cwd)
         self.permission = permission            # auto | ask
@@ -108,6 +110,8 @@ class ToolSet:
         self.sandbox = sandbox or sandbox_mod.HostBackend()
         # M11：幂等去重（默认关闭 → 与改造前逐字节一致）
         self.idempotency = idempotency or IdempotencyGuard()
+        # #11：检索索引（默认 None → 不挂载 Search/RepoMap）
+        self.retrieval = retrieval if enable_retrieval else None
         self._bg_tasks: dict[str, dict] = {}    # task_id -> {log, pid, cmd}
         self.max_tokens_warning_shown = False
 
@@ -121,6 +125,10 @@ class ToolSet:
         # #9：规划/todo 工具（默认不挂 → 模型可见工具集与改造前一致）
         if enable_todo:
             self.registry_tools.register(self._tool_todo())
+        # #11：检索工具（默认不挂；仅在启用且索引可用时注册）
+        if enable_retrieval and self.retrieval is not None:
+            self.registry_tools.register(self._tool_search())
+            self.registry_tools.register(self._tool_repomap())
         # M7：为内置工具套上 per-tool 看门狗超时
         self._attach_timeouts()
 
@@ -577,6 +585,97 @@ class ToolSet:
                                         "description": 'JSON 数组字符串，如 '
                                                        '[{"content":"比对","status":"in_progress"}]'}},
                           "required": ["todos"]},
+            executor=run,
+        )
+
+    def _tool_search(self) -> Tool:
+        """#11：FTS5 相关性检索，返回「文件:起止行 + 片段」（仅启用时挂载）。"""
+        def run(args: dict) -> ToolResult:
+            query = str(args.get("query", "")).strip()
+            if not query:
+                return ToolResult("Search 需要 query 参数。", True)
+            try:
+                limit = min(max(int(args.get("limit") or 8), 1), 30)
+            except (TypeError, ValueError):
+                return ToolResult("limit 必须是整数。", True)
+            path_glob = args.get("path_glob") or None
+            kind = args.get("kind") or None
+            try:
+                self.retrieval.ensure()
+                hits = self.retrieval.search(query, limit, path_glob, kind)
+            except Exception as e:  # noqa: BLE001 —— 检索层绝不可拖垮主循环
+                return ToolResult(f"检索失败：{type(e).__name__}: {e}", True)
+            if not self.retrieval.enabled:
+                return ToolResult("检索索引不可用（未启用或本机缺 FTS5）。", True)
+            if not hits:
+                return ToolResult("无匹配。可换关键词，或用 Grep 做正则搜索。")
+            lines = [f"检索到 {len(hits)} 条（BM25 排名）："]
+            for i, h in enumerate(hits, 1):
+                tag = f" ({h.kind}" + (f": {h.symbol}" if h.symbol else "") + ")"
+                lines.append(f"{i}. {h.path}:{h.start}-{h.end}{tag}")
+                if h.snippet:
+                    lines.append("   " + h.snippet.replace("\n", "\n   ")[:600])
+            tr = ToolResult("\n".join(lines)[:MAX_OUTPUT])
+            tr.meta = {"hits": len(hits), "query": query}
+            return tr
+        return Tool(
+            name="Search",
+            description=(
+                "在项目代码与 .claude/skills 文档中做相关性检索（FTS5/BM25 排名）。"
+                "返回 top-k 的 文件:起止行 + 片段，请随后用 Read(offset,limit) 精读。"
+                "适合「这个流程/参数/函数在哪里」这类跨文件问题。"),
+            input_schema={"type": "object",
+                          "properties": {
+                              "query": {"type": "string",
+                                        "description": "自然语言或关键词（中英文均可）"},
+                              "limit": {"type": "integer",
+                                        "description": "返回条数，默认 8，最大 30"},
+                              "path_glob": {"type": "string",
+                                            "description": "可选：限定路径 glob，如 *gwas*"},
+                              "kind": {"type": "string",
+                                       "enum": ["py_func", "py_class", "py_module",
+                                                "md_section", "sh_block", "window"]}},
+                          "required": ["query"]},
+            executor=run,
+        )
+
+    def _tool_repomap(self) -> Tool:
+        """#11：目录/文件的结构化大纲（符号 + 行号，仅启用时挂载）。"""
+        def run(args: dict) -> ToolResult:
+            try:
+                target = self._resolve(str(args.get("path") or "."), allow_abs_default=True)
+            except ToolError as e:
+                return ToolResult(f"[ToolError] {e}", True)
+            if not target.exists():
+                return ToolResult(f"路径不存在：{target}", True)
+            try:
+                n = min(max(int(args.get("max_symbols") or 200), 1), 1000)
+            except (TypeError, ValueError):
+                return ToolResult("max_symbols 必须是整数。", True)
+            try:
+                syms = self.retrieval.outline(target, n)
+            except Exception as e:  # noqa: BLE001
+                return ToolResult(f"大纲失败：{type(e).__name__}: {e}", True)
+            if not syms:
+                return ToolResult("未发现可索引的结构（目录为空或均被排除）。")
+            lines = [f"{target} 结构（{len(syms)} 个符号）："]
+            for s in syms:
+                lines.append(f"{'  ' * s.depth}{s.start:>6}  {s.kind:<9} {s.name}")
+            tr = ToolResult("\n".join(lines)[:MAX_OUTPUT])
+            tr.meta = {"path": str(target), "symbols": len(syms)}
+            return tr
+        return Tool(
+            name="RepoMap",
+            description=(
+                "给出一个目录/文件的结构化大纲（符号 + 行号）：Python 的类/函数/方法、"
+                "Markdown 的标题层级。用于快速理解陌生文件/目录的构成，再按行号 Read。"),
+            input_schema={"type": "object",
+                          "properties": {
+                              "path": {"type": "string",
+                                       "description": "目录或文件路径（默认项目根）"},
+                              "max_symbols": {"type": "integer",
+                                              "description": "最多返回的符号数，默认 200"}},
+                          "required": []},
             executor=run,
         )
 

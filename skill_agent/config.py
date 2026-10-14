@@ -81,6 +81,11 @@ class Config:
     prompt_cache: bool = False
     # #12 模型路由/降级（默认空 = 不切换后备模型）
     fallback_models: list | None = None
+    # #11 检索（Search/RepoMap，FTS5，默认关）
+    retrieval: bool = False                # 挂载检索工具
+    retrieval_roots: list | None = None    # 覆盖索引语料根（默认 skills + agent 源码）
+    retrieval_excludes: list | None = None  # 追加排除目录名/文件
+    index_dir: str | None = None           # 覆盖索引目录（默认 <project>/.skill-agent/index）
 
     @classmethod
     def load(cls, *, model: str | None = None, project: Path | None = None,
@@ -143,6 +148,10 @@ class Config:
             todo=_env_bool("SKILL_AGENT_TODO"),
             prompt_cache=_env_bool("SKILL_AGENT_PROMPT_CACHE"),
             fallback_models=_env_list("SKILL_AGENT_FALLBACK_MODELS", sep=","),
+            retrieval=_env_bool("SKILL_AGENT_RETRIEVAL"),
+            retrieval_roots=_env_list("SKILL_AGENT_INDEX_ROOTS"),
+            retrieval_excludes=_env_list("SKILL_AGENT_INDEX_EXCLUDES"),
+            index_dir=os.environ.get("SKILL_AGENT_INDEX_DIR") or None,
         )
 
 
@@ -209,6 +218,11 @@ def default_checkpoint_dir() -> Path:
 def default_memory_dir(project: Path) -> Path:
     """M12：项目级记忆目录（core.md + archival.db）。"""
     return Path(project) / ".skill-agent" / "memory"
+
+
+def default_index_dir(project: Path) -> Path:
+    """#11：项目级检索索引目录（code.db）。"""
+    return Path(project) / ".skill-agent" / "index"
 
 
 def default_spill_dir() -> Path:

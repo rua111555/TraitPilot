@@ -92,6 +92,7 @@ REPL 内命令：`/help` `/clear` `/skills` `/active` `/model X` `/permission as
 | #9 规划/todo | `TodoWrite` 工具把计划外部化为结构化清单（单一 in_progress），长任务可检查 | 默认关，`--todo` 或 `SKILL_AGENT_TODO=1` |
 | #14 prompt cache | 给稳定前缀（system + 工具定义末尾）打 `cache_control: ephemeral` | 默认关，`--prompt-cache` 或 `SKILL_AGENT_PROMPT_CACHE=1` |
 | #12 模型降级 | 过载重试耗尽后按列表依次切换后备模型 | 默认无，`--fallback-models M1,M2` 或 `SKILL_AGENT_FALLBACK_MODELS=M1,M2` |
+| #11 检索 | `Search`（FTS5/BM25 相关性检索，返回 文件:行号+片段）+ `RepoMap`（类/函数/方法/标题大纲）；纯 stdlib，语料=skills 文档+agent 源码 | 默认关，`--retrieval` 或 `SKILL_AGENT_RETRIEVAL=1`；`--index-rebuild` 强制重建 |
 
 ### 扩展工具（M4）
 
@@ -150,6 +151,23 @@ SKILL_AGENT_SANDBOX_SPEC='{"image":"python:3.11-slim","memory":"8g","cpus":"4"}'
   以相同宿主路径挂载**，否则编排脚本的 `.done` 落在容器内、宿主不可见（自动推进/`--resume` 依赖它）。
 - 只拦截 Bash 的两个进程启动点，不改动 `ToolSet.execute` 的权限/钩子治理顺序。
 
+### 检索（#11）
+
+`Search` / `RepoMap` 两个工具，让模型在「这个流程/参数/函数在哪里」这类跨文件问题上先检索再 `Read` 精读：
+
+```bash
+python3 -m skill_agent chat --retrieval
+python3 -m skill_agent chat --retrieval --index-rebuild     # 强制重建索引
+SKILL_AGENT_RETRIEVAL=1 python3 -m skill_agent chat          # 环境变量方式
+```
+
+- 索引落在 `<project>/.skill-agent/index/code.db`（FTS5 + `tokenize='trigram'`，中文友好），默认**首次用时惰性构建**，
+  之后按 `(mtime,size)` 增量刷新——`Write/Edit` 后再 `Search` 只重切改动的文件。
+- 语料**只取显式根**：`.claude/skills/**`（含 references 的 .md/.py/.sh）与 `agent/**/*.py` + `agent/docs/*.md`。
+  **绝不整仓遍历**：就地剪枝 `__pycache__/.git/.skill-agent/saved…`，读前按大小（>2MB）与后缀（`.pth/.png/.tfevents…`）拒绝，
+  故仓库里的 ML 权重（本机 ~24.5GB）不会被 stat。
+- **零新依赖**：纯 stdlib（`sqlite3` + `ast`）；不引入 tree-sitter / ripgrep / 向量库。FTS5 缺失或目录不可写时自停用、不阻断。
+- 只读工具，`--parallel-tools` 开启时与 Read/Grep 一同并行执行。
 
 ## 架构
 
@@ -165,6 +183,7 @@ agent/
 │   ├── sandbox.py          # M9：Bash 执行后端（host/rlimit/docker），纯 stdlib、默认关
 │   ├── idempotency.py      # M11：工具幂等去重（有副作用工具、run 级、默认关）
 │   ├── todo.py             # #9：计划外部化（TodoWrite，默认关）
+│   ├── retrieval.py        # #11：FTS5 检索（Search/RepoMap），纯 stdlib、默认关
 │   ├── client.py           # Anthropic Messages API 客户端（SSE 流式 + 重试回退）
 │   ├── agent.py            # agentic 循环：tool_use → 执行 → 续推；context 压缩；事件/取消钩子
 │   └── cli.py              # list / chat / 会话日志

@@ -73,6 +73,12 @@ def _common_opts(*, with_cwd: bool = False) -> argparse.ArgumentParser:
                    help="#14：给 system/工具定义打 cache_control（默认关）")
     c.add_argument("--fallback-models", default=None, metavar="M1,M2",
                    help="#12：过载重试耗尽后依次尝试的后备模型（逗号分隔，默认无）")
+    c.add_argument("--retrieval", action="store_true", default=None,
+                   help="#11：挂载 Search/RepoMap 检索工具（FTS5 索引，默认关）")
+    c.add_argument("--index-dir", default=None, metavar="DIR",
+                   help="#11：覆盖检索索引目录（默认 <project>/.skill-agent/index）")
+    c.add_argument("--index-rebuild", action="store_true", default=None,
+                   help="#11：启动时强制重建检索索引")
     c.add_argument("--verbose", action="store_true")
     return c
 
@@ -132,6 +138,10 @@ def main(argv=None) -> int:
         cfg.prompt_cache = True
     if getattr(args, "fallback_models", None):
         cfg.fallback_models = [m.strip() for m in args.fallback_models.split(",") if m.strip()]
+    if getattr(args, "retrieval", None):
+        cfg.retrieval = True
+    if getattr(args, "index_dir", None):
+        cfg.index_dir = args.index_dir
     registry = SkillRegistry(cfg.project)
     pmodel = PermissionModel.from_config(cfg, cfg.cwd)
 
@@ -156,10 +166,31 @@ def main(argv=None) -> int:
         from .session_store import new_session_id
         hooks = build_trace_hooks(getattr(cfg, "session_id", None) or new_session_id())
 
+    # ---- #11：可选检索索引（Search/RepoMap，默认关；--index-rebuild 强制重建） ----
+    retrieval = None
+    if cfg.retrieval or getattr(args, "index_rebuild", None):
+        from .retrieval import CodeIndex
+        from .config import default_index_dir
+        idx_root = Path(cfg.index_dir) if cfg.index_dir else default_index_dir(cfg.project)
+        retrieval = CodeIndex(idx_root, enabled=True,
+                              include_dirs=cfg.retrieval_roots,
+                              extra_excludes=cfg.retrieval_excludes)
+        if not retrieval.enabled:
+            print("[检索] 索引不可用（目录不可写或本机缺 FTS5），已跳过。", file=sys.stderr)
+            retrieval = None
+        elif getattr(args, "index_rebuild", None):
+            st = retrieval.refresh(force=True)
+            print(f"[检索] 索引重建完成：{st['files']} 文件 / "
+                  f"{st['indexed']} 建立 / {st['removed']} 移除 → {retrieval.db_path}",
+                  file=sys.stderr)
+        else:
+            print(f"[检索] 已启用（Search/RepoMap，索引 {retrieval.db_path}）", file=sys.stderr)
+
     tools = ToolSet(registry, cfg.cwd, cfg.permission, verbose=cfg.verbose,
                     permission_model=pmodel, hooks=hooks,
                     spill_dir=cfg.spill_dir, spill_threshold=cfg.spill_threshold,
-                    sandbox=sandbox_backend, idempotency=idem, enable_todo=cfg.todo)
+                    sandbox=sandbox_backend, idempotency=idem, enable_todo=cfg.todo,
+                    enable_retrieval=cfg.retrieval, retrieval=retrieval)
 
     # ---- M4：可选插件工具目录（默认不加载） ----
     if cfg.plugin_dirs:

@@ -217,7 +217,10 @@
 - **#12 模型路由/降级**（借鉴 litellm/OpenRouter）：过载反复重试后切换后备模型。**small_increment**。
 - **#7 evals**（借鉴 SWE-agent eval harness）：**应在 M3 LoopGuard 开启默认判定前落地以量误判率**。**medium**。
 - **#15 输出校验**：对模型返回的 tool_use 参数做与 M6 一致的结构校验后再落 executor。**small_increment**。
-- **#11 repomap/RAG、#8 子 agent/委派**：体量大、需接受新依赖（tree-sitter/向量库/多 agent 运行时），**与当前“仅 requests/PyYAML/flask”约束冲突，须先评审**，可后置。其中 #8 为 **architectural_risk**（新增子 agent 上下文隔离→内层预算/权限/loop 边界）。
+- **#11 repomap/RAG**：原评估按 tree-sitter/向量库路线（需新依赖）而後置；**已改为纯 stdlib FTS5 路线并落地**
+  （`retrieval.py` 的 Search/RepoMap，见 §8）。**#8 子 agent/委派** 体量大、需接受多 agent 运行时依赖，
+  **与当前「仅 requests/PyYAML/flask」约束冲突，须先评审**，仍後置。其中 #8 为 **architectural_risk**
+  （新增子 agent 上下文隔离→内层预算/权限/loop 边界）。
 
 ---
 
@@ -386,8 +389,9 @@
 ## 8. 落地状态（截至 2026-10-14）
 
 **已完成**：M1、M2、M3、M4、M6、M7、M8a、M9、M10、M11、M12、M13，以及补齐项 #9（TodoWrite）、
-#12（模型降级，可配置后备列表）、#14（prompt cache_control）、#6（trace 可观测性）。
-全量 `python3 -m pytest tests/ -q` = **146 项通过**。
+#12（模型降级，可配置后备列表）、#14（prompt cache_control）、#6（trace 可观测性）、
+#11（检索——见下）。
+全量 `python3 -m pytest tests/ -q` = **167 项通过**。
 
 - **M9 沙箱**：落地为 `sandbox.py` 三档（host/rlimit/docker），仅拦截 Bash 两个启动点；
   Tier-2 后台 `.pid` 风险用「宿主监督 pid（`echo $$` → `exec docker run --rm`）」解决，
@@ -397,6 +401,13 @@
 - **M8 第二部分**（权限模式 default/acceptEdits/plan/bypassPermissions、规则持久化「总是允许」、
   Web 预演弹窗）**未做**——M8a 已覆盖规则表/路径边界/写审批主体；此部分为增强项，本机单用户
   使用下优先级低，可作后续增量。
-- **#8 子 agent/委派、#11 repomap/RAG**：仍后置，需评审新增依赖，未做。
+- **#11 检索：已落地**（原按「tree-sitter + 向量库」评估为需新依赖而後置；本机核实 SQLite 已编译
+  FTS5，据此改走**纯 stdlib** 路线）。实现为 `retrieval.py`：`Search`（FTS5/BM25 相关性检索，返回
+  文件:行号+片段）+ `RepoMap`（Python 类/函数/方法、Markdown 标题大纲）两个只读工具；
+  分块器为纯函数（Python 用 `ast`、Markdown 按标题、Shell 按块）。索引落 `<project>/.skill-agent/index/code.db`，
+  惰性构建 + 按 `(mtime,size)` 增量刷新。**安全核心：只从显式语料根遍历、就地剪枝 + 读前按大小/后缀拒绝，
+  不整仓扫描**（仓库 ~24.5GB ML 权重永不 stat）。默认关，`--retrieval` 开启，`--index-rebuild` 强制重建；
+  FTS5 缺失/目录不可写自停用。测试 `tests/test_retrieval.py` 21 项。
+- **#8 子 agent/委派**：仍后置，需评审多 agent 运行时依赖，未做。
 
 **结论**：13 个编号模块中 12 个已完成，M5 经决策放弃；harness 主体增补收官。
