@@ -120,7 +120,7 @@ def build_session(session_id: str, cfg, registry) -> WebSession:
         registry, cfg.cwd, permission=cfg.permission,
         verbose=cfg.verbose, confirm_handler=hooks.confirm,
         permission_model=PermissionModel.from_config(cfg, cfg.cwd),
-        hooks=trace_hooks)
+        hooks=trace_hooks, spill_dir=cfg.spill_dir, spill_threshold=cfg.spill_threshold)
     agent = Agent(cfg, registry, session.tools)
     agent.on_event = hooks.emit
     agent.cancel_event = session.cancel_event

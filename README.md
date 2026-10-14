@@ -86,6 +86,7 @@ REPL 内命令：`/help` `/clear` `/skills` `/active` `/model X` `/permission as
 | M4 工具注册表 | 工具以数据登记、可运行时挂载；声明式插件目录（`*.json` 规格） | `--plugin-dir DIR`（默认不加载，防扩大执行面）|
 | M10 钩子 | PreToolUse（可阻断/改参）/ PostToolUse（可脱敏）/ 会话事件钩子 | 代码注入 `HookManager`；`--trace` 用示例钩子落盘 |
 | #6 可观测性 | 工具调用 trace（工具名/参数摘要/耗时/结果）jsonl | `--trace` 或 `SKILL_AGENT_HOOKS=1` |
+| M7 工具治理 | per-tool 看门狗超时；超长结果落盘转存（可继续 Read）；同轮只读工具并行 | `--spill` / `--parallel-tools`（默认关）|
 
 ### 扩展工具（M4）
 
