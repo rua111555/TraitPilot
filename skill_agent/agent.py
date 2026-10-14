@@ -70,6 +70,8 @@ class Agent:
         self.client = AnthropicClient(
             base_url=cfg.base_url, api_key=cfg.api_key,
             model=cfg.model, max_tokens=cfg.max_tokens, verbose=cfg.verbose,
+            prompt_cache=bool(getattr(cfg, "prompt_cache", False)),
+            fallback_models=list(getattr(cfg, "fallback_models", None) or []),
         )
         self.history: list[dict] = []
         self._active_skills: set[str] = set()   # 本轮 Skill 调用（决定下轮白名单）
@@ -125,6 +127,10 @@ class Agent:
         """执行一个用户请求（可能多轮工具调用），返回最终文本。"""
         self._usage = _new_usage(self.cfg.model)   # 每轮用户请求重置用量累计
         self._last_stop = None
+        # M11：幂等去重按「一次用户请求」为界（run 级），跨请求不残留
+        guard = getattr(self.tools, "idempotency", None)
+        if guard is not None:
+            guard.reset()
         self.history.append({"role": "user", "content": user_text})
         self._persist({"role": "user", "content": user_text})
         try:

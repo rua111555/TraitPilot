@@ -65,6 +65,14 @@ def _common_opts(*, with_cwd: bool = False) -> argparse.ArgumentParser:
                    help="M7：同轮多个只读工具并行执行（默认关）")
     c.add_argument("--sandbox", choices=["host", "rlimit", "docker"], default=None,
                    help="M9：Bash 执行后端（host=宿主默认 / rlimit=资源上限 / docker=强隔离）")
+    c.add_argument("--idempotency", action="store_true", default=None,
+                   help="M11：同一次运行内相同副作用工具调用只执行一次（默认关）")
+    c.add_argument("--todo", action="store_true", default=None,
+                   help="#9：挂载 TodoWrite 工具，把计划外部化（默认关）")
+    c.add_argument("--prompt-cache", action="store_true", default=None,
+                   help="#14：给 system/工具定义打 cache_control（默认关）")
+    c.add_argument("--fallback-models", default=None, metavar="M1,M2",
+                   help="#12：过载重试耗尽后依次尝试的后备模型（逗号分隔，默认无）")
     c.add_argument("--verbose", action="store_true")
     return c
 
@@ -116,6 +124,14 @@ def main(argv=None) -> int:
         cfg.parallel_tools = True
     if getattr(args, "sandbox", None):
         cfg.sandbox = args.sandbox
+    if getattr(args, "idempotency", None):
+        cfg.idempotency = True
+    if getattr(args, "todo", None):
+        cfg.todo = True
+    if getattr(args, "prompt_cache", None):
+        cfg.prompt_cache = True
+    if getattr(args, "fallback_models", None):
+        cfg.fallback_models = [m.strip() for m in args.fallback_models.split(",") if m.strip()]
     registry = SkillRegistry(cfg.project)
     pmodel = PermissionModel.from_config(cfg, cfg.cwd)
 
@@ -127,6 +143,12 @@ def main(argv=None) -> int:
     elif cfg.sandbox != "host":
         print(f"[沙箱] 执行后端 = {sandbox_backend.name}", file=sys.stderr)
 
+    # ---- M11：可选幂等去重（默认关） ----
+    from .idempotency import IdempotencyGuard
+    idem = IdempotencyGuard(enabled=cfg.idempotency, mode=cfg.idempotency_mode)
+    if idem.enabled:
+        print(f"[幂等] 已启用（模式={idem.mode}，仅作用有副作用工具）", file=sys.stderr)
+
     # ---- M10：可选 trace 钩子 ----
     hooks = None
     if getattr(args, "trace", None):
@@ -137,7 +159,7 @@ def main(argv=None) -> int:
     tools = ToolSet(registry, cfg.cwd, cfg.permission, verbose=cfg.verbose,
                     permission_model=pmodel, hooks=hooks,
                     spill_dir=cfg.spill_dir, spill_threshold=cfg.spill_threshold,
-                    sandbox=sandbox_backend)
+                    sandbox=sandbox_backend, idempotency=idem, enable_todo=cfg.todo)
 
     # ---- M4：可选插件工具目录（默认不加载） ----
     if cfg.plugin_dirs:

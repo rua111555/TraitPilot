@@ -72,6 +72,15 @@ class Config:
     sandbox: str = "host"                  # host | rlimit | docker
     sandbox_spec: dict | None = None       # rlimit/docker 档位参数（上限/镜像/挂载等）
     sandbox_strict: bool = False           # 档位不可用时 fail-closed（默认 fail-open 回宿主）
+    # M11 工具幂等去重（默认关）
+    idempotency: bool = False              # 同一次运行内相同副作用调用只执行一次
+    idempotency_mode: str = "reuse"        # reuse=复用上次结果 | deny=拒绝重放
+    # #9 规划/todo（默认关，挂载 TodoWrite 工具）
+    todo: bool = False
+    # #14 prompt caching（默认关；给 system/工具定义打 cache_control）
+    prompt_cache: bool = False
+    # #12 模型路由/降级（默认空 = 不切换后备模型）
+    fallback_models: list | None = None
 
     @classmethod
     def load(cls, *, model: str | None = None, project: Path | None = None,
@@ -129,6 +138,11 @@ class Config:
             sandbox=os.environ.get("SKILL_AGENT_SANDBOX", "host"),
             sandbox_spec=_env_json("SKILL_AGENT_SANDBOX_SPEC"),
             sandbox_strict=_env_bool("SKILL_AGENT_SANDBOX_STRICT"),
+            idempotency=_env_bool("SKILL_AGENT_IDEMPOTENCY"),
+            idempotency_mode=os.environ.get("SKILL_AGENT_IDEMPOTENCY_MODE", "reuse"),
+            todo=_env_bool("SKILL_AGENT_TODO"),
+            prompt_cache=_env_bool("SKILL_AGENT_PROMPT_CACHE"),
+            fallback_models=_env_list("SKILL_AGENT_FALLBACK_MODELS", sep=","),
         )
 
 

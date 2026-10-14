@@ -380,3 +380,23 @@
 - #11 repomap/RAG、#8 子 agent/委派：体量大、需接受新增依赖（tree-sitter/向量库/多 agent 运行时），**须先评审**后置。
 
 > **每个阶段结束跑对应 `tests/test_*.py`；新逻辑集中于独立文件，回退只需还原 `agent._run` 与 `client` 的两处标注点。**
+
+---
+
+## 8. 落地状态（截至 2026-10-14）
+
+**已完成**：M1、M2、M3、M4、M6、M7、M8a、M9、M10、M11、M12、M13，以及补齐项 #9（TodoWrite）、
+#12（模型降级，可配置后备列表）、#14（prompt cache_control）、#6（trace 可观测性）。
+全量 `python3 -m pytest tests/ -q` = **146 项通过**。
+
+- **M9 沙箱**：落地为 `sandbox.py` 三档（host/rlimit/docker），仅拦截 Bash 两个启动点；
+  Tier-2 后台 `.pid` 风险用「宿主监督 pid（`echo $$` → `exec docker run --rm`）」解决，
+  `TaskOutput` 判活无需改动；同批修复了 `_bash_background` 的 pid 死代码缺陷。
+- **M5 MCP 客户端：经决策者判定「不需要 MCP 服务器」，**放弃**，不实现**（依赖结论仍留档于
+  `docs/dependency-strategy.md`）。
+- **M8 第二部分**（权限模式 default/acceptEdits/plan/bypassPermissions、规则持久化「总是允许」、
+  Web 预演弹窗）**未做**——M8a 已覆盖规则表/路径边界/写审批主体；此部分为增强项，本机单用户
+  使用下优先级低，可作后续增量。
+- **#8 子 agent/委派、#11 repomap/RAG**：仍后置，需评审新增依赖，未做。
+
+**结论**：13 个编号模块中 12 个已完成，M5 经决策放弃；harness 主体增补收官。

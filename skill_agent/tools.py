@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import sandbox as sandbox_mod
+from .idempotency import IdempotencyGuard
 from .permissions import PermissionModel
 from .skills import SkillRegistry
 from .validation import validate_args
@@ -88,7 +89,7 @@ class ToolSet:
                  permission: str = "auto", verbose: bool = False,
                  confirm_handler=None, permission_model: PermissionModel | None = None,
                  hooks=None, spill_dir=None, spill_threshold: int | None = None,
-                 sandbox=None):
+                 sandbox=None, idempotency=None, enable_todo: bool = False):
         self.registry = registry
         self.cwd = Path(cwd)
         self.permission = permission            # auto | ask
@@ -105,6 +106,8 @@ class ToolSet:
         self.spill_threshold = int(spill_threshold or MAX_OUTPUT)
         # M9：Bash 执行后端（默认 HostBackend → 与改造前逐字节一致）
         self.sandbox = sandbox or sandbox_mod.HostBackend()
+        # M11：幂等去重（默认关闭 → 与改造前逐字节一致）
+        self.idempotency = idempotency or IdempotencyGuard()
         self._bg_tasks: dict[str, dict] = {}    # task_id -> {log, pid, cmd}
         self.max_tokens_warning_shown = False
 
@@ -115,6 +118,9 @@ class ToolSet:
                   self._tool_write(), self._tool_edit(), self._tool_glob(),
                   self._tool_grep(), self._tool_taskoutput()]:
             self.registry_tools.register(t)
+        # #9：规划/todo 工具（默认不挂 → 模型可见工具集与改造前一致）
+        if enable_todo:
+            self.registry_tools.register(self._tool_todo())
         # M7：为内置工具套上 per-tool 看门狗超时
         self._attach_timeouts()
 
@@ -171,12 +177,19 @@ class ToolSet:
                     ans = input(f"[权限] 允许执行? [y/N]  {name}: {preview[:120]}\n> ").strip().lower()
                     if ans not in ("y", "yes"):
                         return ToolResult("用户拒绝执行该操作。", True)
+        # M11：幂等去重——只对有副作用工具、且仅在真正执行前生效（默认关）
+        idem_key, idem_hit = self.idempotency.check(name, args)
+        if idem_hit is not None:
+            return self.idempotency.render(name, idem_hit)
         try:
             result = tool.executor(args)
         except ToolError as e:
             result = ToolResult(f"[ToolError] {e}", True)
         except Exception as e:  # noqa: BLE001
             result = ToolResult(f"[异常] {name} 执行失败：{type(e).__name__}: {e}", True)
+        # M11：成功执行后记账（失败不记，允许重试）
+        if result is not None:
+            self.idempotency.record(idem_key, name, result)
         # M10：PostToolUse 钩子（可脱敏/改写结果）
         if self.hooks is not None and not self.hooks.empty and result is not None:
             replaced = self.hooks.post_tool_use(name, args, result)
@@ -539,6 +552,31 @@ class ToolSet:
                                          "path": {"type": "string", "description": "默认项目根"},
                                          "include": {"type": "string", "description": "文件名 glob，如 *.py"}},
                           "required": ["pattern"]},
+            executor=run,
+        )
+
+    def _tool_todo(self) -> Tool:
+        """#9：把计划外部化为结构化清单（仅启用时挂载）。"""
+        def run(args: dict) -> ToolResult:
+            from .todo import parse_todos, render, progress
+            items, err = parse_todos(args.get("todos", ""))
+            if err:
+                return ToolResult(f"输入校验失败：{err}", True)
+            tr = ToolResult(render(items))
+            tr.meta = {"todo": progress(items)}
+            return tr
+        return Tool(
+            name="TodoWrite",
+            description=(
+                "创建/更新当前任务的待办清单，把计划外部化以便后续检查。传入完整清单"
+                "（覆盖式）。每条含 content 与 status(pending|in_progress|completed)；"
+                "同一时刻最多一条 in_progress。长任务建议每完成一步就更新。"),
+            input_schema={"type": "object",
+                          "properties": {
+                              "todos": {"type": "string",
+                                        "description": 'JSON 数组字符串，如 '
+                                                       '[{"content":"比对","status":"in_progress"}]'}},
+                          "required": ["todos"]},
             executor=run,
         )
 

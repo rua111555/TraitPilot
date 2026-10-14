@@ -21,12 +21,19 @@ class APIError(Exception):
 
 class AnthropicClient:
     def __init__(self, base_url: str, api_key: str,
-                 model: str, max_tokens: int, verbose: bool = False):
+                 model: str, max_tokens: int, verbose: bool = False,
+                 prompt_cache: bool = False, fallback_models: list | None = None,
+                 max_attempts: int = 4):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.max_tokens = max_tokens
         self.verbose = verbose
+        # #14：在稳定前缀（system / 工具定义）标注 cache_control（默认关）
+        self.prompt_cache = bool(prompt_cache)
+        # #12：过载重试耗尽后按列表切换后备模型（默认空 = 不切换）
+        self.fallback_models = list(fallback_models or [])
+        self.max_attempts = int(max_attempts)
 
     # ---------------- 主入口 ----------------
     def create(
@@ -38,22 +45,70 @@ class AnthropicClient:
         stream: bool = True,
         on_delta: Callable[[str], None] | None = None,
     ) -> tuple[list[dict], str, int]:
-        """返回 (assistant content blocks, stop_reason, est_output_tokens)。"""
+        """返回 (assistant content blocks, stop_reason, est_output_tokens)。
+
+        #12：对 ``self.model`` 先重试 ``max_attempts`` 次；仍失败则依次尝试
+        ``fallback_models``。切换后 ``self.model`` 更新为实际生效的模型。
+        """
+        models = [self.model] + [m for m in self.fallback_models if m != self.model]
+        last_err: Exception | None = None
+        for mi, model in enumerate(models):
+            payload = self._payload(model, system, tools, messages, stream)
+            try:
+                blocks, stop_reason, out_tokens = self._attempt(payload, stream, on_delta)
+                if mi > 0:
+                    self.model = model        # 记录实际生效模型
+                    if self.verbose:
+                        print(f"[client] 已降级到后备模型 {model}", file=__import__("sys").stderr)
+                return blocks, stop_reason, out_tokens
+            except APIError as e:
+                last_err = e
+                if mi + 1 < len(models):
+                    continue                  # 切下一个模型
+                raise
+        raise last_err or APIError("请求失败")
+
+    def _payload(self, model, system, tools, messages, stream) -> dict:
         payload = {
-            "model": self.model,
+            "model": model,
             "max_tokens": self.max_tokens,
             "system": system,
             "tools": tools,
             "messages": messages,
             "stream": stream,
         }
-        for attempt in range(4):
+        if self.prompt_cache:
+            self._apply_cache_control(payload)
+        return payload
+
+    def _apply_cache_control(self, payload: dict) -> None:
+        """#14：给稳定前缀打 cache_control（system 末块 + 最后一个工具定义）。
+
+        仅改请求体形态，不改消息内容；对不支持缓存的代理是 no-op（多余字段被忽略）。
+        """
+        sysv = payload.get("system")
+        if isinstance(sysv, str) and sysv:
+            payload["system"] = [{"type": "text", "text": sysv,
+                                  "cache_control": {"type": "ephemeral"}}]
+        elif isinstance(sysv, list) and sysv and isinstance(sysv[-1], dict):
+            sysv = list(sysv)
+            sysv[-1] = {**sysv[-1], "cache_control": {"type": "ephemeral"}}
+            payload["system"] = sysv
+        tools = payload.get("tools")
+        if isinstance(tools, list) and tools and isinstance(tools[-1], dict):
+            tools = list(tools)
+            tools[-1] = {**tools[-1], "cache_control": {"type": "ephemeral"}}
+            payload["tools"] = tools
+
+    def _attempt(self, payload: dict, stream: bool, on_delta):
+        """对单个模型做退避重试。"""
+        for attempt in range(self.max_attempts):
             try:
                 if stream:
                     try:
                         return self._stream(payload, on_delta)
                     except (requests.RequestException, ValueError) as e:
-                        if attempt >= 3:
+                        if attempt >= self.max_attempts - 1:
                             raise APIError(f"流式请求失败：{e}")
                         time.sleep(self._backoff(attempt))
                         continue
@@ -61,9 +116,10 @@ class AnthropicClient:
             except APIError as e:
                 raise e
             except requests.RequestException as e:
-                if attempt >= 3:
+                if attempt >= self.max_attempts - 1:
                     raise APIError(f"请求失败：{e}")
                 time.sleep(self._backoff(attempt))
+        raise APIError("请求失败（重试耗尽）")
 
     def _stream(self, payload: dict, on_delta) -> tuple[list[dict], str, int]:
         headers = self._headers()

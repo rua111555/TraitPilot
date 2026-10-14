@@ -88,6 +88,10 @@ REPL 内命令：`/help` `/clear` `/skills` `/active` `/model X` `/permission as
 | #6 可观测性 | 工具调用 trace（工具名/参数摘要/耗时/结果）jsonl | `--trace` 或 `SKILL_AGENT_HOOKS=1` |
 | M7 工具治理 | per-tool 看门狗超时；超长结果落盘转存（可继续 Read）；同轮只读工具并行 | `--spill` / `--parallel-tools`（默认关）|
 | M9 沙箱 | Bash 执行后端三档：宿主 / stdlib rlimit / docker 强隔离；缺依赖 fail-soft 回退宿主 | 默认 `host`；`--sandbox rlimit\|docker` 或 `SKILL_AGENT_SANDBOX` |
+| M11 幂等去重 | 同一次运行内相同「有副作用」工具调用（Bash/Write/Edit）只执行一次，防重复起后台/重复写 | 默认关，`--idempotency` 或 `SKILL_AGENT_IDEMPOTENCY=1`（模式 `reuse`/`deny`）|
+| #9 规划/todo | `TodoWrite` 工具把计划外部化为结构化清单（单一 in_progress），长任务可检查 | 默认关，`--todo` 或 `SKILL_AGENT_TODO=1` |
+| #14 prompt cache | 给稳定前缀（system + 工具定义末尾）打 `cache_control: ephemeral` | 默认关，`--prompt-cache` 或 `SKILL_AGENT_PROMPT_CACHE=1` |
+| #12 模型降级 | 过载重试耗尽后按列表依次切换后备模型 | 默认无，`--fallback-models M1,M2` 或 `SKILL_AGENT_FALLBACK_MODELS=M1,M2` |
 
 ### 扩展工具（M4）
 
@@ -159,6 +163,8 @@ agent/
 │   ├── skills.py           # SkillRegistry：扫描 .claude/skills、解析 SKILL.md frontmatter
 │   ├── tools.py            # 工具执行器 + 权限门 + 后台任务（Bash background=true）
 │   ├── sandbox.py          # M9：Bash 执行后端（host/rlimit/docker），纯 stdlib、默认关
+│   ├── idempotency.py      # M11：工具幂等去重（有副作用工具、run 级、默认关）
+│   ├── todo.py             # #9：计划外部化（TodoWrite，默认关）
 │   ├── client.py           # Anthropic Messages API 客户端（SSE 流式 + 重试回退）
 │   ├── agent.py            # agentic 循环：tool_use → 执行 → 续推；context 压缩；事件/取消钩子
 │   └── cli.py              # list / chat / 会话日志
