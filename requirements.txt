@@ -1,4 +1,20 @@
-# Skill-Agent 依赖（本机 anaconda3 base / Agent 环境均已预装）
+# ─────────────────────────────────────────────────────────────────────────────
+# SkillAgent「本体」的 Python 依赖 —— 只有这三个。
+#
+# ⚠️ 这不是「跑通整个项目」所需的全部环境！三个包只够 Agent 本身跑起来
+#    （对话 / 读技能 / 执行 Bash）。仓库自带的 21 个技能背后还有：
+#      · 两套 conda 环境（Agent：bwa/samtools/bcftools/gatk4/plink…；
+#        r-gwas：R 4.3 + rMVP/CMplot/pheatmap…）
+#      · 若干不在 conda 的独立二进制（gemma / gcta64 / LDBlockShow / Haploview…）
+#      · 表型提取的 ML 栈（torch/transformers/numpy/pandas/opencv/scipy…）跑在 conda base
+#      · 系统级依赖（bash ≥4.3、新版 libstdc++、docker/GPU 可选）
+#      · 数据文件（pipeline.db、参考基因组、模型权重…）
+#
+# 完整部署清单与逐步安装指引见：environment/README.md
+# 装完先自检：bash environment/check_env.sh    （--core 只查本体，缺什么一目了然）
+# ─────────────────────────────────────────────────────────────────────────────
+
 requests>=2.31
 PyYAML>=6.0
 flask>=3.0          # 仅 Web 前端需要（本机已装 3.1.2）
+# pytest            # 仅跑 tests/ 时需要，按需 pip install pytest

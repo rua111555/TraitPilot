@@ -29,12 +29,18 @@
 
 ### 依赖
 
-只依赖 `requests + PyYAML + flask`（本机已预装，见 `agent/requirements.txt`）；Python 3.13（anaconda3 base）。
+**Agent 本体**只依赖 `requests + PyYAML + flask`（本机已预装，见 [`agent/requirements.txt`](../requirements.txt)）；
+Python ≥3.10（本机 3.13，anaconda3 base）。
 
 ```bash
 cd /home/chenyuxi/skill/agent
 python3 -c "import requests, yaml, flask; print('ok')"   # 确认依赖在位
 ```
+
+> ⚠️ 这三个包**只够 Agent 本体**（对话 / 读技能 / 执行 Bash）。自带 21 个技能背后还有两套 conda
+> 环境（`Agent` / `r-gwas`）、若干独立二进制、表型提取的 ML 栈（跑在 conda base）与数据文件。
+> **完整部署环境清单与逐步安装指引见 [`environment/README.md`](../environment/README.md)**，
+> 装完先跑自检：`bash environment/check_env.sh`（`--core` 只查本体）。
 
 ### 凭证与配置
 
@@ -550,6 +556,7 @@ python3 run.py chat --resume 20261014T101530-a1b2
 | Web 打不开 | 默认只绑 `127.0.0.1`；远程用 SSH 转发；查 `web.log` |
 | **前端显示的模型/技能与 `config.json` 不一致，或无法对话** | 多半是**旧的后台进程**还在跑（改过配置/代码但没重启）。`./start_web.sh restart` 重载，再 `Ctrl-Shift-R` 硬刷新浏览器 |
 | 审查 trace | `~/.skill-agent/traces/`（`--trace`）；会话日志 `~/.skill-agent/sessions/` |
+| **部署到新机器/换机后跑不通** | 先跑 `bash environment/check_env.sh`，按「核心缺失/可选缺失」逐项对照 [`environment/README.md`](../environment/README.md)（conda 环境、独立二进制、GLIBCXX、bash 版本等） |
 
 ---
 

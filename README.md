@@ -25,6 +25,23 @@ python3 -m skill_agent          # 或 python3 run.py / python3 run.py chat
 > `ANTHROPIC_AUTH_TOKEN`，会覆盖 `config.json` 中的同名项。`config.json` 还可开关可选能力
 > （`retrieval` / `memory` / `persist` / `sandbox` / `todo` …），详见 [`config.json.example`](config.json.example)。
 
+## 部署到新机器
+
+`requirements.txt` 只有三个包，**只够 Agent 本体**（对话 / 读技能 / 执行 Bash）。自带 21 个技能
+背后还有两套 conda 环境（`Agent` / `r-gwas`）、不在 conda 的独立二进制（gemma / gcta64 /
+LDBlockShow / Haploview…）、表型提取的 ML 栈（跑在 conda base）以及数据文件。
+
+**完整环境清单、逐步部署指引与常见坑见 [`environment/README.md`](environment/README.md)。**
+
+```bash
+bash environment/check_env.sh          # 环境自检（九块检查 + 安装提示）
+bash environment/check_env.sh --core   # 只查 Agent 本体，不碰生信管线
+bash environment/check_env.sh --quiet  # 只打印缺失项
+```
+
+自检末尾汇总「核心缺失 / 可选缺失」，核心有缺即返回非零退出码。`environment/` 下另有
+`Agent.yml` / `r-gwas.yml`（两套 conda 环境的完整导出），可 `conda env create -f` 直接复刻。
+
 ## 常用命令
 
 ```bash
@@ -191,7 +208,8 @@ agent/                        # 本目录即仓库根，也是「项目根」（
 ├── run_web.py              # Web 入口：python run_web.py → http://127.0.0.1:8787
 ├── config.json.example     # 配置模板（复制为 config.json 填 api_key）
 ├── skills/                 # 自带技能库（21 个；模型权重 .pth 已 gitignore）
-├── requirements.txt        # requests + PyYAML + flask（本机已预装）
+├── requirements.txt        # requests + PyYAML + flask（**仅 Agent 本体**，本机已预装）
+├── environment/            # 完整部署环境：README.md（清单/指引）+ check_env.sh（自检）+ Agent.yml/r-gwas.yml
 ├── skill_agent/
 │   ├── config.py           # 配置：环境变量 → config.json → 默认值（不依赖 Claude Code）
 │   ├── skills.py           # SkillRegistry：扫描 skills/、解析 SKILL.md frontmatter
