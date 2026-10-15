@@ -60,9 +60,37 @@ export ANTHROPIC_BASE_URL="https://api.anthropic.com"
 export ANTHROPIC_AUTH_TOKEN="<你的token>"
 ```
 
-> `config.json` 已被 `.gitignore` 忽略，凭证不会入库。`config.json` 还可开关可选能力
-> （`retrieval` / `memory` / `persist` / `sandbox` / `todo` …）。
+> `config.json` 已被 `.gitignore` 忽略，凭证不会入库。`config.json` 还是**功能总开关**：
+> 把想用的能力由 `false` 改成 `true` 即开启（见下一节与 §7）。
 > 代理侧目前只稳定提供 `DSv4-flash` 一个模型 id（`claude-*` 常 503）。见 [参数 `-m`](#3-命令行参数总表)。
+
+### config.json 功能开关一览
+
+在 `config.json` 里设置这些键即可打开对应 harness 能力（省略 = 用默认，多数默认关）。
+也可换成同名的 `SKILL_AGENT_*` 环境变量或 CLI 参数（CLI > 环境变量 > config.json）。
+
+| 配置键 | 打开的能力 | 说明 |
+|---|---|---|
+| `retrieval` | #11 检索 | 挂载 `Search`/`RepoMap`（FTS5 索引） |
+| `todo` | #9 规划 | 挂载 `TodoWrite`，计划外部化 |
+| `memory` | M12 分层记忆 | `core.md` + archival 检索 |
+| `summary_compaction` | M12 摘要压缩 | 长对话按结构化前情摘要压缩 |
+| `persist` | M13 会话持久化 | 逐条落盘，支持 `--continue/--resume` |
+| `parallel_tools` | M7 只读并行 | 同轮多个只读工具并行执行 |
+| `loop_guard` | M3 死循环熔断 | 无进展循环检测（`loop_warn`/`loop_halt` 调参）|
+| `idempotency` | M11 幂等去重 | 有副作用工具 run 内只执行一次（`idempotency_mode`）|
+| `prompt_cache` | #14 prompt cache | 稳定前缀打 `cache_control` |
+| `restrict_paths` | M8a 路径边界 | 越界读写拒绝 |
+| `write_approval` | M8a 写审批 | Write/Edit 纳入审批门 |
+| `trace` | #6 可观测性 | 工具调用 trace 落盘（等价 `--trace`）|
+| `spill` | M7 结果落盘 | 超长工具结果转存（`spill_threshold`）|
+| `sandbox` | M9 沙箱 | `host`/`rlimit`/`docker`（`sandbox_strict`/`sandbox_spec`）|
+| `fallback_models` | #12 模型降级 | 过载后依次切后备模型（数组）|
+
+调参键（可省略）：`max_tokens`、`max_turns`、`max_seconds`、`max_output_tokens`、
+`spill_threshold`、`loop_warn`、`loop_halt`、`index_dir`、`retrieval_roots`、
+`retrieval_excludes`、`plugin_dirs`。基础键：`base_url`、`api_key`、`model`、`permission`、
+`skills_dir`、`cwd`。完整模板见 [`config.json.example`](../config.json.example)。
 
 ### 项目根与技能目录探测
 

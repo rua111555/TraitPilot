@@ -1,22 +1,46 @@
 {
   "//": "SkillAgent 配置模板。复制为 config.json 后按需修改；config.json 已被 .gitignore 忽略。",
-  "//优先级": "环境变量 > config.json > 代码默认值。ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 会覆盖下面同名项。",
+  "//优先级": "CLI 参数 > 环境变量 > config.json > 代码默认值。ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 会覆盖下面的 base_url / api_key。",
+  "//用法": "把想要的功能由 false 改成 true 即开启；省略任何键 = 用默认（多数开关默认关）。",
 
   "base_url": "https://api.anthropic.com",
   "api_key": "",
   "model": "claude-opus-4-5",
-
-  "//可选": "以下键均可省略；省略即用默认（多数开关默认关）。",
   "permission": "auto",
   "skills_dir": "skills",
   "cwd": "",
 
+  "//可选功能": "—— 以下按需开启 ——",
+
   "retrieval": false,
-  "memory": false,
-  "persist": false,
-  "sandbox": "host",
   "todo": false,
+  "memory": false,
+  "summary_compaction": false,
+  "persist": false,
   "parallel_tools": false,
   "prompt_cache": false,
-  "fallback_models": []
+  "loop_guard": false,
+  "idempotency": false,
+  "restrict_paths": false,
+  "write_approval": false,
+  "trace": false,
+  "spill": false,
+
+  "sandbox": "host",
+  "sandbox_strict": false,
+  "sandbox_spec": {},
+
+  "fallback_models": [],
+
+  "//调参": "—— 需要时再填；留空/省略即默认 ——",
+  "max_tokens": 8192,
+  "max_turns": null,
+  "max_seconds": null,
+  "max_output_tokens": null,
+  "spill_threshold": 30000,
+  "index_dir": "",
+  "retrieval_roots": [],
+  "retrieval_excludes": [],
+  "idempotency_mode": "reuse",
+  "plugin_dirs": []
 }

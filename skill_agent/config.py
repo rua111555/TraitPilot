@@ -45,38 +45,107 @@ def load_config_file(project: Path | None = None,
 
 
 def _apply_file_overrides(cfg: "Config", data: dict) -> None:
-    """把 config.json 里出现的可选键覆盖到 Config（仅存在才覆盖，未提供保持默认关）。"""
+    """把 config.json 里的键覆盖到 Config（仅出现才覆盖；类型非法则忽略该键）。
+
+    支持全部可选能力开关，使 config.json 成为单一控制面板。
+    便捷键：``spill: true`` → 默认落盘目录；``trace: true`` → 启用示例 trace 钩子。
+    """
     if not data:
         return
-    if data.get("model"):
-        cfg.model = str(data["model"])
-    if data.get("max_tokens"):
-        try:
-            cfg.max_tokens = int(data["max_tokens"])
-        except (TypeError, ValueError):
-            pass
-    if data.get("permission") in ("auto", "ask"):
-        cfg.permission = data["permission"]
-    if data.get("skills_dir"):
-        cfg.skills_dir = Path(str(data["skills_dir"])).expanduser()
-    if data.get("cwd"):
-        cfg.cwd = Path(str(data["cwd"])).expanduser()
-    for key in ("retrieval", "memory", "persist", "todo", "parallel_tools",
-                "prompt_cache", "loop_guard", "idempotency", "restrict_paths",
-                "write_approval", "summary_compaction"):
-        if data.get(key) is True:
-            setattr(cfg, key, True)
-        elif data.get(key) is False:
-            setattr(cfg, key, False)
-    if data.get("memory") is not None:
-        cfg.memory_enabled = bool(data["memory"])
+
+    def _str(key: str, attr: str | None = None) -> None:
+        v = data.get(key)
+        if isinstance(v, str) and v.strip():
+            setattr(cfg, attr or key, v.strip())
+
+    def _int(key: str, attr: str | None = None) -> None:
+        v = data.get(key)
+        if isinstance(v, bool):
+            return
+        if isinstance(v, int):
+            setattr(cfg, attr or key, v)
+        elif isinstance(v, str) and v.strip().lstrip("-").isdigit():
+            setattr(cfg, attr or key, int(v))
+
+    def _float(key: str, attr: str | None = None) -> None:
+        v = data.get(key)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            setattr(cfg, attr or key, float(v))
+
+    def _bool(key: str, attr: str | None = None) -> None:
+        if key in data and isinstance(data[key], bool):
+            setattr(cfg, attr or key, data[key])
+
+    def _list(key: str, attr: str | None = None) -> None:
+        v = data.get(key)
+        if isinstance(v, list):
+            items = [str(x).strip() for x in v if str(x).strip()]
+            if items:
+                setattr(cfg, attr or key, items)
+        elif isinstance(v, str) and v.strip():
+            setattr(cfg, attr or key, [p.strip() for p in v.split(",") if p.strip()])
+
+    # —— 基础 ——
+    # 注意：model / base_url / api_key / permission / skills_dir / cwd / max_tokens 的
+    # 优先级（CLI > 环境变量 > config.json）在 Config.load 内已解析，此处不重复覆盖。
+    _str("session_id")
+
+    # —— M8a 权限 ——
+    _bool("restrict_paths")
+    _bool("write_approval")
+
+    # —— M12 上下文与记忆 ——
+    _bool("summary_compaction")
+    _bool("memory", "memory_enabled")
+    _str("summary_model")
+
+    # —— M13 / M1b 预算 ——
+    _bool("persist")
+    _int("max_turns")
+    _int("max_output_tokens")
+    _int("max_seconds")
+    _float("warn_ratio")
+
+    # —— M3 死循环熔断 ——
+    _bool("loop_guard")
+    _int("loop_warn")
+    _int("loop_halt")
+
+    # —— M4 插件 / M10 钩子 ——
+    _list("plugin_dirs")
+    _list("plugin_allow")
+    _bool("hooks_enabled", "hooks_enabled")
+    if data.get("trace") is True:
+        cfg.hooks_enabled = True
+
+    # —— M7 工具治理 ——
+    _str("spill_dir")
+    _int("spill_threshold")
+    _bool("parallel_tools")
+    if data.get("spill") is True and not cfg.spill_dir:
+        cfg.spill_dir = str(default_spill_dir())
+
+    # —— M9 沙箱 ——
     if data.get("sandbox") in ("host", "rlimit", "docker"):
         cfg.sandbox = data["sandbox"]
-    fm = data.get("fallback_models")
-    if isinstance(fm, list):
-        cfg.fallback_models = [str(m) for m in fm if str(m).strip()]
-    elif isinstance(fm, str) and fm.strip():
-        cfg.fallback_models = [m.strip() for m in fm.split(",") if m.strip()]
+    if isinstance(data.get("sandbox_spec"), dict):
+        cfg.sandbox_spec = data["sandbox_spec"]
+    _bool("sandbox_strict")
+
+    # —— M11 幂等去重 ——
+    _bool("idempotency")
+    _str("idempotency_mode")
+
+    # —— #9 / #14 / #12 ——
+    _bool("todo")
+    _bool("prompt_cache")
+    _list("fallback_models")
+
+    # —— #11 检索 ——
+    _bool("retrieval")
+    _list("retrieval_roots")
+    _list("retrieval_excludes")
+    _str("index_dir")
 
 
 @dataclass
@@ -156,6 +225,23 @@ class Config:
 
         file_cfg = load_config_file(project, config_file)
 
+        # config.json 里的 skills_dir / cwd（相对路径按项目根解析）
+        file_skills = file_cfg.get("skills_dir")
+        if isinstance(file_skills, str) and file_skills.strip():
+            sd = Path(file_skills.strip()).expanduser()
+            file_skills = sd if sd.is_absolute() else (project / sd)
+        else:
+            file_skills = None
+        file_cwd = file_cfg.get("cwd")
+        if isinstance(file_cwd, str) and file_cwd.strip():
+            cd = Path(file_cwd.strip()).expanduser()
+            file_cwd = cd if cd.is_absolute() else (project / cd)
+        else:
+            file_cwd = None
+        file_max_tokens = file_cfg.get("max_tokens")
+        if isinstance(file_max_tokens, bool) or not isinstance(file_max_tokens, int):
+            file_max_tokens = None
+
         base_url = (os.environ.get("ANTHROPIC_BASE_URL")
                     or file_cfg.get("base_url")
                     or "https://api.anthropic.com").rstrip("/")
@@ -173,11 +259,15 @@ class Config:
             api_key=api_key,
             model=model or os.environ.get("SKILL_AGENT_MODEL")
             or file_cfg.get("model") or DEFAULT_MODEL,
-            max_tokens=max_tokens or DEFAULT_MAX_TOKENS,
-            cwd=cwd,
+            max_tokens=(_env_int("SKILL_AGENT_MAX_TOKENS") or max_tokens
+                        or file_max_tokens or DEFAULT_MAX_TOKENS),
+            cwd=file_cwd or cwd,
             project=project,
-            skills_dir=Path(skills_dir).expanduser() if skills_dir else None,
-            permission=permission or os.environ.get("SKILL_AGENT_PERMISSION", "auto"),
+            skills_dir=(Path(skills_dir).expanduser() if skills_dir else file_skills),
+            permission=(permission or os.environ.get("SKILL_AGENT_PERMISSION")
+                        or (file_cfg.get("permission")
+                            if file_cfg.get("permission") in ("auto", "ask") else None)
+                        or "auto"),
             stream=True if stream is None else stream,
             verbose=verbose,
             restrict_paths=_env_bool("SKILL_AGENT_RESTRICT_PATHS"),
