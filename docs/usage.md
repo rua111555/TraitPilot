@@ -262,6 +262,7 @@ cd /home/chenyuxi/skill/agent
 ./start_web.sh                       # 后台启动；日志 web.log；探活 /api/config
 ./start_web.sh 9000                  # 指定端口（host 仍 127.0.0.1）
 ./start_web.sh 0.0.0.0:8787          # 局域网可访问（谨慎）
+./start_web.sh restart               # 重启（改了 config.json / 代码后必须用它重载）
 ./start_web.sh stop                  # 停止
 # 或前台：python3 run_web.py
 ```
@@ -547,6 +548,7 @@ python3 run.py chat --resume 20261014T101530-a1b2
 | 检索结果陈旧 | 索引按 `(mtime,size)` 增量；`--index-rebuild` 强制重建 |
 | docker 沙箱里编排 `.done` 找不到 | 工作目录与 `RUN_DIR` 必须以**相同宿主路径**挂载进容器 |
 | Web 打不开 | 默认只绑 `127.0.0.1`；远程用 SSH 转发；查 `web.log` |
+| **前端显示的模型/技能与 `config.json` 不一致，或无法对话** | 多半是**旧的后台进程**还在跑（改过配置/代码但没重启）。`./start_web.sh restart` 重载，再 `Ctrl-Shift-R` 硬刷新浏览器 |
 | 审查 trace | `~/.skill-agent/traces/`（`--trace`）；会话日志 `~/.skill-agent/sessions/` |
 
 ---

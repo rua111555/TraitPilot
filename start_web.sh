@@ -4,6 +4,7 @@
 #   ./start_web.sh                 启动（后台，日志 web.log）→ http://127.0.0.1:8787
 #   ./start_web.sh 9000            指定端口
 #   ./start_web.sh 0.0.0.0:8787    指定主机:端口（局域网可访问，慎用）
+#   ./start_web.sh restart         重启（改过 config.json / 代码后用它重载）
 #   ./start_web.sh stop [主机:端口] 停止
 set -u
 cd "$(dirname "$0")"
@@ -11,7 +12,9 @@ cd "$(dirname "$0")"
 ACTION=start
 HOST=127.0.0.1
 PORT=8787
-if [ "${1:-}" = "stop" ]; then ACTION=stop; shift; fi
+if [ "${1:-}" = "stop" ]; then ACTION=stop; shift
+elif [ "${1:-}" = "restart" ]; then ACTION=restart; shift
+fi
 case "${1:-}" in
   "" ) ;;
   *:* ) HOST="${1%%:*}"; PORT="${1##*:}" ;;
@@ -22,13 +25,15 @@ HOST="${HOST:-127.0.0.1}"
 
 pat="run_web.py --host $HOST --port $PORT"
 
-if [ "$ACTION" = "stop" ]; then
-  pkill -f "$pat" 2>/dev/null && echo "已停止  http://$HOST:$PORT" || echo "未发现运行中的 http://$HOST:$PORT"
-  exit 0
+if [ "$ACTION" = "stop" ] || [ "$ACTION" = "restart" ]; then
+  pkill -f "$pat" 2>/dev/null && echo "已停止  http://$HOST:$PORT" || echo "（无运行中的 http://$HOST:$PORT）"
+  [ "$ACTION" = "stop" ] && exit 0
+  sleep 1
 fi
 
 if pgrep -f "$pat" >/dev/null 2>&1; then
   echo "已在运行：http://$HOST:$PORT  （日志：web.log）"
+  echo "⚠️  若改过 config.json / 代码，旧进程不会自动重载；改用：./start_web.sh restart"
   exit 0
 fi
 
