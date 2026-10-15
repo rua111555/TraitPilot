@@ -1,10 +1,11 @@
-"""技能注册表：扫描 .claude/skills，解析 SKILL.md frontmatter，提供指令加载。
+"""技能注册表：扫描项目自带 skills/，解析 SKILL.md frontmatter，提供指令加载。
 
-与 Claude Code 的技能约定一致：
-  .claude/skills/<name>/SKILL.md
+约定（Agent 自带，不依赖 Claude Code）：
+  skills/<name>/SKILL.md
   frontmatter: name(必需) / description / allowed-tools / disable-model-invocation
 
-同时兼容用户级目录 ~/.claude/skills 下的裸 .md 文件（视为无 frontmatter 的普通指令）。
+查找顺序：显式 skills_dir → ``<project>/skills`` → ``<project>/.claude/skills``（legacy 兼容）。
+另兼容用户级目录 ~/.claude/skills 下的裸 .md 文件（视为无 frontmatter 的普通指令）。
 """
 from __future__ import annotations
 
@@ -80,20 +81,29 @@ class Skill:
 
 
 class SkillRegistry:
-    def __init__(self, project: Path):
+    def __init__(self, project: Path, skills_dir: Path | None = None):
         self.project = Path(project)
+        self.skills_dir = Path(skills_dir) if skills_dir else None
         self.skills: dict[str, Skill] = {}
         self._discover()
 
     def _discover(self) -> None:
         paths = []
-        # 1) 项目级：<project>/.claude/skills/<name>/SKILL.md
-        proj_dir = self.project / ".claude" / "skills"
-        if proj_dir.is_dir():
-            paths.append(proj_dir)
-        # 2) 用户级：~/.claude/skills
+        # 1) 显式指定的技能目录（最高优先）
+        if self.skills_dir and self.skills_dir.is_dir():
+            paths.append(self.skills_dir)
+        # 2) 项目自带：<project>/skills（自包含的默认来源）
+        proj_skills = self.project / "skills"
+        has_own = proj_skills.is_dir()
+        if has_own and proj_skills not in paths:
+            paths.append(proj_skills)
+        # 3) legacy：<project>/.claude/skills（仅在无自带 skills/ 时回退，保持兼容）
+        legacy = self.project / ".claude" / "skills"
+        if not paths and legacy.is_dir():
+            paths.append(legacy)
+        # 4) 用户级：~/.claude/skills（仅在项目未自带 skills/ 时才扫描，避免运行时混入外部技能）
         user_dir = Path.home() / ".claude" / "skills"
-        if user_dir.is_dir():
+        if not has_own and user_dir.is_dir():
             paths.append(user_dir)
 
         for base in paths:
@@ -112,8 +122,10 @@ class SkillRegistry:
                         frontmatter=meta, is_plain_md=False,
                     )
                 elif p.suffix == ".md" and p.is_file():
-                    # 用户级裸 .md 文件
-                    meta = _parse_frontmatter(p) if p.name != SKILL_FILE else {}
+                    if p.name == SKILL_FILE or p.name.lower() == "readme.md":
+                        continue          # 目录根的 SKILL.md / README.md 不是技能
+                    # 裸 .md 文件（无 frontmatter 的普通指令）
+                    meta = _parse_frontmatter(p)
                     name = meta.pop("name", None) or p.stem
                     desc = meta.pop("description", "") or f"技能 {name}"
                     # 覆盖注册（项目级优先级已保证：p.name!=SKILL_FILE 时不会撞）

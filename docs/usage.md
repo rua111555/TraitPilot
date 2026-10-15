@@ -1,8 +1,8 @@
 # SkillAgent 使用文档
 
-> 本机自研的单 Agent harness，沿用 Claude Code 的技能模型，让你现有 `.claude/skills`（WGS / GWAS
-> 两大管线 + 表型提取等 21 个技能）能被一个**不依赖 Claude Code** 的 Agent 自主调用。
-> 入口在 `agent/`，凭证自动从 Claude Code 同源（`~/.claude/settings.json` 的 `env` 块）读取。
+> 本机自研、**自包含**的单 Agent harness：技能放在本仓库 [`skills/`](../skills/)，
+> 配置从本目录 `config.json` 读取——**不依赖 Claude Code**。
+> 自带 21 个技能（WGS / GWAS 两大管线 + 表型提取等）。入口在仓库根 `agent/`。
 >
 > 本文覆盖：安装与凭证、三种入口、全部命令行参数、环境变量、REPL 命令、Web 前端、
 > 12 个可选 harness 能力、技能机制、端到端示例、故障排查。
@@ -36,29 +36,41 @@ cd /home/chenyuxi/skill/agent
 python3 -c "import requests, yaml, flask; print('ok')"   # 确认依赖在位
 ```
 
-### 凭证（无需手配）
+### 凭证与配置
 
-Agent 从与 Claude Code **相同的来源**取 API 凭证，优先级：
+Agent 从**本目录的 `config.json`** 与环境变量取配置，优先级：
 
 1. 环境变量 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`（或 `ANTHROPIC_API_KEY`）
-2. `~/.claude/settings.json` 的 `env` 块
+2. `config.json`（本目录或 `--config` 指定；模板见 `config.json.example`）
+3. 代码默认值
 
-token 不写死。直接运行即可：`python3 -m skill_agent`。若想显式配置，可在 `~/.bashrc`：
+首次使用：复制模板并填写 `api_key`：
 
 ```bash
-export ANTHROPIC_BASE_URL="http://182.92.166.143:3200"
+cd /home/chenyuxi/skill/agent
+cp config.json.example config.json
+# 编辑 config.json：填 api_key（及可选 base_url / model）
+python3 -m skill_agent
+```
+
+也可改用环境变量（优先级更高）：
+
+```bash
+export ANTHROPIC_BASE_URL="https://api.anthropic.com"
 export ANTHROPIC_AUTH_TOKEN="<你的token>"
 ```
 
+> `config.json` 已被 `.gitignore` 忽略，凭证不会入库。`config.json` 还可开关可选能力
+> （`retrieval` / `memory` / `persist` / `sandbox` / `todo` …）。
 > 代理侧目前只稳定提供 `DSv4-flash` 一个模型 id（`claude-*` 常 503）。见 [参数 `-m`](#3-命令行参数总表)。
 
-### 项目根探测
+### 项目根与技能目录探测
 
-Agent 需要找到「含 `.claude/skills` 的项目根」。默认从当前目录**向上探测**；找不到则取当前目录。
+Agent 需要找到「含 `skills/` 的项目根」。默认从当前目录**向上探测**；找不到则取当前目录。
 可用 `--project <dir>` 显式指定，用 `--cwd <dir>` 指定工具执行目录（默认 = 项目根）。
 
 ```bash
-cd /home/chenyuxi/skill && python3 agent/run.py list      # 自动探测到 /home/chenyuxi/skill
+cd /home/chenyuxi/skill/agent && python3 run.py list      # 自动探测到 /home/chenyuxi/skill/agent
 ```
 
 ---
@@ -68,15 +80,15 @@ cd /home/chenyuxi/skill && python3 agent/run.py list      # 自动探测到 /hom
 ### 2.1 列技能
 
 ```bash
-cd /home/chenyuxi/skill
-python3 agent/run.py list              # 表格：技能 / 自动可调 / 用途
-python3 agent/run.py list --json       # JSON：description/path/model_invocable/allowed_tools
+cd /home/chenyuxi/skill/agent
+python3 run.py list              # 表格：技能 / 自动可调 / 用途
+python3 run.py list --json       # JSON：description/path/model_invocable/allowed_tools
 ```
 
 ### 2.2 交互 REPL（推荐日常使用）
 
 ```bash
-python3 agent/run.py chat              # 或 python3 -m skill_agent（等效，无子命令默认进 REPL）
+python3 run.py chat              # 或 python3 -m skill_agent（等效，无子命令默认进 REPL）
 ```
 
 进入后可直接说需求（如「用 gwas-pipeline 说明标准流程」），用 `/` 命令控制会话（见 §5）。
@@ -84,13 +96,13 @@ python3 agent/run.py chat              # 或 python3 -m skill_agent（等效，�
 ### 2.3 单轮脚本化（不进 REPL）
 
 ```bash
-python3 agent/run.py chat -p "用 gwas-pipeline 说明标准流程，先不要真正跑数据"
-python3 agent/run.py chat -p "列出 phenotype-extract 提供哪些表型" -m DSv4-flash
+python3 run.py chat -p "用 gwas-pipeline 说明标准流程，先不要真正跑数据"
+python3 run.py chat -p "列出 phenotype-extract 提供哪些表型" -m DSv4-flash
 ```
 
 `-p/--prompt` 跑完即退出，适合脚本/批处理。
 
-> **入口等价**：`python3 agent/run.py <args>` 与 `cd agent && python3 -m skill_agent <args>` 完全等价。
+> **入口等价**：`python3 run.py <args>` 与 `cd agent && python3 -m skill_agent <args>` 完全等价。
 
 ---
 
@@ -103,7 +115,9 @@ python3 agent/run.py chat -p "列出 phenotype-extract 提供哪些表型" -m DS
 | 参数 | 作用 | 默认 |
 |---|---|---|
 | `-m, --model MODEL` | 模型 id | `SKILL_AGENT_MODEL` → `claude-opus-4-5`（代理下建议 `DSv4-flash`） |
-| `--project DIR` | 含 `.claude/skills` 的项目根 | 从 cwd 向上自动探测 |
+| `--project DIR` | 项目根（含 `skills/`） | 从 cwd 向上自动探测 |
+| `--skills-dir DIR` | 显式技能目录 | `<project>/skills` |
+| `--config FILE` | 显式 config.json 路径 | `<project>/config.json` 或 `./config.json` |
 | `--cwd DIR` | Bash 等工具的执行目录 | = 项目根 |
 | `--permission {auto,ask}` | `auto`：危险命令仅告警；`ask`：每个 Bash 先询问 | `auto` |
 | `--max-tokens N` | 单次响应 token 上限 | `8192` |
@@ -161,10 +175,14 @@ python3 agent/run.py chat -p "列出 phenotype-extract 提供哪些表型" -m DS
 ## 4. 环境变量总表
 
 给 Web/非 CLI 场景使用；统一前缀 `SKILL_AGENT_`。CLI 参数存在时以 CLI 为准。
+此外 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` / `SKILL_AGENT_CONFIG`
+分别覆盖 `config.json` 的 `base_url` / `api_key` 与配置文件路径。
 
 | 变量 | 对应 | 说明 |
 |---|---|---|
 | `SKILL_AGENT_MODEL` | `-m` | 模型 id |
+| `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` | — | 覆盖 `config.json` 的 base_url / api_key |
+| `SKILL_AGENT_CONFIG` | `--config` | config.json 路径 |
 | `SKILL_AGENT_PERMISSION` | `--permission` | `auto`/`ask` |
 | `SKILL_AGENT_RESTRICT_PATHS` | `--restrict-paths` | 真值 `1/true/yes/on` |
 | `SKILL_AGENT_WRITE_APPROVAL` | `--write-approval` | 同上 |
@@ -385,7 +403,7 @@ python3 -m skill_agent chat --retrieval --index-rebuild # 强制重建索引
 - **`Search`**：FTS5/BM25 相关性检索，返回 `文件:起止行 + 片段`（trigram 分词，中文友好；短词/无命中走 LIKE 兜底），模型随后 `Read(offset,limit)` 精读。支持 `limit`（默认 8，≤30）、`path_glob`、`kind` 过滤。
 - **`RepoMap`**：给目录/文件的结构化大纲（Python 类/函数/方法带行号、Markdown 标题），用于快速理解陌生文件构成。
 - 索引落 `<project>/.skill-agent/index/code.db`，**首次用时惰性构建**，之后按 `(mtime,size)` 增量刷新。
-- 语料**只取显式根**：`.claude/skills/**`（含 references）与 `agent/**/*.py` + `agent/docs/*.md`；**绝不整仓遍历**，就地剪枝 + 读前按大小/后缀拒绝（仓库里 ML 权重不会被 stat）。
+- 语料**只取显式根**：项目自带 `skills/**`（含 references）与源码 `skill_agent/**`、`webapp/**`、`docs/*.md`；**绝不整仓遍历**，就地剪枝 + 读前按大小/后缀拒绝（`skills/phenotype-extract/model` 下 ~263MB 权重不会被 stat）。
 - **零新依赖**（纯 stdlib `sqlite3`+`ast`）；FTS5 缺失或目录不可写时自停用、不阻断。两个工具只读，`--parallel-tools` 下与 Read/Grep 并行。
 
 ### 7.12 #14 / #12 成本与容错
@@ -415,9 +433,9 @@ python3 -m skill_agent chat --trace
 
 ## 8. 技能机制
 
-（与 Claude Code 相同）
+（Agent 内建）
 
-- **发现**：扫描 `<项目>/.claude/skills/<name>/SKILL.md`（兼容 `~/.claude/skills` 下裸 `.md`）。
+- **发现**：扫描 `<项目>/skills/<name>/SKILL.md`（优先）；无 `skills/` 时回退 `<项目>/.claude/skills`（legacy 兼容）或 `~/.claude/skills`；可用 `--skills-dir` 显式指定。
 - **注入**：system prompt 只放技能**清单**（name + 用途）；模型按需调用 `Skill(name)` 工具，工具结果即返回该
   skill 的完整指令（含 usage-guide 与目录内文件清单），再据此执行——编排类（`wgs-expressive-pipeline` / `gwas-pipeline`）
   会继续指示调用子 skill。
@@ -431,7 +449,7 @@ python3 -m skill_agent chat --trace
 · `Read` · `Write` · `Edit` · `Glob` · `Grep`（优先 rg，本机无 rg 时纯 Python 回退）· `TaskOutput`。
 可选挂载：`TodoWrite`（`--todo`）、`Search`/`RepoMap`（`--retrieval`）、插件工具（`--plugin-dir`）。
 
-### 本机技能（21 个）
+### 自带技能（21 个）
 
 - **WGS**：`wgs-expressive-pipeline`（编排） + `wgs-express-server-detect` / `-params-propose` / `-fastp-qc` / `-align-sort` / `-markdup-bqsr` / `-haplotypecaller` / `-joint-genotyping` / `-filtering`
 - **GWAS**：`gwas-pipeline`（编排） + `gwas-format-convert` / `-qc-filter` / `-kinship-pca` / `-gemma` / `-mvp` / `-visualization` / `-ld-block`
@@ -444,8 +462,8 @@ python3 -m skill_agent chat --trace
 ### 9.1 跑 WGS 全流程（长任务可靠性组合）
 
 ```bash
-cd /home/chenyuxi/skill
-python3 agent/run.py chat --persist --max-turns 200 --loop-guard \
+cd /home/chenyuxi/skill/agent
+python3 run.py chat --persist --max-turns 200 --loop-guard \
   -p "用 wgs-expressive-pipeline 跑这批样本"
 ```
 
@@ -455,36 +473,36 @@ python3 agent/run.py chat --persist --max-turns 200 --loop-guard \
 ### 9.2 只问流程、不跑数据
 
 ```bash
-python3 agent/run.py chat -p "用 gwas-pipeline skill 说明标准流程，先不要真正跑数据"
+python3 run.py chat -p "用 gwas-pipeline skill 说明标准流程，先不要真正跑数据"
 ```
 
 ### 9.3 跨文件找参数（开启检索）
 
 ```bash
-python3 agent/run.py chat --retrieval \
+python3 run.py chat --retrieval \
   -p "用 Search 找 GWAS 各阶段参数与质控阈值写在哪里，给出行号"
-python3 agent/run.py chat --retrieval -p "用 RepoMap 列出 agent/skill_agent 的结构"
+python3 run.py chat --retrieval -p "用 RepoMap 列出 agent/skill_agent 的结构"
 ```
 
 ### 9.4 危险命令需逐条确认
 
 ```bash
-python3 agent/run.py chat --permission ask --restrict-paths --write-approval
+python3 run.py chat --permission ask --restrict-paths --write-approval
 ```
 
 ### 9.5 强隔离沙箱 + 成本优化
 
 ```bash
 SKILL_AGENT_SANDBOX_SPEC='{"image":"python:3.11-slim","memory":"8g","cpus":"4"}' \
-  python3 agent/run.py chat --sandbox docker --prompt-cache \
+  python3 run.py chat --sandbox docker --prompt-cache \
   --fallback-models DSv4-flash -p "在容器内跑 gwas-format-convert"
 ```
 
 ### 9.6 恢复上一次会话
 
 ```bash
-python3 agent/run.py chat --continue
-python3 agent/run.py chat --resume 20261014T101530-a1b2
+python3 run.py chat --continue
+python3 run.py chat --resume 20261014T101530-a1b2
 ```
 
 ---
@@ -493,10 +511,10 @@ python3 agent/run.py chat --resume 20261014T101530-a1b2
 
 | 现象 | 原因 / 处理 |
 |---|---|
-| `缺少 API 凭证` | `~/.claude/settings.json` 的 `env` 块无 `ANTHROPIC_AUTH_TOKEN`，或环境变量未设 |
+| `缺少 API 凭证` | `config.json` 无 `api_key` 且环境变量 `ANTHROPIC_AUTH_TOKEN` 未设（复制 `config.json.example` 填写） |
 | 模型 503 / 无响应 | 代理侧 `claude-*` 常不可用；用 `-m DSv4-flash`，或用 `--fallback-models` 兜底 |
-| `python3 -m skill_agent` 报 `No module named` | 需在 `agent/` 目录下运行，用 `agent/run.py` 或 `cd agent` |
-| 找不到技能 | `--project <含 .claude/skills 的根>`，或确认从项目内运行 |
+| `python3 -m skill_agent` 报 `No module named` | 需在 `agent/` 目录下运行，用 `run.py` 或 `cd agent` |
+| 找不到技能 | `--project <含 skills/ 的根>`，或确认从项目内运行；`--skills-dir` 可显式指定 |
 | `Search`/`RepoMap` 报「索引不可用」 | 目录不可写或本机缺 FTS5；`--index-dir` 换目录，或确认 `import sqlite3` FTS5 可用 |
 | 检索结果陈旧 | 索引按 `(mtime,size)` 增量；`--index-rebuild` 强制重建 |
 | docker 沙箱里编排 `.done` 找不到 | 工作目录与 `RUN_DIR` 必须以**相同宿主路径**挂载进容器 |

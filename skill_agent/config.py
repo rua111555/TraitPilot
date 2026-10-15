@@ -1,8 +1,11 @@
-"""配置：与 Claude Code 复用同一组配置来源，不写死 token。
+"""配置：Agent 自带，不依赖 Claude Code。
 
-读取优先级：
-  1) 环境变量（ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY）
-  2) Claude Code 的用户级 ~/.claude/settings.json 的 env 块（单一来源，兼容已有配置）
+凭证/基础配置读取优先级：
+  1) 显式函数参数（CLI 传入）
+  2) 环境变量（ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY /
+     SKILL_AGENT_MODEL ...）
+  3) 本项目配置文件 config.json（见 config.json.example）
+  4) 代码默认值
 """
 from __future__ import annotations
 
@@ -15,15 +18,65 @@ DEFAULT_MODEL = "claude-opus-4-5"
 DEFAULT_MAX_TOKENS = 8192
 
 
-def _read_user_settings_env() -> dict:
-    """从 ~/.claude/settings.json 的 env 块取 ANTHROPIC_* 变量。"""
-    try:
-        raw = Path.home() / ".claude" / "settings.json"
-        sid = json.loads(raw.read_text(encoding="utf-8"))
-        return {k: v for k, v in (sid.get("env") or {}).items()
-                if k.startswith("ANTHROPIC_")}
-    except Exception:
-        return {}
+def load_config_file(project: Path | None = None,
+                     path: str | Path | None = None) -> dict:
+    """读取 config.json（缺失/非法一律返回空 dict，绝不抛）。
+
+    查找顺序：显式 path → 环境变量 SKILL_AGENT_CONFIG → <project>/config.json → ./config.json
+    """
+    candidates: list[Path] = []
+    if path:
+        candidates.append(Path(path))
+    env_cfg = os.environ.get("SKILL_AGENT_CONFIG")
+    if env_cfg:
+        candidates.append(Path(env_cfg))
+    if project is not None:
+        candidates.append(Path(project) / "config.json")
+    candidates.append(Path.cwd() / "config.json")
+
+    for c in candidates:
+        try:
+            if c.is_file():
+                data = json.loads(c.read_text(encoding="utf-8"))
+                return data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+    return {}
+
+
+def _apply_file_overrides(cfg: "Config", data: dict) -> None:
+    """把 config.json 里出现的可选键覆盖到 Config（仅存在才覆盖，未提供保持默认关）。"""
+    if not data:
+        return
+    if data.get("model"):
+        cfg.model = str(data["model"])
+    if data.get("max_tokens"):
+        try:
+            cfg.max_tokens = int(data["max_tokens"])
+        except (TypeError, ValueError):
+            pass
+    if data.get("permission") in ("auto", "ask"):
+        cfg.permission = data["permission"]
+    if data.get("skills_dir"):
+        cfg.skills_dir = Path(str(data["skills_dir"])).expanduser()
+    if data.get("cwd"):
+        cfg.cwd = Path(str(data["cwd"])).expanduser()
+    for key in ("retrieval", "memory", "persist", "todo", "parallel_tools",
+                "prompt_cache", "loop_guard", "idempotency", "restrict_paths",
+                "write_approval", "summary_compaction"):
+        if data.get(key) is True:
+            setattr(cfg, key, True)
+        elif data.get(key) is False:
+            setattr(cfg, key, False)
+    if data.get("memory") is not None:
+        cfg.memory_enabled = bool(data["memory"])
+    if data.get("sandbox") in ("host", "rlimit", "docker"):
+        cfg.sandbox = data["sandbox"]
+    fm = data.get("fallback_models")
+    if isinstance(fm, list):
+        cfg.fallback_models = [str(m) for m in fm if str(m).strip()]
+    elif isinstance(fm, str) and fm.strip():
+        cfg.fallback_models = [m.strip() for m in fm.split(",") if m.strip()]
 
 
 @dataclass
@@ -33,7 +86,8 @@ class Config:
     model: str
     max_tokens: int = DEFAULT_MAX_TOKENS
     cwd: Path = Path(".")          # 工具执行的 cwd（默认=项目根）
-    project: Path = Path(".")      # 扫描 .claude/skills 的项目目录
+    project: Path = Path(".")      # 项目根（含 skills/ 或 legacy .claude/skills）
+    skills_dir: Path | None = None  # 显式技能目录（默认 <project>/skills）
     permission: str = "auto"       # auto | ask（ask=每个 Bash 都询问）
     stream: bool = True
     verbose: bool = False
@@ -91,36 +145,38 @@ class Config:
     def load(cls, *, model: str | None = None, project: Path | None = None,
              cwd: Path | None = None, permission: str | None = None,
              max_tokens: int | None = None, stream: bool | None = None,
-             verbose: bool = False, max_turns: int | None = None) -> "Config":
-        user_env = _read_user_settings_env()
-
-        base_url = (os.environ.get("ANTHROPIC_BASE_URL")
-                    or user_env.get("ANTHROPIC_BASE_URL")
-                    or "https://api.anthropic.com").rstrip("/")
-        api_key = (os.environ.get("ANTHROPIC_AUTH_TOKEN")
-                   or os.environ.get("ANTHROPIC_API_KEY")
-                   or user_env.get("ANTHROPIC_AUTH_TOKEN")
-                   or user_env.get("ANTHROPIC_API_KEY"))
-        if not api_key:
-            raise SystemExit(
-                "缺少 API 凭证：请在 ~/.claude/settings.json 的 env 块配置 "
-                "ANTHROPIC_AUTH_TOKEN（或设置环境变量 ANTHROPIC_AUTH_TOKEN / "
-                "ANTHROPIC_API_KEY），与 Claude Code 相同。"
-            )
-
-        # 项目根：显式指定 > 环境变量 > 从 cwd 向上找含 .claude/skills 的目录 > 直接取 cwd
+             verbose: bool = False, max_turns: int | None = None,
+             skills_dir: Path | None = None,
+             config_file: str | Path | None = None) -> "Config":
+        # 项目根：显式指定 > 从 cwd 向上找含 skills/ 或 .claude/skills 的目录 > 直接取 cwd
         if project is None:
             project = _auto_project(cwd or Path.cwd())
         if cwd is None:
             cwd = project
 
-        return cls(
+        file_cfg = load_config_file(project, config_file)
+
+        base_url = (os.environ.get("ANTHROPIC_BASE_URL")
+                    or file_cfg.get("base_url")
+                    or "https://api.anthropic.com").rstrip("/")
+        api_key = (os.environ.get("ANTHROPIC_AUTH_TOKEN")
+                   or os.environ.get("ANTHROPIC_API_KEY")
+                   or file_cfg.get("api_key"))
+        if not api_key:
+            raise SystemExit(
+                "缺少 API 凭证：请在本目录 config.json 配置 api_key（复制 config.json.example 为 "
+                "config.json 后填写），或设置环境变量 ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY。"
+            )
+
+        cfg = cls(
             base_url=base_url,
             api_key=api_key,
-            model=model or os.environ.get("SKILL_AGENT_MODEL") or DEFAULT_MODEL,
+            model=model or os.environ.get("SKILL_AGENT_MODEL")
+            or file_cfg.get("model") or DEFAULT_MODEL,
             max_tokens=max_tokens or DEFAULT_MAX_TOKENS,
             cwd=cwd,
             project=project,
+            skills_dir=Path(skills_dir).expanduser() if skills_dir else None,
             permission=permission or os.environ.get("SKILL_AGENT_PERMISSION", "auto"),
             stream=True if stream is None else stream,
             verbose=verbose,
@@ -153,6 +209,8 @@ class Config:
             retrieval_excludes=_env_list("SKILL_AGENT_INDEX_EXCLUDES"),
             index_dir=os.environ.get("SKILL_AGENT_INDEX_DIR") or None,
         )
+        _apply_file_overrides(cfg, file_cfg)   # config.json 覆盖可选开关（存在才覆盖）
+        return cfg
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -197,9 +255,20 @@ def _auto_project(start: Path) -> Path:
     if p.is_file():
         p = p.parent
     for d in [p, *p.parents]:
-        if (d / ".claude" / "skills").is_dir():
+        if (d / "skills").is_dir() or (d / ".claude" / "skills").is_dir():
             return d
     return p
+
+
+def default_skills_dir(project: Path) -> Path:
+    """技能目录：优先项目自带 skills/，其次 legacy .claude/skills。"""
+    own = Path(project) / "skills"
+    if own.is_dir():
+        return own
+    legacy = Path(project) / ".claude" / "skills"
+    if legacy.is_dir():
+        return legacy
+    return own
 
 
 def default_session_dir() -> Path:

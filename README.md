@@ -1,40 +1,43 @@
-# SkillAgent — 可调用 Claude Code skills 的本机 Agent
+# SkillAgent — 自带 skills 的本机 Agent
 
 > 📖 **详细使用文档见 [`docs/usage.md`](docs/usage.md)**（安装/凭证、三种入口、全部参数与环境变量、
 > REPL 命令、Web 前端、各 harness 模块、技能机制、端到端示例、故障排查）。本文是快速上手版。
 
-一个**完整、可用**的单 Agent 系统，沿用 Claude Code 的技能模型，让你现有 `.claude/skills`
-（WGS / GWAS 两大管线 + 表型提取等 18 个技能）能在**你自己的 Agent** 中被自主调用，
-而无需依赖 Claude Code。
-
-复用当前配置的 API，**自动从 Claude Code 的同一来源取凭证**（优先级：环境变量 →
-`~/.claude/settings.json` 的 `env` 块），token 不写死、无需你重复配置：
-
-```bash
-cd /home/chenyuxi/skill/agent
-python -m skill_agent          # 直接可用
-```
-
-> 若要改用普通环境变量方式，可在 shell 配置里（如 `~/.bashrc`）：
-> ```bash
-> export ANTHROPIC_BASE_URL="http://182.92.166.143:3200"        # 你 .bashrc 第49行已有
-> export ANTHROPIC_AUTH_TOKEN="<你的token>"                     # 值可从 ~/.claude/settings.json 的 env 块复制
-> ```
+一个**完整、可用、自包含**的单 Agent 系统：技能放在本仓库的 [`skills/`](skills/)，
+API 凭证/配置从本目录的 `config.json` 读取——**不依赖 Claude Code**。
+自带 21 个技能（WGS / GWAS 两大管线 + 表型提取等）。
 
 ## 快速开始
 
 ```bash
-cd /home/chenyuxi/skill
+cd /home/chenyuxi/skill/agent
+
+# 1) 配置凭证（一次性）：复制模板为 config.json 并填写
+cp config.json.example config.json
+#   编辑 config.json：填 api_key（及可选的 base_url / model）
+#   也可改用环境变量：export ANTHROPIC_AUTH_TOKEN="..." / ANTHROPIC_BASE_URL="..."
+
+# 2) 直接可用
+python3 -m skill_agent          # 或 python3 run.py / python3 run.py chat
+```
+
+> 优先级：**环境变量 > `config.json` > 代码默认值**。若设了 `ANTHROPIC_BASE_URL` /
+> `ANTHROPIC_AUTH_TOKEN`，会覆盖 `config.json` 中的同名项。
+
+## 快速开始
+
+```bash
+cd /home/chenyuxi/skill/agent
 
 # 列出发现的 skills
-python agent/run.py list
+python3 run.py list
 
 # 交互对话（REPL，推荐）
-python agent/run.py chat            # 可选 --permission ask / -m claude-haiku-4-5
+python3 run.py chat            # 可选 --permission ask / -m DSv4-flash
 
 # 单轮运行（脚本化）
-python agent/run.py chat -p "用 gwas-pipeline skill 说明标准流程，先不要真正跑数据"
-python agent/run.py chat -p "列出 phenotype-extract 提供哪些表型" -m claude-haiku-4-5
+python3 run.py chat -p "用 gwas-pipeline skill 说明标准流程，先不要真正跑数据"
+python3 run.py chat -p "列出 phenotype-extract 提供哪些表型" -m DSv4-flash
 ```
 
 ## Web 前端
@@ -66,7 +69,7 @@ cd /home/chenyuxi/skill/agent
 | 参数 | 说明 |
 |------|------|
 | `-m / --model` | 模型 id（默认 `claude-opus-4-5`） |
-| `--project <dir>` | 含 `.claude/skills` 的项目根（默认自动向上探测） |
+| `--project <dir>` | 项目根（含 `skills/`，默认自动向上探测） |
 | `--cwd <dir>` | Bash 等工具的执行目录（默认=项目根） |
 | `--permission auto\|ask` | `auto`（默认）：危险命令仅告警；`ask`：每个 Bash 先询问 |
 | `--restrict-paths` | 启用工作区路径边界（越界拒绝；默认关）|
@@ -171,22 +174,24 @@ SKILL_AGENT_RETRIEVAL=1 python3 -m skill_agent chat          # 环境变量方�
 
 - 索引落在 `<project>/.skill-agent/index/code.db`（FTS5 + `tokenize='trigram'`，中文友好），默认**首次用时惰性构建**，
   之后按 `(mtime,size)` 增量刷新——`Write/Edit` 后再 `Search` 只重切改动的文件。
-- 语料**只取显式根**：`.claude/skills/**`（含 references 的 .md/.py/.sh）与 `agent/**/*.py` + `agent/docs/*.md`。
+- 语料**只取显式根**：项目自带的 `skills/**`（含 references 的 .md/.py/.sh）与源码 `skill_agent/**`、`webapp/**`、`docs/*.md`。
   **绝不整仓遍历**：就地剪枝 `__pycache__/.git/.skill-agent/saved…`，读前按大小（>2MB）与后缀（`.pth/.png/.tfevents…`）拒绝，
-  故仓库里的 ML 权重（本机 ~24.5GB）不会被 stat。
+  故 `skills/phenotype-extract/model` 下的模型权重（~263MB）不会被 stat。
 - **零新依赖**：纯 stdlib（`sqlite3` + `ast`）；不引入 tree-sitter / ripgrep / 向量库。FTS5 缺失或目录不可写时自停用、不阻断。
 - 只读工具，`--parallel-tools` 开启时与 Read/Grep 一同并行执行。
 
 ## 架构
 
 ```
-agent/
+agent/                        # 本目录即仓库根，也是「项目根」（含 skills/）
 ├── run.py                  # CLI 入口（等效 python -m skill_agent）
 ├── run_web.py              # Web 入口：python run_web.py → http://127.0.0.1:8787
+├── config.json.example     # 配置模板（复制为 config.json 填 api_key）
+├── skills/                 # 自带技能库（21 个；模型权重 .pth 已 gitignore）
 ├── requirements.txt        # requests + PyYAML + flask（本机已预装）
 ├── skill_agent/
-│   ├── config.py           # 凭证：环境变量 → ~/.claude/settings.json 的 env（与 Claude Code 同源）
-│   ├── skills.py           # SkillRegistry：扫描 .claude/skills、解析 SKILL.md frontmatter
+│   ├── config.py           # 配置：环境变量 → config.json → 默认值（不依赖 Claude Code）
+│   ├── skills.py           # SkillRegistry：扫描 skills/、解析 SKILL.md frontmatter
 │   ├── tools.py            # 工具执行器 + 权限门 + 后台任务（Bash background=true）
 │   ├── sandbox.py          # M9：Bash 执行后端（host/rlimit/docker），纯 stdlib、默认关
 │   ├── idempotency.py      # M11：工具幂等去重（有副作用工具、run 级、默认关）
@@ -201,9 +206,10 @@ agent/
     └── static/index.html   # 单文件前端（无构建、纯浏览器 JS，含轻量 Markdown 渲染/停止/导出/用量徽标）
 ```
 
-### 与 Claude Code 相同的技能机制
+### 技能机制
 
-- **发现**：扫描 `<项目>/.claude/skills/<name>/SKILL.md`（兼容 `~/.claude/skills` 下裸 `.md`）。
+- **发现**：扫描 `<项目>/skills/<name>/SKILL.md`（优先）；无 `skills/` 时回退 `<项目>/.claude/skills`
+  （legacy 兼容）或 `~/.claude/skills`。可用 `--skills-dir` 显式指定。
 - **注入**：system prompt 只放技能**清单**（name + 用途）；模型按需调用 `Skill(name)` 工具，
   工具结果即返回该 skill 的完整指令（含 usage-guide 与目录内文件清单），再据此执行——
   编排类（`wgs-expressive-pipeline` / `gwas-pipeline`）会继续指示调用子 skill。

@@ -109,9 +109,9 @@ def test_chunk_shell_blocks():
 
 def _make_project(d):
     proj = Path(d) / "proj"
-    (proj / ".claude" / "skills" / "s").mkdir(parents=True)
+    (proj / "skills" / "s").mkdir(parents=True)
     (proj / "agent" / "docs").mkdir(parents=True)
-    (proj / ".claude" / "skills" / "s" / "SKILL.md").write_text(
+    (proj / "skills" / "s" / "SKILL.md").write_text(
         "# GWAS\n\n阶段参数表：stage02 qc filter。\n", encoding="utf-8")
     (proj / "agent" / "mod.py").write_text(
         "def run_pipeline():\n    return 'stage02'\n", encoding="utf-8")

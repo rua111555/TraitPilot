@@ -5,3 +5,15 @@ web.log
 .bak/
 .pytest_cache/
 *.egg-info/
+
+# 本机配置（真实凭证）不入库；模板见 config.json.example
+config.json
+
+# 技能里的模型权重体积大，不入库（放置说明见 skills/README.md）
+skills/**/model/*.pth
+skills/**/model/*.pt
+skills/**/model/*.ckpt
+skills/**/model/*.onnx
+
+# 派生产物
+.skill-agent/

@@ -621,7 +621,7 @@ class ToolSet:
         return Tool(
             name="Search",
             description=(
-                "在项目代码与 .claude/skills 文档中做相关性检索（FTS5/BM25 排名）。"
+                "在项目代码与 skills 文档中做相关性检索（FTS5/BM25 排名）。"
                 "返回 top-k 的 文件:起止行 + 片段，请随后用 Read(offset,limit) 精读。"
                 "适合「这个流程/参数/函数在哪里」这类跨文件问题。"),
             input_schema={"type": "object",

@@ -1,0 +1,1 @@
+/home/chenyuxi/skill/.claude/skills/wgs-expressive-pipeline/scripts/db_query.py

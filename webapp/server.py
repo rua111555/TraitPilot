@@ -60,6 +60,7 @@ def api_config():
         "models": _fetch_models(),
         "permission": cfg.permission,
         "project": str(cfg.project),
+        "skills_dir": str(cfg.skills_dir or (cfg.project / "skills")),
         "cwd": str(cfg.cwd),
         "base_url": cfg.base_url,
         "skills_count": len(CFG_REF["registry"].names()),

@@ -396,9 +396,18 @@ class CodeIndex:
                 break
             proj = proj.parent
         roots: list[tuple[Path, str | None]] = []
-        skills = proj / ".claude" / "skills"
+        # project 本身就是 agent 仓库：整目录为一个语料根（skills/ 会在其中被遍历，
+        # .pth 等权重按后缀在 stat 前即被拒绝）。避免 skills 被重复挂为两个根。
+        if (proj / "skill_agent").is_dir() or (proj / "webapp").is_dir():
+            roots.append((proj, None))
+            return roots
+        # 否则：技能语料（优先自带 skills/，其次 legacy .claude/skills）+ 源码 agent/
+        skills = proj / "skills"
+        legacy_skills = proj / ".claude" / "skills"
         if skills.is_dir():
             roots.append((skills, None))
+        elif legacy_skills.is_dir():
+            roots.append((legacy_skills, None))
         agent_src = proj / "agent"
         if agent_src.is_dir():
             roots.append((agent_src, None))

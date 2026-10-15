@@ -19,7 +19,7 @@ from .tools import ToolSet
 
 BANNER = "\n".join([
     "╭──────────────────────────────────────────────╮",
-    "│  SkillAgent — 可调用 Claude Code skills 的本机 Agent",
+    "│  SkillAgent — 自带 skills 的本机 Agent",
     "╰──────────────────────────────────────────────╯",
 ])
 
@@ -85,9 +85,13 @@ def _common_opts(*, with_cwd: bool = False) -> argparse.ArgumentParser:
 
 def build_parser() -> argparse.ArgumentParser:
     common = _common_opts()
-    p = argparse.ArgumentParser(prog="skill-agent", description="可调用 skills 的本机 Agent",
+    p = argparse.ArgumentParser(prog="skill-agent", description="自带 skills 的本机 Agent",
                                 parents=[common])
-    p.add_argument("--project", type=Path, default=None, help="含 .claude/skills 的项目根（默认自动探测）")
+    p.add_argument("--project", type=Path, default=None, help="项目根（含 skills/，默认自动探测）")
+    p.add_argument("--skills-dir", type=Path, default=None,
+                   help="显式技能目录（默认 <project>/skills）")
+    p.add_argument("--config", dest="config_file", default=None, metavar="FILE",
+                   help="显式 config.json 路径（默认 <project>/config.json 或 ./config.json）")
     sub = p.add_subparsers(dest="command", required=False)
 
     sp = sub.add_parser("list", help="列出发现的 skills")
@@ -106,6 +110,8 @@ def main(argv=None) -> int:
         permission=args.permission, max_tokens=args.max_tokens,
         stream=not args.no_stream, verbose=args.verbose,
         max_turns=getattr(args, "max_turns", None),
+        skills_dir=getattr(args, "skills_dir", None),
+        config_file=getattr(args, "config_file", None),
     )
     if getattr(args, "max_seconds", None):
         cfg.max_seconds = args.max_seconds
@@ -142,7 +148,7 @@ def main(argv=None) -> int:
         cfg.retrieval = True
     if getattr(args, "index_dir", None):
         cfg.index_dir = args.index_dir
-    registry = SkillRegistry(cfg.project)
+    registry = SkillRegistry(cfg.project, skills_dir=cfg.skills_dir)
     pmodel = PermissionModel.from_config(cfg, cfg.cwd)
 
     # ---- M9：可选沙箱执行后端（默认 host，fail-soft 回退并提示） ----

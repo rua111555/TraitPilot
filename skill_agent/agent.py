@@ -27,8 +27,8 @@ MAX_RESULT_CHARS = 100_000
 def _system_prompt(cfg: Config, listing: str,
                    core_memory: str = "", recall: str = "") -> str:
     base = f"""你是 SkillAgent —— 一个自主运行的编程 / 生信分析智能体，运行在用户的 Linux 机器上。
-你通过 Anthropic Messages API 的 tool_use 循环工作，并像 Claude Code 那样按需加载
-`.claude/skills` 下的技能指令来完成任务。模型：{cfg.model}；工作目录：{cfg.cwd}。
+你通过 Anthropic Messages API 的 tool_use 循环工作，并按需加载 `skills/` 下的技能指令来完成任务。
+模型：{cfg.model}；工作目录：{cfg.cwd}。
 
 ## 工作守则
 1. 任务命中某个 skill 的「用途」时，先调用 `Skill(name)` 加载并阅读其完整指令，再按其要求执行
