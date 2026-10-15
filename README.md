@@ -22,9 +22,10 @@ python3 -m skill_agent          # 或 python3 run.py / python3 run.py chat
 ```
 
 > 优先级：**环境变量 > `config.json` > 代码默认值**。若设了 `ANTHROPIC_BASE_URL` /
-> `ANTHROPIC_AUTH_TOKEN`，会覆盖 `config.json` 中的同名项。
+> `ANTHROPIC_AUTH_TOKEN`，会覆盖 `config.json` 中的同名项。`config.json` 还可开关可选能力
+> （`retrieval` / `memory` / `persist` / `sandbox` / `todo` …），详见 [`config.json.example`](config.json.example)。
 
-## 快速开始
+## 常用命令
 
 ```bash
 cd /home/chenyuxi/skill/agent
@@ -60,7 +61,7 @@ cd /home/chenyuxi/skill/agent
 - **联网访问**：页面能执行本机命令，默认仅绑定 `127.0.0.1`。远程使用请 SSH 端口转发：
   `ssh -L 8787:127.0.0.1:8787 <server>`，然后本机浏览器打开 `http://127.0.0.1:8787`；
   非本也可用 `--host 0.0.0.0`（局域网内可访问，注意风险）。
-- 其他参数：`--port` `--model` `--permission` `--project` `--cwd`。
+- 其他参数：`--port` `--model` `--permission` `--project` `--cwd` `--skills-dir` `--config`。
 - 网页后端复用同一 Agent 引擎，仅入口不同：`webapp/server.py`（Flask）+ `webapp/session.py`
   （事件桥 + 命令确认桥，把线程里的 agent 运行接到 SSE）。
 
@@ -70,6 +71,8 @@ cd /home/chenyuxi/skill/agent
 |------|------|
 | `-m / --model` | 模型 id（默认 `claude-opus-4-5`） |
 | `--project <dir>` | 项目根（含 `skills/`，默认自动向上探测） |
+| `--skills-dir <dir>` | 显式技能目录（默认 `<project>/skills`） |
+| `--config <file>` | 显式 `config.json` 路径（默认 `<project>/config.json` 或 `./config.json`） |
 | `--cwd <dir>` | Bash 等工具的执行目录（默认=项目根） |
 | `--permission auto\|ask` | `auto`（默认）：危险命令仅告警；`ask`：每个 Bash 先询问 |
 | `--restrict-paths` | 启用工作区路径边界（越界拒绝；默认关）|
@@ -103,7 +106,7 @@ REPL 内命令：`/help` `/clear` `/skills` `/active` `/model X` `/permission as
 | #9 规划/todo | `TodoWrite` 工具把计划外部化为结构化清单（单一 in_progress），长任务可检查 | 默认关，`--todo` 或 `SKILL_AGENT_TODO=1` |
 | #14 prompt cache | 给稳定前缀（system + 工具定义末尾）打 `cache_control: ephemeral` | 默认关，`--prompt-cache` 或 `SKILL_AGENT_PROMPT_CACHE=1` |
 | #12 模型降级 | 过载重试耗尽后按列表依次切换后备模型 | 默认无，`--fallback-models M1,M2` 或 `SKILL_AGENT_FALLBACK_MODELS=M1,M2` |
-| #11 检索 | `Search`（FTS5/BM25 相关性检索，返回 文件:行号+片段）+ `RepoMap`（类/函数/方法/标题大纲）；纯 stdlib，语料=skills 文档+agent 源码 | 默认关，`--retrieval` 或 `SKILL_AGENT_RETRIEVAL=1`；`--index-rebuild` 强制重建 |
+| #11 检索 | `Search`（FTS5/BM25 相关性检索，返回 文件:行号+片段）+ `RepoMap`（类/函数/方法/标题大纲）；纯 stdlib，语料=`skills/` 文档 + `skill_agent/`、`webapp/` 源码 | 默认关，`--retrieval` 或 `SKILL_AGENT_RETRIEVAL=1`；`--index-rebuild` 强制重建 |
 
 ### 扩展工具（M4）
 
@@ -222,13 +225,14 @@ agent/                        # 本目录即仓库根，也是「项目根」（
 
 `Skill` · `Bash`（支持 `background=true` → nohup + 日志，配合管线的 `.done/.pid` 机制）
 · `Read` · `Write` · `Edit` · `Glob` · `Grep`（优先 rg）· `TaskOutput`（读后台日志）。
+可选挂载：`TodoWrite`（`--todo`）、`Search`/`RepoMap`（`--retrieval`）、插件工具（`--plugin-dir`）。
 
 ## 安全与健壮性
 
 - 危险命令（`rm -rf`、`DROP TABLE`、`dd`、`git push -f`…）命中即告警；`--permission ask` 全部询问。
 - 长命令输出自动截断；历史超长按**消息边界**压缩（不拆散 tool_use/tool_result 配对）。
 - 限流/过载指数退避重试；流式失败自动回退非流式。
-- 模型默认 `claude-opus-4-5`，可用 `claude-haiku-4-5`/`claude-sonnet-4-5` 等。
+- 模型默认 `claude-opus-4-5`，可用 `claude-haiku-4-5`/`claude-sonnet-4-5` 等（按你的 API 端点而定）。
 
 ## 说明
 
