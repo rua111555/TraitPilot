@@ -28,8 +28,8 @@ python3 -m skill_agent          # 或 python3 run.py / python3 run.py chat
 ## 部署到新机器
 
 `requirements.txt` 只有三个包，**只够 Agent 本体**（对话 / 读技能 / 执行 Bash）。自带 21 个技能
-背后还有两套 conda 环境（`Agent` / `r-gwas`）、不在 conda 的独立二进制（gemma / gcta64 /
-LDBlockShow / Haploview…）、表型提取的 ML 栈（跑在 conda base）以及数据文件。
+背后还有三套 conda 环境（`Agent` / `r-gwas` / `Phenotype`）、不在 conda 的独立二进制（gemma / gcta64 /
+LDBlockShow / Haploview…）以及数据文件。
 
 **完整环境清单、逐步部署指引与常见坑见 [`environment/README.md`](environment/README.md)。**
 

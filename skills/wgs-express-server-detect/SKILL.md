@@ -82,7 +82,7 @@ lspci | grep -iE "nvidia|Radeon|3D controller"
 GPU/docker/toolkit/镜像/容器内 pbrun，输出 JSON：
 
 ```bash
-conda run -n Agent bash .claude/skills/wgs-expressive-pipeline/scripts/gpu_preflight.sh
+conda run -n Agent bash skills/wgs-expressive-pipeline/scripts/gpu_preflight.sh
 # 必读字段:
 #   gpu_detection.*          GPU 检测结果（数量/型号/显存/算力/利用率）
 #   docker_ok                docker daemon 是否可访问（无权限→ json 内给出修复命令）

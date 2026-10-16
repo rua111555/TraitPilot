@@ -19,10 +19,10 @@ phenotype_extract.py —— 通用表型提取框架（感知数据库模型 + p
   2) 把对应模型写入 database 的 models 表(参考 imf_mask2former 记录);
   3) 无需改本脚本。--list 会自动发现并列出该表型。
 
-用法(conda base):
-    LD_LIBRARY_PATH=/home/chenyuxi/anaconda3/lib python3 phenotype_extract.py            # 列出+建议
-    LD_LIBRARY_PATH=/home/chenyuxi/anaconda3/lib python3 phenotype_extract.py --pheno IMF
-    LD_LIBRARY_PATH=/home/chenyuxi/anaconda3/lib python3 phenotype_extract.py --pheno IMF --limit 3
+用法(conda 环境 Phenotype):
+    conda run -n Phenotype python phenotype_extract.py            # 列出+建议
+    conda run -n Phenotype python phenotype_extract.py --pheno IMF
+    conda run -n Phenotype python phenotype_extract.py --pheno IMF --limit 3
 """
 import os
 import json

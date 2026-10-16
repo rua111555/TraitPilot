@@ -25,6 +25,15 @@ HOST="${HOST:-127.0.0.1}"
 
 pat="run_web.py --host $HOST --port $PORT"
 
+# 解释器：优先 Agent 环境（harness 本体依赖装在这里），其次当前 python3
+PY="python3"
+for d in "${CONDA_PREFIX:-}" "$HOME/anaconda3" "$HOME/miniconda3" "$HOME/mambaforge" /opt/conda; do
+  if [ -n "$d" ] && [ -x "$d/envs/Agent/bin/python" ]; then
+    PY="$d/envs/Agent/bin/python"; break
+  fi
+done
+command -v "$PY" >/dev/null 2>&1 || PY=python3
+
 if [ "$ACTION" = "stop" ] || [ "$ACTION" = "restart" ]; then
   pkill -f "$pat" 2>/dev/null && echo "已停止  http://$HOST:$PORT" || echo "（无运行中的 http://$HOST:$PORT）"
   [ "$ACTION" = "stop" ] && exit 0
@@ -37,11 +46,11 @@ if pgrep -f "$pat" >/dev/null 2>&1; then
   exit 0
 fi
 
-nohup python3 run_web.py --host "$HOST" --port "$PORT" > web.log 2>&1 &
+nohup "$PY" run_web.py --host "$HOST" --port "$PORT" > web.log 2>&1 &
 sleep 2
 code=$(curl -s -o /dev/null -w "%{http_code}" -m 3 "http://$HOST:$PORT/api/config")
 if [ "$code" = "200" ]; then
-  echo "✅ 已启动  http://$HOST:$PORT   （日志 web.log / 停止 ./start_web.sh stop）"
+  echo "✅ 已启动  http://$HOST:$PORT   （解释器 $PY / 日志 web.log / 停止 ./start_web.sh stop）"
 else
   echo "⚠️  启动可能失败，看 web.log："; tail -5 web.log
 fi

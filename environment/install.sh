@@ -12,10 +12,11 @@
 #   bash environment/install.sh --skip pheno    # 跳过某一层
 #   bash environment/install.sh --conda ~/miniconda3
 #
-# 安装内容分三层（详见下方 CONDA_ENVS / BASE_PKGS / LOCAL_BINS 三张表）：
-#   ① conda 虚拟环境   Agent / r-gwas
-#   ② conda base 的 ML 栈（表型提取专用，注意不是 Agent 环境）
-#   ③ 本地额外软件     独立二进制 + 命令行工具
+# 安装内容（详见下方各规格表）：
+#   ① conda 虚拟环境 Agent      WGS/GWAS 管线 + harness 本体（requests/PyYAML/flask）
+#   ② conda 虚拟环境 r-gwas     GWAS 的 R 关联/出图
+#   ③ conda 虚拟环境 Phenotype  表型提取的 ML 栈（torch/transformers…）
+#   ④ 本地额外软件              独立二进制 + 命令行工具
 # ============================================================================
 set -euo pipefail
 
@@ -55,28 +56,34 @@ RGWAS_CRAN=(
   "RcppArmadillo"      # 15.6.0.1 rMVP 编译依赖
 )
 
-# 【② conda base 的 ML 栈】表型提取（phenotype-extract）专用。
-#    注意：跑在 base 解释器，不是 Agent 环境！
-BASE_PKGS=(
-  "torch"              # 2.14.0+cu126 推理；无 GPU 用 --cpu 装 CPU 版
-  "transformers"       # 4.57.6  Mask2Former 模型结构（≥4.40 才有该实现）
-  "numpy"              # 2.3.5
-  "pandas"             # 2.3.3
-  "scipy"              # 1.16.3  填洞
-  "opencv-python-headless"  # 5.0.0.93 读图/抠 ROI（提供 cv2）
-  "huggingface-hub"    # 0.36.2  拉取骨干权重
-  "openpyxl"           # 3.1.5   读 .xlsx
-  "xlrd"               # 2.0.2   读 .xls
+# 【② conda 虚拟环境 Phenotype】表型提取（phenotype-extract）专用。
+#    环境名必须是 Phenotype（技能脚本按此名 conda run -n Phenotype）。
+PHENO_ENV_NAME="Phenotype"
+PHENO_SPEC=(
+  "python=3.13"
+  "pip"
 )
+# Phenotype 里另需的 pip 包（含精确版本，保证与已跑通的组合一致）
+PHENO_PIP=(
+  "torch==2.14.0"                 # cu126 构建；无 GPU 用 --cpu 换 CPU 版
+  "transformers==4.57.6"          # ≥4.40 才有 Mask2Former
+  "numpy==2.3.5"
+  "pandas==2.3.3"
+  "scipy==1.16.3"
+  "opencv-python-headless==5.0.0.93"   # 提供 cv2
+  "pillow"                        # Mask2FormerImageProcessor 必需
+  "huggingface-hub==0.36.2"
+  "openpyxl==3.1.5"
+  "xlrd==2.0.2"
+)
+PHENO_TORCH_INDEX="https://download.pytorch.org/whl/cu126"
 
-# 【②】harness 本体（Agent 自身）的 pip 依赖
+# 【harness 本体 pip 依赖】装进 Agent 虚拟环境（Agent 本体与 WGS/GWAS 共用此环境）
 HARNESS_PKGS=(
-  "requests>=2.31"     # 2.32.5
+  "requests>=2.31"     # 2.33.1
   "PyYAML>=6.0"        # 6.0.3
-  "flask>=3.0"         # 3.1.2 仅 Web 前端
+  "flask>=3.0"         # 3.1.3 仅 Web 前端
 )
-
-# 【③ 本地额外软件 —— 独立二进制】不在 conda，需另装到 PATH
 declare -A BIN_URL=(
   [gemma]="https://github.com/genetics-statistics/GEMMA/releases/download/v0.98.5/gemma-0.98.5-linux-static-AMD64.gz"
   [gcta64]="https://yanglab.westlake.edu.cn/software/gcta/bin/gcta-1.95.4-linux-x86_64.zip"
@@ -98,7 +105,7 @@ LOCAL_TOOLS=(
 # 期望版本（仅用于 --list 展示与安装后核对）
 EXPECT_AGENT="python 3.12.13 | bwa 0.7.19 | samtools 1.23 | bcftools 1.23.1 | gatk4 4.3.0.0 | fastp 1.1.0 | plink 1.9.0b.7.7 | openjdk 11.0.1"
 EXPECT_RGWAS="R 4.3.3 | rMVP 1.4.6 | CMplot 4.5.1 | pheatmap 1.0.13 | reshape2 1.4.5 | bigmemory 4.6.6 | dplyr 1.2.1"
-EXPECT_BASE="torch 2.14.0 | transformers 4.57.6 | numpy 2.3.5 | pandas 2.3.3 | scipy 1.16.3 | cv2 5.0.0.93"
+EXPECT_PHENO="torch 2.14.0 | transformers 4.57.6 | numpy 2.3.5 | pandas 2.3.3 | scipy 1.16.3 | cv2 5.0.0.93"
 
 # ────────────────────────────── 参数 ────────────────────────────────────────
 YES=0; LIST_ONLY=0; CPU=0; WITH_SYSTEM=0; DRY=0
@@ -149,11 +156,11 @@ print_spec() {
   echo "   + CRAN：${RGWAS_CRAN[*]}"
   echo "   期望：$EXPECT_RGWAS"
   echo
-  c "36" "③ conda base —— ML 栈   〔表型提取，注意不是 Agent 环境〕"
-  echo "   包：${BASE_PKGS[*]}"
-  echo "   期望：$EXPECT_BASE"
+  c "36" "③ conda 虚拟环境：$PHENO_ENV_NAME   〔表型提取的 ML 栈〕"
+  echo "   包：${PHENO_SPEC[*]} + pip ${PHENO_PIP[*]}"
+  echo "   期望：$EXPECT_PHENO"
   echo
-  c "36" "④ harness 本体 pip 依赖：${HARNESS_PKGS[*]}"
+  c "36" "④ harness 本体 pip 依赖（装进 $AGENT_ENV_NAME 环境）：${HARNESS_PKGS[*]}"
   echo
   c "36" "⑤ 本地额外软件 —— 独立二进制（装到 $BIN_DIR）"
   for k in "${!BIN_URL[@]}"; do echo "   $k  ←  ${BIN_URL[$k]}"; done
@@ -185,18 +192,9 @@ ok "conda：$CONDA（$("$CONDA_BIN" --version)）"
 BASE_PY="$CONDA/bin/python3"; [ -x "$BASE_PY" ] || BASE_PY="$CONDA/bin/python"
 ok "base python：$("$BASE_PY" --version 2>&1)"
 
-# ────────────────────────────── 1. harness 本体 ─────────────────────────────
-do_harness() {
-  step "① harness 本体 pip 依赖（装进 $BASE_PY）"
-  [ "$DRY" = 1 ] && { echo "  [dry-run] pip install ${HARNESS_PKGS[*]}"; return; }
-  "$BASE_PY" -m pip install --quiet "${HARNESS_PKGS[@]}" \
-    || die "pip 安装失败"
-  "$BASE_PY" -c "import requests,yaml,flask" && ok "requests / PyYAML / flask 就位"
-}
-
-# ────────────────────────────── 2. conda 环境 Agent ─────────────────────────
+# ────────────────────────────── 1. conda 环境 Agent ─────────────────────────
 do_agent() {
-  step "② conda 环境 $AGENT_ENV_NAME（${#AGENT_SPEC[@]} 个包）"
+  step "① conda 环境 $AGENT_ENV_NAME（${#AGENT_SPEC[@]} 个包）"
   echo "  ${AGENT_SPEC[*]}"
   if "$CONDA_BIN" env list | awk '{print $1}' | grep -qx "$AGENT_ENV_NAME"; then
     warn "环境已存在，跳过（要重建先 conda env remove -n $AGENT_ENV_NAME）"
@@ -209,6 +207,17 @@ do_agent() {
   for t in bwa samtools bcftools tabix gatk fastp plink numactl java; do
     [ -x "$CONDA/envs/$AGENT_ENV_NAME/bin/$t" ] && ok "$t 就位" || warn "$t 缺失"
   done
+  # harness 本体（requests/PyYAML/flask）装进 Agent 环境，与管线共用
+  local APY="$CONDA/envs/$AGENT_ENV_NAME/bin/python"
+  if [ -x "$APY" ]; then
+    step "①b harness 本体 pip 依赖（装进 $AGENT_ENV_NAME 环境）"
+    if [ "$DRY" = 1 ]; then echo "  [dry-run] pip install ${HARNESS_PKGS[*]}"; else
+      "$APY" -m pip install --quiet "${HARNESS_PKGS[@]}" || die "harness pip 安装失败"
+      "$APY" -c "import requests,yaml,flask" && ok "requests / PyYAML / flask 就位"
+    fi
+  else
+    warn "Agent 环境无 python，跳过 harness 依赖"
+  fi
 }
 
 # ────────────────────────────── 3. conda 环境 r-gwas ────────────────────────
@@ -234,22 +243,30 @@ do_rgwas() {
   done
 }
 
-# ────────────────────────────── 4. base ML 栈（表型） ───────────────────────
+# ────────────────────────────── 3. conda 环境 Phenotype（表型 ML 栈） ───────
 do_pheno() {
-  step "④ conda base ML 栈（表型提取；torch/transformers 等）"
-  echo "  ${BASE_PKGS[*]}"
-  [ "$DRY" = 1 ] && { echo "  [dry-run] pip install ..."; return; }
-  local torch_idx=()
-  [ "$CPU" = 1 ] && torch_idx=(--index-url https://download.pytorch.org/whl/cpu)
-  "$BASE_PY" -m pip install --quiet "${torch_idx[@]}" "${BASE_PKGS[@]}" \
-    || die "ML 栈安装失败"
+  step "③ conda 环境 $PHENO_ENV_NAME（表型提取的 ML 栈）"
+  echo "  ${PHENO_SPEC[*]} + pip: ${PHENO_PIP[*]}"
+  if "$CONDA_BIN" env list | awk '{print $1}' | grep -qx "$PHENO_ENV_NAME"; then
+    warn "环境已存在，跳过创建（要重建先 conda env remove -n $PHENO_ENV_NAME）"
+  else
+    [ "$DRY" = 1 ] && { echo "  [dry-run] conda create -n $PHENO_ENV_NAME ${PHENO_SPEC[*]}"; return; }
+    "$CONDA_BIN" create -y -n "$PHENO_ENV_NAME" -c conda-forge --override-channels \
+      "${PHENO_SPEC[@]}" >/dev/null || die "创建 $PHENO_ENV_NAME 失败"
+    ok "$PHENO_ENV_NAME 创建完成"
+  fi
+  local PPY="$CONDA/envs/$PHENO_ENV_NAME/bin/python"
+  [ -x "$PPY" ] || { warn "Phenotype 环境无 python，跳过 pip 包"; return; }
+  [ "$DRY" = 1 ] && { echo "  [dry-run] pip install ${PHENO_PIP[*]}"; return; }
+  local idx=(--index-url "$PHENO_TORCH_INDEX")
+  [ "$CPU" = 1 ] && idx=(--index-url https://download.pytorch.org/whl/cpu)
+  "$PPY" -m pip install --quiet "${idx[@]}" "${PHENO_PIP[@]}" || die "ML 栈安装失败"
   for spec in "numpy" "pandas" "scipy" "cv2:opencv-python-headless" "torch" "transformers" \
               "huggingface_hub:huggingface-hub" "openpyxl" "xlrd"; do
     m="${spec%%:*}"; p="${spec##*:}"
-    v="$("$BASE_PY" -c "import importlib.metadata as m;print(m.version('$p'))" 2>/dev/null)" \
-      && "$BASE_PY" -c "import $m" >/dev/null 2>&1 && ok "$p ${v:-}" || warn "$p 不可导入"
+    v="$("$PPY" -c "import importlib.metadata as m;print(m.version('$p'))" 2>/dev/null)" \
+      && "$PPY" -c "import $m" >/dev/null 2>&1 && ok "$p ${v:-}" || warn "$p 不可导入"
   done
-  warn "运行表型提取时必须前插 LD_LIBRARY_PATH=$CONDA/lib（系统 libstdc++ 太旧会报 GLIBCXX_3.4.29）"
 }
 
 # ────────────────────────────── 5. 独立二进制 ───────────────────────────────
@@ -335,8 +352,11 @@ do_verify() {
     warn "未找到 environment/check_env.sh"
   fi
   step "路径对齐（硬编码绝对路径 → 本机路径）"
-  local rp="$ROOT/../replace_paths.py"
-  if [ -x "$rp" ] || [ -f "$rp" ]; then
+  local rp=""
+  for cand in "$ROOT/replace_paths.py" "$ROOT/../replace_paths.py"; do
+    [ -f "$cand" ] && { rp="$cand"; break; }
+  done
+  if [ -n "$rp" ]; then
     echo "  技能脚本硬编码了 conda/数据绝对路径。若你的 conda 不在 /home/chenyuxi/anaconda3，"
     echo "  或数据不在 /data1/chenyx/Pig_geno，请执行："
     echo "    python3 $rp --conda $CONDA --data <你的数据目录>"
@@ -346,8 +366,7 @@ do_verify() {
 }
 
 # ────────────────────────────── 主流程 ─────────────────────────────────────
-do_harness
-if want agent; then do_agent; fi
+if want agent; then do_agent; fi   # 含 harness 本体 pip 依赖
 if want rgwas; then do_rgwas; fi
 if want pheno; then do_pheno; fi
 if want bins;  then do_bins;  fi

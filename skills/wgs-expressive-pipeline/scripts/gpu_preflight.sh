@@ -7,7 +7,7 @@
 # 所有 nvidia-smi / docker 调用都带 timeout，共享 GPU 服务器上偶发卡顿也会快速失败。
 #
 # 用法：
-#   bash .claude/skills/wgs-expressive-pipeline/scripts/gpu_preflight.sh
+#   bash skills/wgs-expressive-pipeline/scripts/gpu_preflight.sh
 # 可选环境变量：
 #   PB_IMAGE=镜像tag    手动指定要检测的镜像（缺省自动在本地 docker images 中查找 parabricks）
 set -u

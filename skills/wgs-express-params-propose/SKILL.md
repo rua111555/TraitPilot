@@ -28,7 +28,7 @@ allowed-tools:
 使用 `db_query.py` 获取所有必需路径：
 
 ```bash
-conda run -n Agent python .claude/skills/wgs-expressive-pipeline/scripts/db_query.py \
+conda run -n Agent python skills/wgs-expressive-pipeline/scripts/db_query.py \
   --db /data1/chenyx/Pig_geno/pipeline.db --action query-all --samples <SAMPLE_NUMBERS>
 ```
 

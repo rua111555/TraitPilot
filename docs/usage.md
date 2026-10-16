@@ -29,18 +29,22 @@
 
 ### 依赖
 
-**Agent 本体**只依赖 `requests + PyYAML + flask`（本机已预装，见 [`agent/requirements.txt`](../requirements.txt)）；
-Python ≥3.10（本机 3.13，anaconda3 base）。
+**Agent 本体**只依赖 `requests + PyYAML + flask`，装在 conda 虚拟环境 **`Agent`** 里
+（与 WGS/GWAS 管线共用同一环境）；Python ≥3.10（本机 `Agent` 环境为 3.12.13）。
 
 ```bash
 cd /home/chenyuxi/skill/agent
-python3 -c "import requests, yaml, flask; print('ok')"   # 确认依赖在位
+conda run -n Agent python -c "import requests, yaml, flask; print('ok')"   # 确认依赖在位
 ```
 
-> ⚠️ 这三个包**只够 Agent 本体**（对话 / 读技能 / 执行 Bash）。自带 21 个技能背后还有两套 conda
-> 环境（`Agent` / `r-gwas`）、若干独立二进制、表型提取的 ML 栈（跑在 conda base）与数据文件。
-> **完整部署环境清单与逐步安装指引见 [`environment/README.md`](../environment/README.md)**，
-> 装完先跑自检：`bash environment/check_env.sh`（`--core` 只查本体）。
+> 用哪套解释器都行（`Agent` 环境 / base / 系统 python3 均可），只要装了这三个包。本项目的
+> `start_web.sh` 会优先挑 `Agent` 环境的解释器。
+
+> ⚠️ 这三个包**只够 Agent 本体**（对话 / 读技能 / 执行 Bash）。自带 21 个技能背后还有三套 conda
+> 环境（`Agent` / `r-gwas` / `Phenotype`）、若干独立二进制与数据文件。
+> **一键安装**：`bash environment/install.sh`（`--list` 先看规格）；
+> **完整清单**见 [`environment/README.md`](../environment/README.md)；
+> **自检**：`bash environment/check_env.sh`（`--core` 只查本体）。
 
 ### 凭证与配置
 

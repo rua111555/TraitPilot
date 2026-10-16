@@ -23,8 +23,8 @@ allowed-tools:
 1. **先列可用表型并让工具给建议**（不加载模型，秒级）：
 
 ```bash
-cd /home/chenyuxi/skill/.claude/skills/phenotype-extract/scripts
-LD_LIBRARY_PATH=/home/chenyuxi/anaconda3/lib python3 phenotype_extract.py
+cd /home/chenyuxi/skill/agent/skills/phenotype-extract/scripts
+conda run -n Phenotype python phenotype_extract.py
 ```
 
 输出会展示：数据库 `models` 表(已有模型) × `phenotypes/` 代码插件 的两两匹配，
@@ -35,8 +35,8 @@ LD_LIBRARY_PATH=/home/chenyuxi/anaconda3/lib python3 phenotype_extract.py
 3. 执行所选表型（当前为 IMF，默认全量 162 张，约 20s）：
 
 ```bash
-cd /home/chenyuxi/skill/.claude/skills/phenotype-extract/scripts
-LD_LIBRARY_PATH=/home/chenyuxi/anaconda3/lib python3 phenotype_extract.py --pheno IMF
+cd /home/chenyuxi/skill/agent/skills/phenotype-extract/scripts
+conda run -n Phenotype python phenotype_extract.py --pheno IMF
 ```
 
 ## 输入
@@ -73,7 +73,7 @@ PLINK 行序与 `et277.fm.snp.fam` 的相对顺序一致（`--fam` 参数仅作�
 
 ## 注意事项
 
-- 运行带 `LD_LIBRARY_PATH`，默认离线加载 HF 缓存(无外网)；缓存被清时先镜像预下载或 `--allow-download`。
+- 跑在 conda 虚拟环境 **`Phenotype`**（torch/transformers/openCV 等 ML 栈）；**不是** conda base，也不是 `Agent` 环境。
 - `--num-labels`(默认2) 需与具体表型模型的类别数一致；`--thresh`(默认30)为黑底板抠肉 ROI 阈值，传给插件。
 - GAPIT/PLINK 两文件只含实际计算到表型的样本（已按用户要求去掉任何 -9/缺失填充与额外样本）。
 - 精度说明：图像可见脂肪%≠化学 IMF%，与 NIR 的 RMSE≈0.90；需更高一致先做线性校准 `N≈0.456·P+1.149`。

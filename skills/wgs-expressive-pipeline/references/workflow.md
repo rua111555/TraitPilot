@@ -17,7 +17,7 @@
 ## 文件结构
 
 ```
-.claude/skills/
+skills/
 ├── wgs-expressive-pipeline/           # 编排层（入口）
 │   ├── SKILL.md                       # 编排逻辑、监测/数据库/后台机制
 │   ├── scripts/
@@ -190,11 +190,11 @@ bwa mem -t ${THREADS} -R "${RG_STR}" "${REF}" "${R1}" "${R2}"
 2. 放入 fastq 文件：`{编号}_1.fq.gz` 和 `{编号}_2.fq.gz`
 3. 运行数据库初始化脚本：
    ```bash
-   conda run -n Agent python .claude/skills/wgs-pipeline/scripts/init_db.py
+   conda run -n Agent python skills/wgs-expressive-pipeline/scripts/init_db.py
    ```
 4. 验证数据已写入：
    ```bash
-   conda run -n Agent python .claude/skills/wgs-expressive-pipeline/scripts/db_query.py \
+   conda run -n Agent python skills/wgs-expressive-pipeline/scripts/db_query.py \
      --action query-samples --samples <新编号>
    ```
 

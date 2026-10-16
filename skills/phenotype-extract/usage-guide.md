@@ -6,13 +6,13 @@
 ## 快速开始
 
 ```bash
-cd /home/chenyuxi/skill/.claude/skills/phenotype-extract/scripts
+cd /home/chenyuxi/skill/agent/skills/phenotype-extract/scripts
 
 # 1) 查看可提取的表型与就绪状态（会给出建议）
-LD_LIBRARY_PATH=/home/chenyuxi/anaconda3/lib python3 phenotype_extract.py
+conda run -n Phenotype python phenotype_extract.py
 
 # 2) 提取 IMF（全量 162 张约 20s）
-LD_LIBRARY_PATH=/home/chenyuxi/anaconda3/lib python3 phenotype_extract.py --pheno IMF
+conda run -n Phenotype python phenotype_extract.py --pheno IMF
 ```
 
 输出在 `/data1/chenyx/Pig_geno/phenotype/IMF/`：

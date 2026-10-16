@@ -127,7 +127,7 @@ nohup conda run -n Agent bash "${SCRIPT_PATH}" &
 ### 4. 数据库机制
 
 ```bash
-conda run -n Agent python .claude/skills/wgs-expressive-pipeline/scripts/db_query.py --action query-all --samples N
+conda run -n Agent python skills/wgs-expressive-pipeline/scripts/db_query.py --action query-all --samples N
 ```
 - 启动阶段：INSERT `pipeline_runs` / `sample_steps` (status='running')
 - 完成后：UPDATE `sample_steps` / `pipeline_runs` (status='completed')

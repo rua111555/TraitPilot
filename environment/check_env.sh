@@ -94,13 +94,26 @@ if [ -n "$(command -v bash)" ]; then
   esac
 fi
 
-hdr "② Agent 本体 Python 依赖（requirements.txt）"
-py_have requests requests requests
-py_have yaml     PyYAML   PyYAML
-py_have flask    flask    flask
-if "$PY" -c "import sqlite3;c=sqlite3.connect(':memory:');c.execute('CREATE VIRTUAL TABLE t USING fts5(x)')" >/dev/null 2>&1
-then c_ok "sqlite3 + FTS5（#11 Search / M12 记忆需要）"
-else c_warn "sqlite3 无 FTS5（--retrieval / --memory 会自停用，不影响其他功能）"; fi
+hdr "② Agent 本体 Python 依赖（harness：requests/PyYAML/flask，装在 Agent 环境）"
+CONDA="${CONDA_PREFIX_BASE:-}"
+if [ -z "$CONDA" ]; then
+  for d in "$HOME/anaconda3" "$HOME/miniconda3" "$HOME/mambaforge" /opt/conda /usr/local/anaconda3; do
+    [ -x "$d/bin/conda" ] && { CONDA="$d"; break; }
+  done
+fi
+APY="${AGENT_PYTHON:-$CONDA/envs/Agent/bin/python}"
+if [ -x "$APY" ]; then
+  c_ok "harness 解释器：$APY ($("$APY" --version 2>&1))"
+  PY="$APY" py_have requests requests requests
+  PY="$APY" py_have yaml     PyYAML   PyYAML
+  PY="$APY" py_have flask    flask    flask
+  if "$APY" -c "import sqlite3;c=sqlite3.connect(':memory:');c.execute('CREATE VIRTUAL TABLE t USING fts5(x)')" >/dev/null 2>&1
+  then c_ok "sqlite3 + FTS5（#11 Search / M12 记忆需要）"
+  else c_warn "sqlite3 无 FTS5（--retrieval / --memory 会自停用，不影响其他功能）"; fi
+else
+  c_warn "未找到 Agent 环境 python（$APY） | 先 bash environment/install.sh --only agent"
+  c_warn "harness 本体依赖 requests/PyYAML/flask 装在该环境；见 environment/README.md §1.1"
+fi
 
 hdr "③ 配置与技能（跑起来的最小条件）"
 if [ -f "$ROOT/config.json" ]; then
@@ -124,19 +137,12 @@ fi
 
 [ "$CORE_ONLY" = 1 ] && { printf "\n"; echo "（--core：跳过后面的生信/表型检查）"; } || {
 
-CONDA="${CONDA_PREFIX_BASE:-}"
-if [ -z "$CONDA" ]; then
-  for d in "$HOME/anaconda3" "$HOME/miniconda3" "$HOME/mambaforge" /opt/conda /usr/local/anaconda3; do
-    [ -x "$d/bin/conda" ] && { CONDA="$d"; break; }
-  done
-fi
-
 hdr "④ 生信工具链 —— conda 环境 Agent"
 if [ -z "$CONDA" ]; then
   c_warn "未找到 conda  |  见 environment/README.md §2（生信技能全部依赖 conda 环境 Agent）"
 elif [ ! -d "$CONDA/envs/Agent" ]; then
-  c_warn "conda 环境 Agent 不存在  |  conda env create -f environment/Agent.yml"
-  c_warn "   （导入后路径为 $CONDA/envs/Agent；若与你机器不同，需用 replace_paths.py 改脚本里的绝对路径）"
+  c_warn "conda 环境 Agent 不存在  |  bash environment/install.sh --only agent"
+  c_warn "   （环境名必须是 Agent；若 conda 根与脚本不同，需用 replace_paths.py 改绝对路径）"
 else
   c_ok "conda 环境 Agent → $CONDA/envs/Agent"
   in_env Agent bwa      "bwa（Stage1 比对）"          "conda install -n Agent -c bioconda bwa"
@@ -175,24 +181,18 @@ if [ -n "$CONDA" ] && [ -x "$CONDA/envs/r-gwas/bin/Rscript" ]; then
     then c_ok "R 包 $p"; else c_warn "R 包 $p 未装  |  Rscript -e \"install.packages('$p')\""; fi
   done
 else
-  c_warn "conda 环境 r-gwas 不存在  |  conda env create -f environment/r-gwas.yml"
+  c_warn "conda 环境 r-gwas 不存在  |  bash environment/install.sh --only rgwas"
 fi
 if [ -n "$CONDA" ] && [ -x "$CONDA/envs/r-gwas/bin/g++" ]; then c_ok "r-gwas 自带 C++ 工具链（编译 RcppArmadillo 用）"
 else c_warn "r-gwas 缺 g++ 工具链：装 R 包会因 GLIBCXX 报错 | conda install -n r-gwas -c conda-forge gxx_linux-64"; fi
 
-hdr "⑦ 表型提取（phenotype-extract）—— 注意：跑在 conda base，不是 Agent 环境"
-PHPP="${PHENO_PYTHON:-$PY}"
-c_ok "用以检查的解释器：$PHPP"
-# 技能文档要求的调用前缀：LD_LIBRARY_PATH=<conda>/lib（系统 libstdc++ 太旧，否则 numpy/torch import 失败）
-# 必须前插而不是追加 —— 本机 /usr/lib64 在前时会先命中旧 libstdc++
-if [ -n "$CONDA" ] && [ -f "$CONDA/lib/libstdc++.so.6" ]; then
-  case ":${LD_LIBRARY_PATH:-}:" in
-    "$CONDA/lib:"*) : ;;   # 已在最前
-    *) export LD_LIBRARY_PATH="$CONDA/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"; c_ok "已前插 LD_LIBRARY_PATH=$CONDA/lib（本机必需，否则 numpy/torch 报 GLIBCXX）" ;;
-  esac
-fi
+hdr "⑦ 表型提取（phenotype-extract）—— conda 环境 Phenotype"
+PHPP="${PHENO_PYTHON:-$CONDA/envs/Phenotype/bin/python}"
+if [ -x "$PHPP" ]; then c_ok "用以检查的解释器：$PHPP ($("$PHPP" --version 2>&1))"
+else c_warn "未找到 Phenotype 环境（$PHPP） | bash environment/install.sh --only pheno"; fi
 for spec in "numpy:numpy:numpy" "pandas:pandas:pandas" "cv2:opencv-python:opencv-python-headless,opencv-python" \
             "scipy:scipy:scipy" "torch:torch:torch" "transformers:transformers:transformers" \
+            "PIL:pillow:pillow" \
             "huggingface_hub:huggingface-hub:huggingface-hub" \
             "openpyxl:openpyxl:openpyxl" "xlrd:xlrd:xlrd"; do
   m="${spec%%:*}"; rest="${spec#*:}"; label="${rest%%:*}"; pkgs="${rest##*:}"
@@ -201,7 +201,6 @@ done
 if [ -d "$HOME/.cache/huggingface/hub" ] && ls "$HOME/.cache/huggingface/hub" 2>/dev/null | grep -q mask2former
 then c_ok "HF 缓存含 mask2former 骨干权重"
 else c_warn "HF 缓存缺 facebook/mask2former-swin-small-ade-semantic  |  HF_ENDPOINT=https://hf-mirror.com 冷启动下载（见 environment/README.md §1.7）"; fi
-c_warn "★ 注意：技能文档要求 base 环境带 LD_LIBRARY_PATH=\$CONDA/lib 运行（系统 libstdc++ 太旧，否则 numpy/torch 导入失败）"
 
 hdr "⑧ 可选：GPU / Parabricks 加速（无则自动走 gatk-cpu，管线照常跑）"
 have nvidia-smi "nvidia-smi（GPU 检测）" "NVIDIA 驱动"
