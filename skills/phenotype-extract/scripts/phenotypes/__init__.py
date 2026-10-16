@@ -14,7 +14,7 @@ TASK 字段:
   compute      fn(ctx) -> (value, extra_cols dict); ctx 见主脚本
   mask_encode  可选 fn(seg)->uint8 保存预测 mask(默认 255=非背景)
 """
-from ._common import meat_mask  # noqa: F401   方便插件复用
+from ._common import foreground_mask  # noqa: F401   方便插件复用
 
 import os
 import importlib

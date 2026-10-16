@@ -48,29 +48,29 @@ allowed-tools:
 vcftools --vcf LDdecay.vcf --plink --out zx
 
 # gzip 压缩 VCF（⚠ 必须用 --gzvcf，不是 --vcf）
-vcftools --gzvcf ET277.new.snp.filter.vcf.gz --plink --out et277
+vcftools --gzvcf COHORT.new.snp.filter.vcf.gz --plink --out cohort
 ```
 
 ### 2. 直接 VCF → PLINK bed（alternative，可跳过 ped/map 中介）
 
 ```bash
-plink --vcf ET277.new.snp.filter.vcf.gz --make-bed --out et277 --allow-extra-chr
+plink --vcf COHORT.new.snp.filter.vcf.gz --make-bed --out cohort --allow-extra-chr
 ```
 
 > 默认路径：`--vcf` 按 `#CHROM` 编号转换；若原始染色体名为 `chr1`/`SSC7` 等带前缀或非常规编号，
-> 可能需要 `--allow-extra-chr` 或 `--chr-set` 处理。default 兼容常见猪 18 autosomes + X。
+> 可能需要 `--allow-extra-chr` 或 `--chr-set` 处理。default 按常见二倍体核型（约 18~20 条常染色体 + X）兼容；**其他物种需按实际核型设 `--chr-set`**。
 
 ### 3. 检查样本与位点数量
 
 ```bash
-wc -l et277.map et277.ped   # map 行数=位点数；ped 行数=个体数
+wc -l cohort.map cohort.ped   # map 行数=位点数；ped 行数=个体数
 ```
 
 ### 4. 过滤后 bed → VCF（LD 分析用）
 
 ```bash
-plink --bfile et277.wy1.snp --recode vcf --out et277.LDdecay
-plink --bfile et277.fm.snp --recode vcf --out LDdecay
+plink --bfile cohort.wy1.snp --recode vcf --out cohort.LDdecay
+plink --bfile cohort.fm.snp --recode vcf --out LDdecay
 ```
 
 ## 脚本模板（SESSION-SAFE）
@@ -117,7 +117,7 @@ date > "${DONE_FILE}"
 
 ```
 ✅ 格式转换完成
-VCF:      ET277.new.snp.filter.vcf.gz
+VCF:      COHORT.new.snp.filter.vcf.gz
 SNPs:     {N_MAP}
 个体:     {N_PED}
 输出:     {PREFIX}.ped/.map → {PREFIX}.bed/.bim/.fam

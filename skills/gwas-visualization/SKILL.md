@@ -106,7 +106,7 @@ MVP.Report(data, plot.type = "q", col = c("dodgerblue1", "olivedrab3", "darkgold
 
 ```r
 # Bonferroni：0.05 / 有效独立标记数（常见 1e-6 ~ 1e-8 区间）
-# 猪约 12.7 万位点 → 0.05 / 127000 ≈ 3.92e-9（项目采用值）
+# 以本测试数据集约 12.7 万位点为例 → 0.05 / 127000 ≈ 3.92e-9（按实际位点数重算）
 # 建议同时给建议线（如 1e-6 / 3.92e-7）与严格线（0.05/n）
 c(3.92e-9, 3.92e-7)   # 项目常见两档
 ```
@@ -130,11 +130,11 @@ write(sg$SNP, file = "Sig.d.txt")
 
 ```bash
 # SNP 列表 → 子集 bfile
-plink --bfile et277.3.snp --extract Sig.d.txt --make-bed --out Sig.d
-plink --bfile et277.3.snp --extract snp.txt --recode --out snp
+plink --bfile cohort.3.snp --extract Sig.d.txt --make-bed --out Sig.d
+plink --bfile cohort.3.snp --extract snp.txt --recode --out snp
 
 # 剔除位点
-plink --bfile et277.3.snp --exclude nos.txt --make-bed --out bf1
+plink --bfile cohort.3.snp --exclude nos.txt --make-bed --out bf1
 
 # 提取指定区域的 VCF（区域 LD 用）
 vcftools --vcf LDdecay.vcf --chr 7 --from-bp 28253019 --to-bp 30637296 \
@@ -166,7 +166,7 @@ date > "${DONE_FILE}"
 |---|--------|---------|
 | 1 | **取 P 列别错** — rMVP CSV 第 8 列是 P；GEMMA 是 `p_wald` 等 | 把效应量当 P 画图 |
 | 2 | **多性状 cbind 需保持 SNP/CHR/POS 列对齐** | 图线条错位 |
-| 3 | **染色体标签** — 猪 18+X；有非编号染色体先处理 | `chr.labels` 长度不匹配报错 |
+| 3 | **染色体标签** — 按物种实际核型设置；有非编号染色体先处理 | `chr.labels` 长度不匹配报错 |
 | 4 | **阈值要用校正值** — 全基因组显著线是 0.05/n，不是 0.05 | 假阳性显著 |
 | 5 | **`plot.type="c"` 对 >3 性状需重排列（重排为 SNP CHR POS + 各性状 P）** | 圈图渲染失败 |
 | 6 | **`file.output=FALSE` 时图不进文件** — 不加 `memo` 易丢图 | 产出文件缺失 |

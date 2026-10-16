@@ -36,7 +36,7 @@ allowed-tools:
 ## 核心流程
 
 ```
-/gwas-pipeline --vcf ET277.new.snp.filter.vcf.gz --prefix et277 \
+/gwas-pipeline --vcf COHORT.new.snp.filter.vcf.gz --prefix cohort \
                --pheno phe.txt --covar c.txt
   ├── S0:    VCF → PLINK ped/map + bed → 用户审批
   ├── S0.5:  --missing/--freq 检查 → 读懂分布 → 过滤（-geno 0.2 -maf 0.01 -hwe 1e-6）→ 用户审批

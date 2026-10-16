@@ -31,7 +31,7 @@ import sys
 
 logger = logging.getLogger("db_query")
 
-DEFAULT_GENO_DIR = os.environ.get("PIG_GENO_DIR", "/data1/chenyx/Pig_geno")
+DEFAULT_GENO_DIR = os.environ.get("GENO_DIR", os.path.join(os.path.expanduser("~"), "genomics_data"))
 DEFAULT_DB = os.environ.get("PIPELINE_DB", os.path.join(DEFAULT_GENO_DIR, "pipeline.db"))
 
 

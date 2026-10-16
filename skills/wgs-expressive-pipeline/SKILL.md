@@ -36,7 +36,7 @@ allowed-tools:
 ## 核心流程
 
 ```
-/wgs-expressive-pipeline --samples 1,2,10 --prefix ET277
+/wgs-expressive-pipeline --samples 1,2,10 --prefix COHORT
   ├── S0:  服务器检测 + **GPU 检测**（参考 wgs-express-server-detect）→ 用户审批
   ├── 0:   参数提案 + **后端决策** compute_backend（参考 wgs-express-params-propose）→ 用户审批
   │         └── GPU 存在 + Parabricks 就绪 + 冒烟通过 → parabricks；否则 gatk-cpu
@@ -63,7 +63,7 @@ allowed-tools:
 | `--samples` | **必填**，逗号分隔样本编号 | — |
 | `--prefix` | VCF 输出前缀（不提供则 LLM 自动生成） | 自动 |
 | `--threads` | 线程数上限 | `40` |
-| `--db` | SQLite 数据库路径 | `$PIPELINE_DB`，其次 `$PIG_GENO_DIR/pipeline.db` |
+| `--db` | SQLite 数据库路径 | `$PIPELINE_DB`，其次 `$GENO_DIR/pipeline.db` |
 | `--resume` | 断点续跑 | 关闭 |
 | `--backend` | 计算后端覆盖：`gatk-cpu` / `parabricks` | 自动（GPU+Parabricks 就绪则 parabricks） |
 
@@ -129,7 +129,7 @@ nohup conda run -n Agent bash "${SCRIPT_PATH}" &
 ```bash
 conda run -n Agent python "$(dirname "$0")/scripts/db_query.py" --action query-all --samples N
 ```
-（`--db` 缺省 `$PIPELINE_DB` / `$PIG_GENO_DIR/pipeline.db`；脚本路径按仓库内 `skills/wgs-expressive-pipeline/scripts/` 相对定位）
+（`--db` 缺省 `$PIPELINE_DB` / `$GENO_DIR/pipeline.db`；脚本路径按仓库内 `skills/wgs-expressive-pipeline/scripts/` 相对定位）
 - 启动阶段：INSERT `pipeline_runs` / `sample_steps` (status='running')
 - 完成后：UPDATE `sample_steps` / `pipeline_runs` (status='completed')
 
@@ -159,7 +159,7 @@ done
 ## 输出目录结构
 
 ```
-{output_dir_base}/temp/runs/{run_id}/        # output_dir_base 来自 run.params.json（缺省 $PIG_GENO_DIR/temp）
+{output_dir_base}/temp/runs/{run_id}/        # output_dir_base 来自 run.params.json（缺省 $GENO_DIR/temp）
 ├── run.params.json     # 所有参数（server_detection + parallelism）
 ├── scripts/            # 各阶段生成的脚本
 │   ├── 01_bwa_sort.sh ...

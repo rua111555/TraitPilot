@@ -54,44 +54,44 @@ allowed-tools:
 ### 1. 缺失率检查（查看数据集缺失率）
 
 ```bash
-nohup plink --file et277 --missing &
+nohup plink --file cohort --missing &
 # 产出 plink.lmiss（位点级）/ plink.imiss（个体级）
 ```
 
 ### 2. 最小等位基因频率检查
 
 ```bash
-nohup plink --file et277 --freq --out MAF_check &
+nohup plink --file cohort --freq --out MAF_check &
 # 产出 MAF_check.frq；用 R 画 MAF 分布直方图确认阈值
 ```
 
 ### 3. Hardy-Weinberg 检查（可选）
 
 ```bash
-plink --file et277 --hardy --out hwe_check
+plink --file cohort --hardy --out hwe_check
 ```
 
 ### 4. 过滤并生成 bed
 
 ```bash
-plink --file et277 -geno 0.2 -maf 0.01 -hwe 0.000001 --make-bed --out et277.wy1.snp
+plink --file cohort -geno 0.2 -maf 0.01 -hwe 0.000001 --make-bed --out cohort.wy1.snp
 ```
 
 ### 5. 过滤后复检（确认过滤效果）
 
 ```bash
-plink --bfile et277.wy1.snp --missing --out et277.wy1.snp.missing
-plink --bfile et277.wy1.snp --freq --out et277.wy1.snp.maf
+plink --bfile cohort.wy1.snp --missing --out cohort.wy1.snp.missing
+plink --bfile cohort.wy1.snp --freq --out cohort.wy1.snp.maf
 ```
 
 ### 6. （可选）全基因组 LD 衰减 — PopLDdecay
 
 ```bash
 # bed → VCF
-plink --bfile et277.wy1.snp --recode vcf --out et277.LDdecay
+plink --bfile cohort.wy1.snp --recode vcf --out cohort.LDdecay
 
 # 计算 LD 衰减（MaxDist 单位 kb；OutType 2 = 每距离段统计）
-PopLDdecay -InVCF et277.LDdecay.vcf -OutStat et277.LDdecay.pld -MaxDist 100 -OutType 2
+PopLDdecay -InVCF cohort.LDdecay.vcf -OutStat cohort.LDdecay.pld -MaxDist 100 -OutType 2
 ```
 
 **LD 衰减绘图**（输出 `png`/`pdf`）：

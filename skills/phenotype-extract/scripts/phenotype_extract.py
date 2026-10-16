@@ -29,9 +29,9 @@ import json
 import time
 import argparse
 
-# 数据根目录：可用环境变量覆盖（便于换机器）；缺省沿用历史布局。
-GENO_DIR  = os.environ.get("PIG_GENO_DIR",  "/data1/chenyx/Pig_geno")
-IMAGE_DIR = os.environ.get("PIG_IMAGE_DIR", "/data1/chenyx/Pig_image")
+# 数据根目录：由环境变量提供（便于换机器/换物种）；缺省为通用的 $HOME/genomics_data 布局。
+GENO_DIR  = os.environ.get("GENO_DIR",  os.path.join(os.path.expanduser("~"), "genomics_data"))
+IMAGE_DIR = os.environ.get("IMAGE_DIR", os.path.join(GENO_DIR, "images"))
 DEF_DB     = os.environ.get("PIPELINE_DB",   os.path.join(GENO_DIR, "pipeline.db"))
 DEF_OUTDIR = os.path.join(GENO_DIR, "phenotype")
 
@@ -89,14 +89,14 @@ def main():
     ap.add_argument("--db", default=DEF_DB,
                     help=f"SQLite 数据库(默认 $PIPELINE_DB 或 {DEF_DB})")
     ap.add_argument("--outdir", default=DEF_OUTDIR,
-                    help=f"输出根目录(默认 $PIG_GENO_DIR/phenotype, 即 {DEF_OUTDIR})")
-    ap.add_argument("--fam", default=os.path.join(GENO_DIR, "04_snp_indel", "et277.fm.snp.fam"),
-                    help=".fam 仅作 PLINK 文件样本排序基准(取其在 fam 的相对行序); 缺失则按 et 号排序")
-    ap.add_argument("--nir-xls", default=os.path.join(IMAGE_DIR, "肌内脂肪含量_近红外测定.xls"),
-                    help=f"NIR 真值表(默认 $PIG_IMAGE_DIR 下的 {os.path.join(IMAGE_DIR, '肌内脂肪含量_近红外测定.xls')})")
-    ap.add_argument("--corr-xls",
-                    default=os.path.join(IMAGE_DIR, "0-重要-测序数据编号与屠宰耳号对应情况.xls"),
-                    help="et→猪号 关联表(默认 $PIG_IMAGE_DIR 下)")
+                    help=f"输出根目录(默认 $GENO_DIR/phenotype, 即 {DEF_OUTDIR})")
+    ap.add_argument("--fam", default=os.environ.get("FAM_PATH", ""),
+                    help=".fam 仅作 PLINK 文件样本排序基准(取其在 fam 的相对行序); "
+                         "缺省按样本号自然排序；需要与基因型文件对齐时用 --fam 或 $FAM_PATH")
+    ap.add_argument("--nir-xls", default=os.environ.get("NIR_XLS", ""),
+                    help="参照真值表(默认 $NIR_XLS；不指定则明细表不含参照列)")
+    ap.add_argument("--corr-xls", default=os.environ.get("CORR_XLS", ""),
+                    help="样本编号→个体号 关联表(默认 $CORR_XLS)")
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--size", type=int, default=512, help="推理输入分辨率(可用 ckpt 自带值)")
     ap.add_argument("--num-labels", type=int, default=2,
@@ -150,9 +150,9 @@ def main():
     if args.limit > 0:
         images = images[:args.limit]
     print(f"[data ] 待处理 {len(images)} 个样本 (来自 {args.db}::sample_images)")
-    et2pig, pig2imf = C.parse_xls(args.corr_xls, args.nir_xls)
-    print(f"[xls  ] et->猪号 {len(et2pig)} 条, 猪->NIR {len(pig2imf)} 条")
-    mappings = {"et2pig": et2pig, "pig2imf": pig2imf}
+    sample2id, id2ref = C.parse_xls(args.corr_xls, args.nir_xls)
+    print(f"[xls  ] 样本->个体 {len(sample2id)} 条, 个体->参照 {len(id2ref)} 条")
+    mappings = {"sample2id": sample2id, "id2ref": id2ref}
 
     # ---- 逐张推理 + 插件 compute ----
     trait, pcol = task["trait"], task.get("pheno_col", task["trait"])
@@ -164,8 +164,9 @@ def main():
     okn = 0
     for idx, (et, num, path) in enumerate(images, 1):
         t0 = time.time()
-        r = {"Taxa": et or f"et{num}",
-             "猪号": et2pig.get((et or f"et{num}").lower(), ""),
+        sid = et or f"sample{num}"
+        r = {"Taxa": sid,
+             "个体号": sample2id.get(sid.lower(), ""),
              "图像文件": os.path.basename(path) if path else "",
              pcol: np.nan}
         ok, err = False, ""
@@ -179,7 +180,7 @@ def main():
                 try:
                     seg = C.infer_seg(model, proc, cv2.cvtColor(img, cv2.COLOR_BGR2RGB),
                                       args.device)
-                    ctx = {"img": img, "seg": seg, "et": r["Taxa"],
+                    ctx = {"img": img, "seg": seg, "sample": r["Taxa"],
                            "thresh": args.thresh, "mappings": mappings,
                            "device": args.device, "args": args}
                     value, extra = task["compute"](ctx)

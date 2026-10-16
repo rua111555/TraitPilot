@@ -10,8 +10,8 @@ usage: |
 ## 典型调用
 
 ```bash
-/gwas-pipeline --vcf ET277.new.snp.filter.vcf.gz \
-               --prefix et277 \
+/gwas-pipeline --vcf COHORT.new.snp.filter.vcf.gz \
+               --prefix cohort \
                --pheno imf_phenotype_gwas_plink.txt \
                --covar c.txt
 ```

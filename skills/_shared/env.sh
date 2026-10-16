@@ -104,9 +104,9 @@ sk_ensure_ld_path() {
   esac
 }
 
-# ── 数据根目录（可用环境变量覆盖，缺省沿用历史布局） ───────────────────────
-sk_geno_dir()  { printf '%s\n' "${PIG_GENO_DIR:-/data1/chenyx/Pig_geno}"; }
-sk_image_dir() { printf '%s\n' "${PIG_IMAGE_DIR:-/data1/chenyx/Pig_image}"; }
+# ── 数据根目录（通用：由环境变量提供，缺省 $HOME） ─────────────────────────
+sk_geno_dir()  { printf '%s\n' "${GENO_DIR:-$HOME/genomics_data}"; }
+sk_image_dir() { printf '%s\n' "${IMAGE_DIR:-${GENO_DIR:-$HOME/genomics_data}/images}"; }
 sk_db_path()   { printf '%s\n' "${PIPELINE_DB:-$(sk_geno_dir)/pipeline.db}"; }
 
 # ── 交互式确认：是否真的需要跑某层（供生成的脚本判断） ─────────────────────

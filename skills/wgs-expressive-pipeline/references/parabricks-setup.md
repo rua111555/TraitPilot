@@ -74,8 +74,8 @@ docker pull nvcr.io/nvidia/clara/clara-parabricks:4.3.2-1
 ```bash
 docker run --rm --gpus all \
   -u "$(id -u):$(id -g)" \
-  -v "${PIG_GENO_DIR:-/data1}":"${PIG_GENO_DIR:-/data1}" \
-  -w "${PIG_GENO_DIR:-/data1}" \
+  -v "${GENO_DIR:-$PWD}":"${GENO_DIR:-$PWD}" \
+  -w "${GENO_DIR:-$PWD}" \
   nvcr.io/nvidia/clara/clara-parabricks:<版本> \
   pbrun version
 # 期望：打印 pbrun 版本号。
@@ -89,7 +89,7 @@ docker run --rm --gpus all \
 ```bash
 PB_IMAGE=nvcr.io/nvidia/clara/clara-parabricks:<版本>
 eval 'PBRUN() { local gpu="${1}"; shift; docker run --rm --gpus "device=${gpu}" \
-    -u "$(id -u):$(id -g)" -v "${PIG_GENO_DIR:-/data1}":"${PIG_GENO_DIR:-/data1}" -w "$(pwd)" "${PB_IMAGE}" pbrun "$@"; }'
+    -u "$(id -u):$(id -g)" -v "${GENO_DIR:-$PWD}":"${GENO_DIR:-$PWD}" -w "$(pwd)" "${PB_IMAGE}" pbrun "$@"; }'
 
 # 关卡 2：fq2bam（比对+排序+索引）—— 容器只暴露 1 卡 → pbrun 选卡用 --num-gpus 1（4.3.x 无 --gpu）
 # ⚠ 4090 24GB + 全基因组 ref：必须加 --low-memory 与 --bwa-nstreams 1，否则加载索引即 OOM
@@ -126,7 +126,7 @@ watch -n1 nvidia-smi --query-gpu=index,utilization.gpu,memory.used --format=csv
 ```bash
 # 在 NGC 授权页下载 license json 放到本机，例如 $HOME/.nvidia/license.json
 docker run --rm --gpus all \
-  -v "${PIG_GENO_DIR:-/data1}":"${PIG_GENO_DIR:-/data1}" \
+  -v "${GENO_DIR:-$PWD}":"${GENO_DIR:-$PWD}" \
   -v "$HOME/.nvidia/license.json":/lic/license.json \
   -e PARABRICKS_LICENSE=/lic/license.json \
   nvcr.io/nvidia/clara/clara-parabricks:<版本> pbrun version
@@ -144,7 +144,7 @@ docker run --rm --gpus all \
 # —— 从 run.params.json 读取 ——
 PB_IMAGE="<parabricks.image>"                 # 如 nvcr.io/nvidia/clara/clara-parabricks:4.3.2-1
 # 挂载数据根与家目录，用同一宿主路径映射（容器内外路径一致）；勿写死某台机器的绝对路径
-DATA_ROOT="${PIG_GENO_DIR:-/data1}"
+DATA_ROOT="${GENO_DIR:-$PWD}"
 PB_MOUNTS=("${DATA_ROOT}:${DATA_ROOT}" "${HOME}:${HOME}")   # parabricks.mounts，按需增删
 PB_PERMISSION="-u $(id -u):$(id -g)"          # 容器写出的文件属主=当前用户，避免 root 文件
 

@@ -147,6 +147,16 @@ def _apply_file_overrides(cfg: "Config", data: dict) -> None:
     _list("retrieval_excludes")
     _str("index_dir")
 
+    # —— 技能数据路径（config.json 的 `env` 块 → 注入进程环境）——
+    # 技能/脚本用 os.environ 读取 GENO_DIR / IMAGE_DIR / PIPELINE_DB / PAPER_SEARCH_DIR /
+    # AGENT_NEWS_DIR 等；这里让 config.json 也能作为它们的单一配置面板。
+    # 已存在的真实环境变量优先（不覆盖），保持「CLI/环境变量 > config.json」的口径。
+    env_block = data.get("env")
+    if isinstance(env_block, dict):
+        for k, v in env_block.items():
+            if isinstance(k, str) and isinstance(v, (str, int)) and str(v).strip():
+                os.environ.setdefault(k.strip(), str(v).strip())
+
 
 @dataclass
 class Config:

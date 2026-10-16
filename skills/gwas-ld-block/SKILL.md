@@ -29,7 +29,7 @@ GFF 注释候选基因。LDBlockShow 能同时把 GWAS 的 -log10 P 与基因模
 |------|------|
 | `{bfile}.{bed,bim,fam}` | 过滤后 bfile（`-InPlink`）或区域 VCF（`-InVCF`） |
 | `{TRAIT}.pvalue` 文件 | GWAS 结果 `-log10(P)` 表（用于叠加 GWAS 轨道，可选） |
-| `*.gff` | 参考基因组注释（`-InGFF`，可选；猪常用 `Sus_scrofa.Sscrofa11.1.102.gff3`） |
+| `*.gff` | 参考基因组注释（`-InGFF`，可选；用与参考基因组同版本的注释文件即可） |
 | `{region}.ped/.info` | Haploview 输入（plink `--recode HV` 生成，按染色体拆分） |
 | `java` + `Haploview.jar` | Haploview 4.2 运行环境（`java -jar`） |
 
@@ -48,10 +48,10 @@ GFF 注释候选基因。LDBlockShow 能同时把 GWAS 的 -log10 P 与基因模
 
 ```bash
 # 从过滤后 bfile 出发（推荐，快）
-LDBlockShow -InPlink et277.3.snp -OutPut fm \
+LDBlockShow -InPlink cohort.3.snp -OutPut fm \
     -Region 7:28253019:30637296 -OutPng
 # 从 VCF 出发
-LDBlockShow -InVCF ET277.new.snp.filter.vcf.gz -OutPut file \
+LDBlockShow -InVCF COHORT.new.snp.filter.vcf.gz -OutPut file \
     -Region 7:28253019:32253019 -OutPdf
 
 # 选显著位点特异的标记子集（-SeleVar 1 = 只保留区域内双等位标记）
@@ -160,7 +160,7 @@ date > "${DONE_FILE}"
 | 2 | **`-InGWAS` 格式** — 必须 `chr　pos　-log10(p)` 三列；给原始 P 会解析为 log10 出错 | 轨道错乱 |
 | 3 | **`-Cutline` 是 -log10 尺度** — `-Cutline 8.4` ≈ 3.92e-9；给 0.05 会画在地板上 | 显著线画错 |
 | 4 | **`-TopSite` 中心位点在区域内** — 不在 `-Region` 范围内会警告/空 | 图无中心峰 |
-| 5 | **`-Region` 用起点:终点，染色体编号要与 bfile/bim 一致** — 猪自动/额外 chr 需 `--allow-extra-chr` | 区域为空 |
+| 5 | **`-Region` 用起点:终点，染色体编号要与 bfile/bim 一致** — 非编号/额外 chr 需 `--allow-extra-chr` | 区域为空 |
 | 5.5 | **LDBlockShow/ShowLDSVG 二进制需新版 libstdc++** — 系统 `/usr/lib64` 旧时会报 `GLIBCXX_3.4.29 not found`。**仅在系统库过旧时**用 `sk_ensure_ld_path`（见 `skills/_shared/env.sh`）前插 conda `lib`；新机器系统库够新则**不要**设置 `LD_LIBRARY_PATH`（会遮蔽新库） | 命令无法启动 / 或误遮蔽新库 |
 | 5.6 | **候选区域标记太少（<2 个）时报 division by zero / SNPNumber:0** — 随机抽样或低密度区常见；实测 25 个位点窗口成功（SNPNumber≈14），优先选 ≥10 个位点的窗口 | SVG 空白 / `Illegal division by zero` |
 | 6 | **Haploview 输入是 per-chrom 文件**（`--recode HV` 拆分）— 直接用总 ped 会失败 | 报 `NO_VARIANTS` 等 |

@@ -30,7 +30,7 @@ allowed-tools:
 ```bash
 conda run -n Agent python "$(dirname "${BASH_SOURCE[0]:-$0}")/../wgs-expressive-pipeline/scripts/db_query.py" \
   --action query-all --samples <SAMPLE_NUMBERS>
-# --db 缺省取 $PIPELINE_DB，其次 $PIG_GENO_DIR/pipeline.db；需要时显式 --db <路径>
+# --db 缺省取 $PIPELINE_DB，其次 $GENO_DIR/pipeline.db；需要时显式 --db <路径>
 ```
 
 获取内容：
@@ -131,7 +131,7 @@ PB_PERMISSION="-u $(id -u):$(id -g)"      # 容器写出的文件属主=当前�
 PBRUN() {
     local gpu="${1}"; shift
     # 挂载数据根与家目录（用同一宿主路径映射，容器内外路径一致）
-    local GENO; GENO="$(sk_geno_dir 2>/dev/null || echo "${PIG_GENO_DIR:-/data}")"
+    local GENO; GENO="$(sk_geno_dir 2>/dev/null || echo "${GENO_DIR:-$PWD}")"
     docker run --rm ${PB_PERMISSION} \
         --gpus "device=${gpu}" \
         -v "${GENO}:${GENO}" -v "${HOME}:${HOME}" \
@@ -152,14 +152,14 @@ PBRUN() {
 
 LLM **必须**生成以下 JSON 文件并保存至 `{RUN_DIR}/run.params.json`。
 **所有路径必须来自 `db_query.py` 的查询结果或用户输入**（`<GENO>` = 数据根，见环境变量
-`PIG_GENO_DIR`，缺省 `/data1/chenyx/Pig_geno`，切勿把某一台机器的路径写进生成物）：
+`GENO_DIR`，缺省 `~/genomics_data`，切勿把某一台机器的路径写进生成物）：
 
 ```json
 {
   "run_id": "wgs_20260716_143000",
-  "output_prefix": "ET277",
+  "output_prefix": "COHORT",
   "samples": ["1", "2", "10"],
-  "sample_names": ["et1", "et2", "et10"],
+  "sample_names": ["sample1", "sample2", "sample10"],
   "reference": {
     "fasta": "<GENO>/reference/ref.fa",
     "dict": "<GENO>/reference/ref.dict",
@@ -231,7 +231,7 @@ GPU: {gpu_count} × {gpu_model} ({gpu_vram_gb}GB, CC {compute_cap}) — parabric
 
 ===== Parameter Proposal =====
 Run ID: wgs_20260716_143000
-Samples: 1 (et1), 2 (et2), 10 (et10)
+Samples: 1 (sample1), 2 (sample2), 10 (sample10)
 
 Parameter                         Value           Reasoning
 ─────────────────────────────────────────────────────────────────

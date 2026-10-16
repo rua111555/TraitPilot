@@ -49,19 +49,19 @@ allowed-tools:
 ### 1. 计算亲缘矩阵（centered）
 
 ```bash
-gemma -bfile et277.3.snp -gk 2 -o et277.kinship
-# 产出 output/.et277.kinship.sXX.txt（sXX 为去重后的随机后缀）
-mv output/.et277.kinship.sXX.txt output/et277.kinship.txt
+gemma -bfile cohort.3.snp -gk 2 -o cohort.kinship
+# 产出 output/.cohort.kinship.sXX.txt（sXX 为去重后的随机后缀）
+mv output/.cohort.kinship.sXX.txt output/cohort.kinship.txt
 ```
 
 ### 2. 关联分析（LMM，Wald 检验为例）
 
 ```bash
-gemma -bfile et277.3.snp \
-      -k output/et277.kinship.txt \
-      -c et277.2.snp.txt \
+gemma -bfile cohort.3.snp \
+      -k output/cohort.kinship.txt \
+      -c cohort.2.snp.txt \
       -lmm 1 \
-      -o et277_GWAS
+      -o cohort_GWAS
 ```
 
 - `-lmm 1` Wald；`2` LRT；`3` Score；`4` 全部三种（建议 `4`，一网打尽）
@@ -74,10 +74,10 @@ gemma -bfile et277.3.snp \
 
 ```bash
 # 对每条染色体 ch：
-gemma -bfile et277.3.snp \
-      -k output/et277.kinship.nochr${ch}.grm.txt \
+gemma -bfile cohort.3.snp \
+      -k output/cohort.kinship.nochr${ch}.grm.txt \
       -lmm 4 -maf 0.01 \
-      -o et277_GWAS_chr${ch}
+      -o cohort_GWAS_chr${ch}
 ```
 
 ## 关联系数解读

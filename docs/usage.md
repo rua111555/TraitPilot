@@ -72,6 +72,7 @@ export ANTHROPIC_AUTH_TOKEN="<你的token>"
 
 > `config.json` 已被 `.gitignore` 忽略，凭证不会入库。`config.json` 还是**功能总开关**：
 > 把想用的能力由 `false` 改成 `true` 即开启（见下一节与 §7）。
+> 其 `env` 块可集中设置技能数据路径（`GENO_DIR` / `IMAGE_DIR` / …，见 §4.1），免去逐次 `export`。
 > 代理侧目前只稳定提供 `DSv4-flash` 一个模型 id（`claude-*` 常 503）。见 [参数 `-m`](#3-命令行参数总表)。
 
 ### config.json 功能开关一览
@@ -243,6 +244,25 @@ python3 run.py chat -p "列出 phenotype-extract 提供哪些表型" -m DSv4-fla
 | `SKILL_AGENT_FALLBACK_MODELS` | `--fallback-models` | 逗号分隔 |
 | `SKILL_AGENT_RETRIEVAL` | `--retrieval` | 布尔 |
 | `SKILL_AGENT_INDEX_DIR` / `_INDEX_ROOTS` / `_INDEX_EXCLUDES` | `--index-dir` | 目录 / 冒号分隔的根 / 追加排除 |
+
+### 4.1 技能数据路径（与物种/项目无关）
+
+技能与脚本用下面这组环境变量定位**数据与外部脚本**，均可用环境变量直接设置，或写进
+`config.json` 的 `env` 块（启动时注入进程环境；**真实环境变量优先**，不覆盖）：
+
+| 变量 | 含义 | 缺省 |
+|---|---|---|
+| `GENO_DIR` | 基因组学数据根（DB、参考基因组、FASTQ、输出） | `$HOME/genomics_data` |
+| `IMAGE_DIR` | 表型图片根 | `$GENO_DIR/images` |
+| `PIPELINE_DB` | SQLite 库路径 | `$GENO_DIR/pipeline.db` |
+| `FAM_PATH` | 表型输出排序基准 `.fam`（可选） | 空 → 按样本号排 |
+| `NIR_XLS` / `CORR_XLS` | 表型参照真值表 / 样本-个体关联表（可选） | 空 |
+| `PAPER_SEARCH_DIR` | `paper-search` 脚本所在目录 | `$HOME/paper_search` |
+| `AGENT_NEWS_DIR` | `agent-news` 脚本所在目录 | `$HOME/paper_search` |
+
+> 这些变量名与物种无关——项目本身通用，不含任何特定物种的硬编码；实际用到哪套数据由你
+> 通过上述变量（或 `config.json` 的 `env` 块）指定。技能里的**工具**路径则是运行时用
+> `command -v` 从当前 conda 环境探测的，同样无需写死。
 
 ---
 

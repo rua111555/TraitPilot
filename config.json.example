@@ -42,5 +42,15 @@
   "retrieval_roots": [],
   "retrieval_excludes": [],
   "idempotency_mode": "reuse",
-  "plugin_dirs": []
+  "plugin_dirs": [],
+
+  "//env": "—— 技能数据路径（可选）——",
+  "//env说明": "技能/脚本读取的环境变量；在此设置 = 无需 export。真实环境变量优先于本块。",
+  "env": {
+    "GENO_DIR": "",
+    "IMAGE_DIR": "",
+    "PIPELINE_DB": "",
+    "PAPER_SEARCH_DIR": "",
+    "AGENT_NEWS_DIR": ""
+  }
 }

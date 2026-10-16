@@ -175,26 +175,26 @@ conda run -n Phenotype python phenotype_extract.py --pheno IMF # 提取
 > user-site 混入 3.13 环境的 `sys.path`，可能带来意外包。安装器不处理用户目录。
 
 > 权重不只是「放到某个路径」——必须在数据库 `models` 表里**注册**（默认库
-> `$PIPELINE_DB` 或 `$PIG_GENO_DIR/pipeline.db`，即 `/data1/chenyx/Pig_geno/pipeline.db`；
+> `$PIPELINE_DB` 或 `$GENO_DIR/pipeline.db`（`GENO_DIR` 缺省 `~/genomics_data`）；
 > 参考记录 `imf_mask2former`），脚本按 `model_names` 查库取 `model_path`。只放文件不注册 = 找不到模型。
 
 > **数据路径环境变量**（技能与脚本均支持，便于换机器不改代码）：
-> `PIG_GENO_DIR`、`PIG_IMAGE_DIR`、`PIPELINE_DB`。个体路径亦可用脚本参数覆盖
+> `GENO_DIR`、`IMAGE_DIR`、`PIPELINE_DB`。个体路径亦可用脚本参数覆盖
 > （`--db/--outdir/--fam/--nir-xls/--corr-xls`）。
 
 ### 1.6 数据与外部服务
 
-> 下表「默认位置」是历史布局；实际位置以 `PIG_GENO_DIR` / `PIPELINE_DB` 等环境变量为准，
+> 下表「默认位置」是历史布局；实际位置以 `GENO_DIR` / `PIPELINE_DB` 等环境变量为准，
 > 或由 `db_query.py` 从数据库读出（推荐：参考基因组/FASTQ 走 DB，勿硬编码）。
 
 | 项 | 默认位置 | 必需性 |
 |---|---|---|
-| `pipeline.db`（SQLite） | `$PIG_GENO_DIR/pipeline.db`（默认 `/data1/chenyx/Pig_geno/pipeline.db`） | WGS/GWAS/表型都读它 |
+| `pipeline.db`（SQLite） | `$PIPELINE_DB` 或 `$GENO_DIR/pipeline.db`（`GENO_DIR` 缺省 `~/genomics_data`） | WGS/GWAS/表型都读它 |
 | 参考基因组 | `ref.fa` + `.fai` + `.dict`（技能文档写 `reference/`，本机实为 `03_reference/`；从 DB `reference_genome` 读取） | WGS 形态必需 |
 | known-sites VCF（SNP + INDEL） | 见 `run.params.json` | BQSR 必需 |
-| FASTQ | `$PIG_GENO_DIR/fastq/<编号>/{编号}_1.fq.gz` 等 | WGS 输入 |
-| 表型图片 | 由 `sample_images` 表的 `image_path` 指向（`$PIG_IMAGE_DIR`） | 表型提取输入 |
-| `.fam` 排序基准 | `<GENO>/04_snp_indel/et277.fm.snp.fam`（`--fam` 可覆盖） | 表型输出排序（缺则按 et 号排） |
+| FASTQ | `$GENO_DIR/fastq/<编号>/{编号}_1.fq.gz` 等 | WGS 输入 |
+| 表型图片 | 由 `sample_images` 表的 `image_path` 指向（`$IMAGE_DIR`） | 表型提取输入 |
+| `.fam` 排序基准 | 由 `--fam` / `$FAM_PATH` 指定（与基因型文件对齐） | 表型输出排序（缺则按样本号排） |
 | **LLM API 出口** | `config.json` 的 `base_url`（默认 `https://api.anthropic.com`）或自建代理 | **必需** |
 
 ### 1.7 外部网络出口（按技能）
@@ -244,8 +244,8 @@ bash environment/check_env.sh
 
 # ── 5) 数据路径：技能已用 command -v 运行时探测工具，通常无需改任何路径 ──
 #   数据不在默认位置时，用环境变量覆盖即可（完全不用改代码）：
-export PIG_GENO_DIR=/your/data/Pig_geno  PIG_IMAGE_DIR=/your/data/Pig_image
-export PIPELINE_DB=/your/data/Pig_geno/pipeline.db
+export GENO_DIR=/your/data/geno  IMAGE_DIR=/your/data/images
+export PIPELINE_DB=/your/data/geno/pipeline.db
 #   三个「脚本不在本仓库」的技能也用环境变量指向脚本目录：
 export PAPER_SEARCH_DIR=/path/to/paper_search  AGENT_NEWS_DIR=/path/to/agent_news
 
@@ -253,10 +253,9 @@ export PAPER_SEARCH_DIR=/path/to/paper_search  AGENT_NEWS_DIR=/path/to/agent_new
 #      并把 DB 的 models.model_path 指向本机 best_model.pth（见 §3）
 ```
 
-> **不再需要 `replace_paths.py`。** 技能里的工具路径是**运行时**用 `command -v` 从你当前的
-> conda 环境探测的，数据/环境位置由上面这批环境变量决定——「读用户自己的环境、自己适配」。
-> 仓库根的 `replace_paths.py`（与 `environment/` 同级）仅作 **legacy 兜底**：若你在旧副本里还
-> 残留写死的 `chenyuxi/anaconda3` / `/data1/chenyx` 绝对路径，可批量换成新机器的。
+> **无需任何路径改写工具。** 技能里的工具路径是**运行时**用 `command -v` 从你当前的 conda
+> 环境探测的，数据/环境位置由上面这批环境变量决定——「读用户自己的环境、自己适配」，因此
+> 没有、也不需要 `replace_paths.py` 这类批量替换脚本。
 
 ---
 

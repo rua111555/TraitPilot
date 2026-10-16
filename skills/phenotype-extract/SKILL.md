@@ -31,11 +31,11 @@ conda run -n Phenotype python phenotype_extract.py
 ```
 
 输出会展示：数据库 `models` 表(已有模型) × `phenotypes/` 代码插件 的两两匹配，
-标记每个表型是"已就绪 / 缺模型 / 缺代码"，并给出建议（当前建议 `IMF`）。
+标记每个表型是"已就绪 / 缺模型 / 缺代码"，并给出建议（当前唯一插件为 `IMF`）。
 
 2. **把建议展示给用户，确认要提取哪个表型**再执行，不要擅自全跑。
 
-3. 执行所选表型（当前为 IMF，默认全量 162 张，约 20s）：
+3. 执行所选表型（当前为 IMF，默认跑数据库 `sample_images` 里的全部样本）：
 
 ```bash
 cd skills/phenotype-extract/scripts     # 仓库根下的相对路径
@@ -46,20 +46,20 @@ conda run -n Phenotype python phenotype_extract.py --pheno IMF
 
 | 来源 | 说明 |
 |------|------|
-| `database::sample_images` | 表型图片：`sample_name(et号)/sample_number/image_path` |
+| `database::sample_images` | 表型图片：`sample_name(样本名/编号)/sample_number/image_path` |
 | `database::models` | 模型注册表：`name/task/model_path/config/metrics`；按插件的 `model_names` 取每个表型所需模型 |
 | `phenotypes/<name>.py 插件` | 该表型的计算代码(compute)与元信息 |
-| 关联表 xls | et→猪号、猪号→近红外(%)，供明细表加"猪号/参照"列 |
+| 关联表 xls | 样本编号→个体号、个体号→参照值(%)，供明细表加"个体号/参照"列（可选） |
 
-## 输出（`{outdir}/{表型名}/`，`--outdir` 缺省 `$PIG_GENO_DIR/phenotype`，即 `/data1/chenyx/Pig_geno/phenotype/<表型>/`）
+## 输出（`{outdir}/{表型名}/`，`--outdir` 缺省 `$GENO_DIR/phenotype`）
 
 | 文件 | 内容 |
 |------|------|
-| `imf_phenotype.csv` | 明细：Taxa/猪号/图像/面积/IMF_预测_%/NIR真值/状态 |
-| `imf_phenotype_gwas_plink.txt` | PLINK/GEMMA：`et1 et1 <IMF>` 无表头，**仅含模型预测到的样本，不做缺失填充** |
+| `imf_phenotype.csv` | 明细：Taxa/个体号/图像/组织与脂肪像素面积/IMF_预测_%/参照(NIR)真值/状态 |
+| `imf_phenotype_gwas_plink.txt` | PLINK/GEMMA：`<样本> <样本> <IMF>` 无表头，**仅含模型预测到的样本，不做缺失填充** |
 | `imf_phenotype_gwas_gapit.csv` | GAPIT：`Taxa,IMF` 表头 |
 
-PLINK 行序与 `et277.fm.snp.fam` 的相对顺序一致（`--fam` 参数仅作排序基准）。
+PLINK 行序与 `--fam` 指定的基因型 `.fam` 的相对顺序一致（`--fam`/`$FAM_PATH` 仅作排序基准，缺省按样本号排）。
 
 ## 新增一个表型（~30 行代码，无需改框架）
 
@@ -77,8 +77,8 @@ PLINK 行序与 `et277.fm.snp.fam` 的相对顺序一致（`--fam` 参数仅作�
 ## 注意事项
 
 - 跑在 conda 虚拟环境 **`Phenotype`**（torch/transformers/openCV 等 ML 栈）；**不是** conda base，也不是 `Agent` 环境。
-- **数据路径可用环境变量覆盖**（便于换机器）：`PIPELINE_DB`（默认 `$PIG_GENO_DIR/pipeline.db`）、
-  `PIG_GENO_DIR`（默认 `/data1/chenyx/Pig_geno`）、`PIG_IMAGE_DIR`（默认 `/data1/chenyx/Pig_image`）。
+- **数据路径可用环境变量覆盖**（便于换机器）：`PIPELINE_DB`（默认 `$GENO_DIR/pipeline.db`）、
+  `GENO_DIR`（默认 `~/genomics_data`）、`IMAGE_DIR`（默认 `$GENO_DIR/images`）。
   相关 xls/fam 若不在默认位置，用 `--nir-xls` / `--corr-xls` / `--fam` 显式指定。
 - `--num-labels`(默认2) 需与具体表型模型的类别数一致；`--thresh`(默认30)为黑底板抠肉 ROI 阈值，传给插件。
 - GAPIT/PLINK 两文件只含实际计算到表型的样本（已按用户要求去掉任何 -9/缺失填充与额外样本）。

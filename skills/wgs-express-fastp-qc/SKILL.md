@@ -116,7 +116,7 @@ log_done()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [DONE]  $*"; }
 ### 工具路径（运行时探测，勿写死本机路径）
 
 ```bash
-FASTQ_DIR="${FASTQ_DIR:-$(sk_geno_dir)/fastq}"   # 优先用 run.params.json 的 fastq_dir；否则 PIG_GENO_DIR/fastq
+FASTQ_DIR="${FASTQ_DIR:-$(sk_geno_dir)/fastq}"   # 优先用 run.params.json 的 fastq_dir；否则 GENO_DIR/fastq
 OUT_DIR="${RUN_DIR}/out"
 
 FASTP="$(command -v fastp || { echo "✗ 找不到 fastp —— 请激活 conda 环境 Agent" >&2; exit 1; })"

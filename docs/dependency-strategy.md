@@ -136,7 +136,7 @@ MCP stdio 传输就是「换行分隔的 JSON-RPC 2.0」，用 stdlib（`subproc
 但**编排的完成真值是 `.done` 文件存在**（`gwas-pipeline/SKILL.md:83-88`、`wgs-expressive-pipeline/SKILL.md:83-85`
 「完成状态以 .done 文件为准」）。**只要把 `RUN_DIR` 以相同宿主路径 bind-mount**，`.done` 就落在宿主，
 自动推进 / `--resume` 照常；仅 skill 自带的「运行中」显示会退化——这是可接受的已知代价。
-需挂载：宿主 cwd、`RUN_DIR`（`run.params.json` 的 `run_dir`，如 `$PIG_GENO_DIR/temp/runs/...`）及工具所在目录（工具用 `command -v` 运行时探测）。
+需挂载：宿主 cwd、`RUN_DIR`（`run.params.json` 的 `run_dir`，如 `$GENO_DIR/temp/runs/...`）及工具所在目录（工具用 `command -v` 运行时探测）。
 
 ---
 

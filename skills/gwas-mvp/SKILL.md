@@ -49,7 +49,7 @@ allowed-tools:
 
 ```r
 library(rMVP)
-MVP.Data(fileBed = "et277.3.snp",
+MVP.Data(fileBed = "cohort.3.snp",
          filePhe = NULL,       # 交互选择表型；脚本化请给值 filePhe="phe.txt"
          fileKin = TRUE,       # 计算亲缘矩阵
          filePC  = TRUE,       # 计算主成分

@@ -9,14 +9,14 @@ description: 按关键词搜索指定年限的顶刊顶会论文，去重下载 
 用户给出**大致关键词**（可为中文）与**年限范围**，要求从顶刊顶会中检索、下载并逐篇解读，且**不重复下载同一篇论文**。默认按 `field=ai`（AI/计算机）的白名单 venue 过滤，可用参数覆盖。报告默认**中文**，`--max-total` 默认 **15 篇**。
 
 ## 工具与资源
-- 脚本 `paper_search.py`（纯 Python 标准库，零依赖）。**脚本不在本仓库**，定位顺序：
+- 脚本 `paper_search.py`（纯 Python 标准库，零依赖）。脚本可随仓库放在本 skill 目录，或独立目录；定位顺序：
   1. `$PAPER_SEARCH_DIR/paper_search.py`（推荐：部署时设该环境变量指向脚本所在目录）
   2. 当前工作目录下的 `paper_search.py`
   3. 同目录旁路：`$(dirname <本 SKILL.md>)/paper_search.py`（若把脚本随 skill 一起放置）
   找不到时明确报错并提示放置方式，**不回退到任何写死的个人绝对路径**。
 - 配套 `curate_run.py`：给定种子标题 → 按 DOI/arXiv 稳健下载（供"抓取特定论文全集"场景）。
 - venue 白名单：与脚本同级的 `venues.json`。字段 `ai` 已包含 NeurIPS/ICML/ICLR/CVPR/ICCV/ECCV/AAAI/ACL/EMNLP/NAACL/KDD/SIGMOD/VLDB/OSDI/SOSP/USENIX Security/IEEE S&P/CCS/WWW/CHI/AISTATS/ICRA/IROS/COLING 与 Nature/Nature MI/Nature Communications/Nature Computational Science/Science Advances/TPAMI/JMLR/TMLR/IJCV/JAIR/TACL 等。
-- 产物目录：`${PAPER_SEARCH_DIR:-$HOME/paper_search}/papers`（用 `--outdir` 显式指定亦可）。
+- 产物目录：`${PAPER_SEARCH_DIR:-$HOME/paper_search}/papers`（未设则用 `$HOME/paper_search`，可用 `--outdir` 覆盖）。
 - 数据源：OpenAlex（主）→ Crossref（降级）；OA PDF 用浏览器 UA 下载并含 PMC 备用源。Semantic Scholar 建议不用（匿名易限流）。
 
 ## 可靠性保证（必读）

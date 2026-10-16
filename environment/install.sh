@@ -351,19 +351,10 @@ do_verify() {
   else
     warn "未找到 environment/check_env.sh"
   fi
-  step "路径对齐（可选：数据/环境位置覆盖）"
-  local rp=""
-  for cand in "$ROOT/replace_paths.py" "$ROOT/../replace_paths.py"; do
-    [ -f "$cand" ] && { rp="$cand"; break; }
-  done
-  echo "  技能里的工具已用 command -v 运行时探测，数据/环境位置用环境变量覆盖即可（无需改代码）："
-  echo "    export PIG_GENO_DIR=<数据根>  PIG_IMAGE_DIR=<图片根>  PIPELINE_DB=<pipeline.db>"
-  if [ -n "$rp" ]; then
-    echo "  仅当仍有 legacy 绝对路径残留时才需要批量替换："
-    echo "    python3 $rp --conda $CONDA --data <你的数据目录>"
-  else
-    echo "  （未找到 replace_paths.py —— 通常无需它）"
-  fi
+  step "数据/环境位置（用环境变量覆盖，无需改代码）"
+  echo "  技能里的工具已用 command -v 运行时探测；数据/环境位置用环境变量指定即可："
+  echo "    export GENO_DIR=<数据根>  IMAGE_DIR=<图片根>  PIPELINE_DB=<pipeline.db>"
+  echo "    export PAPER_SEARCH_DIR=<paper_search 脚本目录>  AGENT_NEWS_DIR=<agent_news 脚本目录>"
 }
 
 # ────────────────────────────── 主流程 ─────────────────────────────────────

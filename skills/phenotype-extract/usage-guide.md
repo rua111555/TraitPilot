@@ -11,32 +11,33 @@ cd <仓库>/skills/phenotype-extract/scripts      # phenotypes/ 包按此相对�
 # 1) 查看可提取的表型与就绪状态（会给出建议）
 conda run -n Phenotype python phenotype_extract.py
 
-# 2) 提取 IMF（全量 162 张约 20s）
+# 2) 提取 IMF（跑数据库 sample_images 全部样本）
 conda run -n Phenotype python phenotype_extract.py --pheno IMF
 ```
 
-输出在 `$PIG_GENO_DIR/phenotype/IMF/`（`PIG_GENO_DIR` 缺省 `/data1/chenyx/Pig_geno`，可用 `--outdir` 覆盖）：
+输出在 `$GENO_DIR/phenotype/IMF/`（`GENO_DIR` 缺省 `~/genomics_data`，可用 `--outdir` 覆盖）：
 
 | 文件 | 内容 |
 |------|------|
-| `imf_phenotype.csv` | 162 个样本明细：Taxa、猪号、图像、肉/脂面积、**IMF_预测_%**、NIR真值 |
-| `imf_phenotype_gwas_plink.txt` | **PLINK/GEMMA**：`et1 et1 <IMF>` 无表头，**仅含模型实际预测到的 162 个样本**，顺序与 `et277.fm.snp.fam` 一致，无缺失填充 |
-| `imf_phenotype_gwas_gapit.csv` | **GAPIT**：`Taxa,IMF` 表头，与 `IMF表型.xlsx` 命名一致 |
+| `imf_phenotype.csv` | 样本明细：Taxa、个体号、图像、组织/脂肪面积、**IMF_预测_%**、参照(NIR)真值 |
+| `imf_phenotype_gwas_plink.txt` | **PLINK/GEMMA**：`<样本> <样本> <IMF>` 无表头，**仅含模型实际预测到的样本**，顺序与 `--fam` 指定的 `.fam` 一致，无缺失填充 |
+| `imf_phenotype_gwas_gapit.csv` | **GAPIT**：`Taxa,IMF` 表头 |
 
 ## 常用参数
 
-- 改输出根目录：`--outdir $PIG_GENO_DIR/temp/phenotype`（每个表型自动建子目录）
+- 改输出根目录：`--outdir $GENO_DIR/temp/phenotype`（每个表型自动建子目录）
 - 只跑前几个调试：`--limit 3`
 - 顺便保存分割 mask：`--save-masks`（输出到 `{outdir}/{表型}/masks/`)
 - 图片来自 `sample_images`、模型来自 `models` 表，一般无需改
 
 ## 解读与验证
 
-- 全量 162 张约 20s；汇总行 `对照(IMF_NIR_%) r≈0.74` 表示预测与近红外实测的相关性。
-- 逐张数值应与既有 `$PIG_IMAGE_DIR/phenotype_results.csv` 的
-  `表型_脂肪面积占比_%` 列完全一致（同模型同抠肉逻辑）。
+- 耗时随样本量线性增长（本机测试集约 160 张 ≈ 20s，单卡）。汇总行
+  `参照(IMF_NIR_%) r≈0.74` 表示预测与近红外实测的相关性（需提供参照表）。
+- 逐张数值应与既有影像表型结果文件（如 `$IMAGE_DIR/phenotype_results.csv`）的
+  占比列完全一致（同模型同抠取逻辑）。
 - **精度说明**：图像可见脂肪% ≠ 化学 IMF%，与 NIR 的 RMSE≈0.90；
-  若需更高一致先做线性校准 `N ≈ 0.456·P + 1.149`。
+  若需更高一致先做线性校准（系数随数据集拟合）。
 
 ## 新增其他表型（不用写新 skill）
 

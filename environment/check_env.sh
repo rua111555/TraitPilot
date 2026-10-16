@@ -24,9 +24,9 @@ CORE_MISS=0
 WARN_MISS=0
 OK=0
 
-# 数据根：优先环境变量；未设置时回退到历史布局（本机默认），换机器请 export 覆盖
-GENO_DIR="${PIG_GENO_DIR:-/data1/chenyx/Pig_geno}"
-IMAGE_DIR="${PIG_IMAGE_DIR:-/data1/chenyx/Pig_image}"
+# 数据根：优先环境变量；未设置时回退到通用缺省（$HOME/genomics_data），换机器请 export 覆盖
+GENO_DIR="${GENO_DIR:-$HOME/genomics_data}"
+IMAGE_DIR="${IMAGE_DIR:-$GENO_DIR/images}"
 DB_FILE="${PIPELINE_DB:-$GENO_DIR/pipeline.db}"
 EXT_SCRIPT_DIR="${PAPER_SEARCH_DIR:-$HOME/paper_search}"
 
@@ -148,7 +148,7 @@ if [ -z "$CONDA" ]; then
   c_warn "未找到 conda  |  见 environment/README.md §2（生信技能全部依赖 conda 环境 Agent）"
 elif [ ! -d "$CONDA/envs/Agent" ]; then
   c_warn "conda 环境 Agent 不存在  |  bash environment/install.sh --only agent"
-  c_warn "   （环境名必须是 Agent；若 conda 根与脚本不同，需用 replace_paths.py 改绝对路径）"
+  c_warn "   （环境名必须是 Agent；工具由 command -v 运行时探测，故 conda 根位置随意）"
 else
   c_ok "conda 环境 Agent → $CONDA/envs/Agent"
   in_env Agent bwa      "bwa（Stage1 比对）"          "conda install -n Agent -c bioconda bwa"
@@ -224,7 +224,7 @@ if [ -n "$CONDA" ]; then
   for cue in "$CONDA/envs/Agent/bin"; do :; done
 fi
 for d in "$GENO_DIR" "$IMAGE_DIR"; do
-  [ -d "$d" ] && c_ok "数据目录 $d" || c_warn "数据目录 $d 不存在（WGS/GWAS/表型技能默认路径；可用 PIG_GENO_DIR/PIG_IMAGE_DIR 覆盖）"
+  [ -d "$d" ] && c_ok "数据目录 $d" || c_warn "数据目录 $d 不存在（WGS/GWAS/表型技能默认路径；可用 GENO_DIR/IMAGE_DIR 覆盖）"
 done
 [ -f "$DB_FILE" ] && c_ok "pipeline.db" || c_warn "缺 $DB_FILE（可用 PIPELINE_DB 覆盖）"
 # 技能文档写的是 .../reference/ref.fa，本机实际在 03_reference/ —— 两处都探

@@ -240,3 +240,40 @@ def test_default_skills_dir_prefers_own():
         proj = Path(d)
         _skill(proj / ".claude" / "skills", "x")
         assert default_skills_dir(proj) == proj / ".claude" / "skills"
+
+
+def test_config_env_block_injects_os_environ():
+    """config.json 的 `env` 块应注入进程环境（技能脚本据此读写数据路径）。"""
+    from skill_agent.config import _apply_file_overrides
+    with tempfile.TemporaryDirectory() as d:
+        _write_cfg(d, {"env": {"GENO_DIR": "/tmp/tgeno", "PIPELINE_DB": "/tmp/t.db"}})
+        os.environ.pop("GENO_DIR", None)
+        os.environ.pop("PIPELINE_DB", None)
+        try:
+            cfg = Config(base_url="u", api_key="k", model="m")
+            _apply_file_overrides(cfg, load_config_file(project=Path(d)))
+            assert os.environ.get("GENO_DIR") == "/tmp/tgeno"
+            assert os.environ.get("PIPELINE_DB") == "/tmp/t.db"
+            # 已存在的真实环境变量不被 config.json 覆盖
+            os.environ["GENO_DIR"] = "/already"
+            _apply_file_overrides(cfg, load_config_file(project=Path(d)))
+            assert os.environ.get("GENO_DIR") == "/already"
+        finally:
+            for k in ("GENO_DIR", "PIPELINE_DB"):
+                os.environ.pop(k, None)
+
+
+def test_config_env_block_ignores_malformed():
+    from skill_agent.config import _apply_file_overrides
+    with tempfile.TemporaryDirectory() as d:
+        _write_cfg(d, {"env": {"X_OK": "v", "BAD": "", "NUM": 3}})
+        os.environ.pop("X_OK", None)
+        try:
+            cfg = Config(base_url="u", api_key="k", model="m")
+            _apply_file_overrides(cfg, load_config_file(project=Path(d)))
+            assert os.environ.get("X_OK") == "v"
+            assert "BAD" not in os.environ
+            assert os.environ.get("NUM") == "3"
+        finally:
+            for k in ("X_OK", "BAD", "NUM"):
+                os.environ.pop(k, None)

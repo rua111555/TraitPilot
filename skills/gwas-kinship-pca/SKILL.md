@@ -48,8 +48,8 @@ allowed-tools:
 
 ```bash
 # 默认算法（等位基因计数，牺牲精度换速度的算法 1：--make-grm-alg 1）
-gcta64 --bfile et277.3.snp --autosome --make-grm --out et277.3.snp.kinship
-gcta64 --bfile et277.3.snp --autosome --make-grm-gz --make-grm-alg 1 --out et277.3.snp.kinship
+gcta64 --bfile cohort.3.snp --autosome --make-grm --out cohort.3.snp.kinship
+gcta64 --bfile cohort.3.snp --autosome --make-grm-gz --make-grm-alg 1 --out cohort.3.snp.kinship
 ```
 
 > `--make-grm-weig`（加权 GRM）可替代默认，用于极端不平衡标记群体但更费时。
@@ -61,8 +61,8 @@ GCTA 输出的 `.grm.gz` 只有下三角（V1,V2,值），需要补全为上三�
 
 ```r
 library(reshape2)
-tmp <- read.table(gzfile("et277.3.snp.kinship.grm.gz"), header = F, stringsAsFactors = F)
-ids <- read.table("et277.3.snp.kinship.grm.id", header = F, stringsAsFactors = F)
+tmp <- read.table(gzfile("cohort.3.snp.kinship.grm.gz"), header = F, stringsAsFactors = F)
+ids <- read.table("cohort.3.snp.kinship.grm.id", header = F, stringsAsFactors = F)
 tmp <- tmp[, c(1, 2, 4)]
 
 # 下三角 → 矩阵（acast drop=F 保证方形）→ 补全上三角
@@ -75,7 +75,7 @@ result_full <- makeSymm(result_matrix)
 result_df <- as.data.frame(result_full)
 row.names(result_df) <- ids$V2
 colnames(result_df) <- ids$V2
-write.table(result_df, file = "et277.3.snp.kinship.txt",
+write.table(result_df, file = "cohort.3.snp.kinship.txt",
             row.names = T, col.names = NA, sep = "\t", quote = F)
 ```
 
@@ -83,7 +83,7 @@ write.table(result_df, file = "et277.3.snp.kinship.txt",
 
 ```r
 library(pheatmap)
-kinship <- read.table("et277.3.snp.kinship.txt", header = F, row.names = 1, skip = 1)
+kinship <- read.table("cohort.3.snp.kinship.txt", header = F, row.names = 1, skip = 1)
 colnames(kinship) <- row.names(kinship)
 diag(kinship) <- NA                    # 对角线置 NA，热图对角无值
 pdf("heatmap.kinship.pdf")
@@ -101,14 +101,14 @@ dev.off()
 ### 4. 基于 GRM 的 PCA
 
 ```bash
-gcta64 --grm et277.3.snp.kinship --pca 10 --out et277.10.pca
-# 产出 et277.10.pca.eigenvec（Fid ID PC1..PC10）与 .eigenval
+gcta64 --grm cohort.3.snp.kinship --pca 10 --out cohort.10.pca
+# 产出 cohort.10.pca.eigenvec（Fid ID PC1..PC10）与 .eigenval
 ```
 
 ### 5. R：PCA 作图
 
 ```r
-dd <- read.table("et277.10.pca.eigenvec", header = F)
+dd <- read.table("cohort.10.pca.eigenvec", header = F)
 names(dd) <- c("Fid", "ID", "PC1", "PC2")
 # 按群体/品种着色（示例：group1 红、group2 蓝；实际按 fam 分组调整）
 grp <- c(rep("red", n1), rep("blue", n2))

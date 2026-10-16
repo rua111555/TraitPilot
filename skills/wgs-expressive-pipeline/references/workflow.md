@@ -65,7 +65,7 @@ skills/
 
 用户总是通过 `wgs-expressive-pipeline` 调用：
 ```
-/wgs-expressive-pipeline --samples 1,2,10 --prefix ET277
+/wgs-expressive-pipeline --samples 1,2,10 --prefix COHORT
 ```
 
 ## 模块化架构详解
@@ -109,7 +109,7 @@ skills/
 当用户重新打开 Claude 并询问 WGS 进度时，由编排层执行恢复检查：
 
 ```bash
-RUN_DIR="${RUN_DIR:-$PIG_GENO_DIR/temp/runs/{run_id}}"   # 实际值来自 run.params.json 的 run_dir
+RUN_DIR="${RUN_DIR:-$GENO_DIR/temp/runs/{run_id}}"   # 实际值来自 run.params.json 的 run_dir
 for stage_script in "${RUN_DIR}"/scripts/*.sh; do
     stage_name=$(basename "${stage_script}" .sh)
     log_file="${RUN_DIR}/logs/${stage_name}.log"
@@ -186,7 +186,7 @@ bwa mem -t ${THREADS} -R "${RG_STR}" "${REF}" "${R1}" "${R2}"
 
 ## 添加新样本
 
-1. 在 `$PIG_GENO_DIR/fastq/`（缺省 `/data1/chenyx/Pig_geno/fastq/`）下创建 `{编号}/` 目录
+1. 在 `$GENO_DIR/fastq/`（`GENO_DIR` 缺省 `~/genomics_data`）下创建 `{编号}/` 目录
 2. 放入 fastq 文件：`{编号}_1.fq.gz` 和 `{编号}_2.fq.gz`
 3. 运行数据库初始化脚本：
    ```bash
