@@ -6,7 +6,7 @@
 ## 快速开始
 
 ```bash
-cd /home/chenyuxi/skill/agent/skills/phenotype-extract/scripts
+cd <仓库>/skills/phenotype-extract/scripts      # phenotypes/ 包按此相对布局导入，必须在此目录运行
 
 # 1) 查看可提取的表型与就绪状态（会给出建议）
 conda run -n Phenotype python phenotype_extract.py
@@ -15,7 +15,7 @@ conda run -n Phenotype python phenotype_extract.py
 conda run -n Phenotype python phenotype_extract.py --pheno IMF
 ```
 
-输出在 `/data1/chenyx/Pig_geno/phenotype/IMF/`：
+输出在 `$PIG_GENO_DIR/phenotype/IMF/`（`PIG_GENO_DIR` 缺省 `/data1/chenyx/Pig_geno`，可用 `--outdir` 覆盖）：
 
 | 文件 | 内容 |
 |------|------|
@@ -25,7 +25,7 @@ conda run -n Phenotype python phenotype_extract.py --pheno IMF
 
 ## 常用参数
 
-- 改输出根目录：`--outdir /data1/chenyx/Pig_geno/temp/phenotype`（每个表型自动建子目录）
+- 改输出根目录：`--outdir $PIG_GENO_DIR/temp/phenotype`（每个表型自动建子目录）
 - 只跑前几个调试：`--limit 3`
 - 顺便保存分割 mask：`--save-masks`（输出到 `{outdir}/{表型}/masks/`)
 - 图片来自 `sample_images`、模型来自 `models` 表，一般无需改
@@ -33,7 +33,7 @@ conda run -n Phenotype python phenotype_extract.py --pheno IMF
 ## 解读与验证
 
 - 全量 162 张约 20s；汇总行 `对照(IMF_NIR_%) r≈0.74` 表示预测与近红外实测的相关性。
-- 逐张数值应与既有 `/data1/chenyx/Pig_image/phenotype_results.csv` 的
+- 逐张数值应与既有 `$PIG_IMAGE_DIR/phenotype_results.csv` 的
   `表型_脂肪面积占比_%` 列完全一致（同模型同抠肉逻辑）。
 - **精度说明**：图像可见脂肪% ≠ 化学 IMF%，与 NIR 的 RMSE≈0.90；
   若需更高一致先做线性校准 `N ≈ 0.456·P + 1.149`。

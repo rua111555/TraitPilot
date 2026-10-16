@@ -38,11 +38,14 @@ allowed-tools:
 
 完整的 `.done` / `.pid` / 日志配置。
 
-### 工具全路径
+### 工具路径（运行时探测，勿写死本机路径）
+
+阶段脚本经 `conda run -n Agent bash` 执行，工具已在 PATH 中：
 
 ```bash
-GATK="/home/chenyuxi/anaconda3/envs/Agent/bin/gatk"
-TABIX="/home/chenyuxi/anaconda3/envs/Agent/bin/tabix"
+resolve_tool() { command -v "$1" || { echo "✗ 找不到 $1 —— 请激活 conda 环境 Agent" >&2; exit 1; }; }
+GATK="$(resolve_tool gatk)"
+TABIX="$(resolve_tool tabix)"
 ```
 
 ### CombineGVCFs 标准用法

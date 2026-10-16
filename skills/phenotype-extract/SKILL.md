@@ -22,8 +22,11 @@ allowed-tools:
 
 1. **先列可用表型并让工具给建议**（不加载模型，秒级）：
 
+先 `cd` 到**本 skill 的 `scripts/` 目录**（即 `skills/phenotype-extract/scripts`，相对于仓库根；
+脚本靠同目录的 `phenotypes/` 包做导入，必须在其中运行）：
+
 ```bash
-cd /home/chenyuxi/skill/agent/skills/phenotype-extract/scripts
+cd skills/phenotype-extract/scripts     # 仓库根下的相对路径
 conda run -n Phenotype python phenotype_extract.py
 ```
 
@@ -35,7 +38,7 @@ conda run -n Phenotype python phenotype_extract.py
 3. 执行所选表型（当前为 IMF，默认全量 162 张，约 20s）：
 
 ```bash
-cd /home/chenyuxi/skill/agent/skills/phenotype-extract/scripts
+cd skills/phenotype-extract/scripts     # 仓库根下的相对路径
 conda run -n Phenotype python phenotype_extract.py --pheno IMF
 ```
 
@@ -48,7 +51,7 @@ conda run -n Phenotype python phenotype_extract.py --pheno IMF
 | `phenotypes/<name>.py 插件` | 该表型的计算代码(compute)与元信息 |
 | 关联表 xls | et→猪号、猪号→近红外(%)，供明细表加"猪号/参照"列 |
 
-## 输出（`{outdir}/{表型名}/`，默认 `/data1/chenyx/Pig_geno/phenotype/<表型>/`）
+## 输出（`{outdir}/{表型名}/`，`--outdir` 缺省 `$PIG_GENO_DIR/phenotype`，即 `/data1/chenyx/Pig_geno/phenotype/<表型>/`）
 
 | 文件 | 内容 |
 |------|------|
@@ -74,6 +77,9 @@ PLINK 行序与 `et277.fm.snp.fam` 的相对顺序一致（`--fam` 参数仅作�
 ## 注意事项
 
 - 跑在 conda 虚拟环境 **`Phenotype`**（torch/transformers/openCV 等 ML 栈）；**不是** conda base，也不是 `Agent` 环境。
+- **数据路径可用环境变量覆盖**（便于换机器）：`PIPELINE_DB`（默认 `$PIG_GENO_DIR/pipeline.db`）、
+  `PIG_GENO_DIR`（默认 `/data1/chenyx/Pig_geno`）、`PIG_IMAGE_DIR`（默认 `/data1/chenyx/Pig_image`）。
+  相关 xls/fam 若不在默认位置，用 `--nir-xls` / `--corr-xls` / `--fam` 显式指定。
 - `--num-labels`(默认2) 需与具体表型模型的类别数一致；`--thresh`(默认30)为黑底板抠肉 ROI 阈值，传给插件。
 - GAPIT/PLINK 两文件只含实际计算到表型的样本（已按用户要求去掉任何 -9/缺失填充与额外样本）。
 - 精度说明：图像可见脂肪%≠化学 IMF%，与 NIR 的 RMSE≈0.90；需更高一致先做线性校准 `N≈0.456·P+1.149`。

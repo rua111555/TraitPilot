@@ -64,7 +64,7 @@ if command -v docker >/dev/null 2>&1; then
     if $DK info >/dev/null 2>&1; then
         DOCKER_OK="true"
     else
-        DOCKER_MSG="docker daemon 无权限：请『sudo usermod -aG docker chenyuxi』后重新登录（参考 references/parabricks-setup.md §1.1）"
+        DOCKER_MSG="docker daemon 无权限：请『sudo usermod -aG docker $USER』后重新登录（参考 references/parabricks-setup.md §1.1）"
     fi
 else
     DOCKER_MSG="未找到 docker 命令"

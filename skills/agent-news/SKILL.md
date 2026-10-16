@@ -16,9 +16,10 @@ description: 每5天抓取「智能体开发」一线资讯（主流框架 GitHu
 数据源（`sources.json` 可增删改）：15 个主流框架/工具的 **GitHub Releases**（走 `api.github.com` REST API —— 本机 github.com 网页被墙但 API 可达）；OpenAI 新闻 RSS；Hugging Face Blog（`hf-mirror.com` 镜像兜底）；Anthropic /news（HTML 解析）；**arXiv 学术速递**（`all:"LLM agent" OR all:"multi-agent system"`）。
 
 ## 工具与资源
-- 脚本 `agent_news.py`（纯 Python 标准库，零依赖）。定位顺序：当前工作目录 → `/home/chenyuxi/paper_search/agent_news.py`。
+- 脚本 `agent_news.py`（纯 Python 标准库，零依赖）。**脚本不在本仓库**，定位顺序：
+  `$AGENT_NEWS_DIR/agent_news.py` → 当前工作目录 → 与本 SKILL.md 同目录；找不到即报错提示放置方式（不回退写死的个人路径）。
 - 信源配置：与脚本同级 `sources.json`。
-- 产物目录 `/home/chenyuxi/paper_search/agent_news/`：
+- 产物目录 `${AGENT_NEWS_DIR:-$HOME/paper_search}/agent_news/`（亦可用脚本参数指定）：
   - `reports/YYYY-MM-DD.md` — 速递（cron 每 5 天 08:17 自动生成）；
   - `reports/YYYY-MM-DD.解读.md` — **配套解读（Claude 生成，skill 触发）**；
   - `index.md` — 入口：最新一篇 + 近 30 天研究主题热度 + 历史清单 + 信源状态；
@@ -32,9 +33,10 @@ description: 每5天抓取「智能体开发」一线资讯（主流框架 GitHu
 
 ### 2. 运行脚本（需要时）
 ```bash
-python3 /home/chenyuxi/paper_search/agent_news.py --dry-run     # 先预览命中
-python3 /home/chenyuxi/paper_search/agent_news.py                # 正式生成速递 + 更新索引
-python3 /home/chenyuxi/paper_search/agent_news.py --since 2026-01-01   # 年度模式：年初至今总览
+NEWS_DIR="${AGENT_NEWS_DIR:-$HOME/paper_search}"
+python3 "$NEWS_DIR/agent_news.py" --dry-run     # 先预览命中
+python3 "$NEWS_DIR/agent_news.py"                # 正式生成速递 + 更新索引
+python3 "$NEWS_DIR/agent_news.py" --since 2026-01-01   # 年度模式：年初至今总览
 ```
 - 默认回溯窗口 **5 天**（`--days 5`），与 5 天 cron 配套；首次运行回溯 10 天基线。每个 GitHub 仓库拉最近 20 个 release，单次运行约 16 次 API 调用，远低于匿名 60 次/时配额。
 - **年度模式（`--since YYYY-MM-DD`）**：分页拉全年度 Releases（per_page=100）+ arXiv 按自然月抽样 25 篇打趋势 + 官方 feed 全量，生成 `reports/<年份>-annual.md`；**不动 `state.json`**（不污染日更去重）。产出后用第 3 节写 `<年份>-annual.解读.md`。

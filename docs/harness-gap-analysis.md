@@ -1,12 +1,14 @@
  SkillAgent 现状调研与标准 Agent Harness 组件增补方案
 
 > 本文仅做调研与方案设计，不含任何实现代码。全文出现的文件名、目录名、接口名、协议名均为设计标识，不构成实现。
+> **注（2026-10）**：文中描述的「复用 Claude Code 的 `.claude/skills` 机制」已解耦——技能现放在仓库自带的
+> `skills/`，配置走 `config.json`；下方现状段落保留为**历史记录**。
 
 ---
 
 ## 1. 现状概览
 
-当前 `/home/chenyuxi/skill/agent` 是一个**自研、单 Agent、纯 stdlib 依赖（requests / PyYAML / flask）**的本机编程与生信分析智能体：它以 Anthropic Messages API 的 `tool_use` 循环为核心，复用 Claude Code 的 skill 机制（扫描 `.claude/skills`、注入 skill 清单、按需 `Skill(name)` 加载），具备 CLI（REPL / 单轮）与 Flask+SSE Web 双入口，工具集覆盖 `Skill/Bash/Read/Write/Edit/Glob/Grep/TaskOutput`，并为 WGS/GWAS 两个编排管线内建了 `Bash background=true`（nohup + `.done/.pid`）后台机制。整体约 1700 行 Python，功能自洽、可跑通，但**作为“标准 agent harness”尚缺关键治理与健壮性组件**：终止原因只有字符串白名单、无预算/成本核算、无死循环熔断、无结构化权限模型、无沙箱、历史压缩为“丢弃旧消息”、history 仅内存无持久化、无 MCP/子 agent/规划/检索/多 provider 层。
+当前 `<仓库>/agent` 是一个**自研、单 Agent、纯 stdlib 依赖（requests / PyYAML / flask）**的本机编程与生信分析智能体：它以 Anthropic Messages API 的 `tool_use` 循环为核心，复用 Claude Code 的 skill 机制（当时扫描 `.claude/skills`、注入 skill 清单、按需 `Skill(name)` 加载；现已改为自带 `skills/`），具备 CLI（REPL / 单轮）与 Flask+SSE Web 双入口，工具集覆盖 `Skill/Bash/Read/Write/Edit/Glob/Grep/TaskOutput`，并为 WGS/GWAS 两个编排管线内建了 `Bash background=true`（nohup + `.done/.pid`）后台机制。整体约 1700 行 Python，功能自洽、可跑通，但**作为“标准 agent harness”尚缺关键治理与健壮性组件**：终止原因只有字符串白名单、无预算/成本核算、无死循环熔断、无结构化权限模型、无沙箱、历史压缩为“丢弃旧消息”、history 仅内存无持久化、无 MCP/子 agent/规划/检索/多 provider 层。
 
 ### 现有组件表
 

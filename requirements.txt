@@ -6,7 +6,7 @@
 #      · 两套 conda 环境（Agent：bwa/samtools/bcftools/gatk4/plink…；
 #        r-gwas：R 4.3 + rMVP/CMplot/pheatmap…）
 #      · 若干不在 conda 的独立二进制（gemma / gcta64 / LDBlockShow / Haploview…）
-#      · 表型提取的 ML 栈（torch/transformers/numpy/pandas/opencv/scipy…）跑在 conda base
+#      · 表型提取的 ML 栈（torch/transformers/numpy/pandas/opencv/scipy…）在 conda 环境 Phenotype
 #      · 系统级依赖（bash ≥4.3、新版 libstdc++、docker/GPU 可选）
 #      · 数据文件（pipeline.db、参考基因组、模型权重…）
 #

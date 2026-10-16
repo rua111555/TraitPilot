@@ -317,7 +317,7 @@ do_bins() {
     *":$BIN_DIR:"*) : ;;
     *) warn "$BIN_DIR 不在 PATH：请在 ~/.bashrc 加 export PATH=\"$BIN_DIR:\$PATH\"" ;;
   esac
-  warn "gemma/gcta64/LDBlockShow 若报 GLIBCXX_3.4.29：运行前 export LD_LIBRARY_PATH=$CONDA/lib"
+  warn "gemma/gcta64/LDBlockShow 若报 GLIBCXX_3.4.29：说明系统 libstdc++ 过旧，需前插 conda lib（技能用 sk_ensure_ld_path 自动检测）"
 }
 
 # ────────────────────────────── 6. 本地命令行工具 ───────────────────────────
@@ -351,17 +351,18 @@ do_verify() {
   else
     warn "未找到 environment/check_env.sh"
   fi
-  step "路径对齐（硬编码绝对路径 → 本机路径）"
+  step "路径对齐（可选：数据/环境位置覆盖）"
   local rp=""
   for cand in "$ROOT/replace_paths.py" "$ROOT/../replace_paths.py"; do
     [ -f "$cand" ] && { rp="$cand"; break; }
   done
+  echo "  技能里的工具已用 command -v 运行时探测，数据/环境位置用环境变量覆盖即可（无需改代码）："
+  echo "    export PIG_GENO_DIR=<数据根>  PIG_IMAGE_DIR=<图片根>  PIPELINE_DB=<pipeline.db>"
   if [ -n "$rp" ]; then
-    echo "  技能脚本硬编码了 conda/数据绝对路径。若你的 conda 不在 /home/chenyuxi/anaconda3，"
-    echo "  或数据不在 /data1/chenyx/Pig_geno，请执行："
+    echo "  仅当仍有 legacy 绝对路径残留时才需要批量替换："
     echo "    python3 $rp --conda $CONDA --data <你的数据目录>"
   else
-    warn "未找到 replace_paths.py（技能内绝对路径需手动对齐）"
+    echo "  （未找到 replace_paths.py —— 通常无需它）"
   fi
 }
 

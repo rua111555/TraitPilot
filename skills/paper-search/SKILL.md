@@ -9,12 +9,15 @@ description: 按关键词搜索指定年限的顶刊顶会论文，去重下载 
 用户给出**大致关键词**（可为中文）与**年限范围**，要求从顶刊顶会中检索、下载并逐篇解读，且**不重复下载同一篇论文**。默认按 `field=ai`（AI/计算机）的白名单 venue 过滤，可用参数覆盖。报告默认**中文**，`--max-total` 默认 **15 篇**。
 
 ## 工具与资源
-- 脚本 `paper_search.py`（纯 Python 标准库，零依赖）。定位顺序：
-  1. 当前工作目录下的 `paper_search.py`
-  2. 绝对路径 `/home/chenyuxi/paper_search/paper_search.py`
+- 脚本 `paper_search.py`（纯 Python 标准库，零依赖）。**脚本不在本仓库**，定位顺序：
+  1. `$PAPER_SEARCH_DIR/paper_search.py`（推荐：部署时设该环境变量指向脚本所在目录）
+  2. 当前工作目录下的 `paper_search.py`
+  3. 同目录旁路：`$(dirname <本 SKILL.md>)/paper_search.py`（若把脚本随 skill 一起放置）
+  找不到时明确报错并提示放置方式，**不回退到任何写死的个人绝对路径**。
 - 配套 `curate_run.py`：给定种子标题 → 按 DOI/arXiv 稳健下载（供"抓取特定论文全集"场景）。
 - venue 白名单：与脚本同级的 `venues.json`。字段 `ai` 已包含 NeurIPS/ICML/ICLR/CVPR/ICCV/ECCV/AAAI/ACL/EMNLP/NAACL/KDD/SIGMOD/VLDB/OSDI/SOSP/USENIX Security/IEEE S&P/CCS/WWW/CHI/AISTATS/ICRA/IROS/COLING 与 Nature/Nature MI/Nature Communications/Nature Computational Science/Science Advances/TPAMI/JMLR/TMLR/IJCV/JAIR/TACL 等。
-- 数据源：OpenAlex（主）→ Crossref（降级）；OA PDF 用浏览器 UA 下载并含 PMC 备用源。Semantic Scholar 建议不用（本机匿名限流）。
+- 产物目录：`${PAPER_SEARCH_DIR:-$HOME/paper_search}/papers`（用 `--outdir` 显式指定亦可）。
+- 数据源：OpenAlex（主）→ Crossref（降级）；OA PDF 用浏览器 UA 下载并含 PMC 备用源。Semantic Scholar 建议不用（匿名易限流）。
 
 ## 可靠性保证（必读）
 脚本在**下载后**对每个 PDF 做**内容级校验**（`verify_download`），不再只信文件名：
@@ -36,17 +39,18 @@ description: 按关键词搜索指定年限的顶刊顶会论文，去重下载 
 用户明确不要扩展时直接使用原词。扩展后的词作为多个 `--keyword` 传入，脚本会跨关键词去重。
 
 ### 3. 搜索 + 去重 + 下载（脚本执行）
-先 `--dry-run` 预览命中清单，确认后正式下载：
+先 `--dry-run` 预览命中清单，确认后正式下载（`$SCRIPT` = 上节定位到的 `paper_search.py`）：
 ```bash
+PAPER_DIR="${PAPER_SEARCH_DIR:-$HOME/paper_search}"
 python3 "$SCRIPT" \
   --keyword "large language model" --keyword "LLM" --keyword "foundation model" \
   --years 2023-2024 \
   --max-total 15 \
   --field ai \
-  --outdir /home/chenyuxi/paper_search/papers \
+  --outdir "$PAPER_DIR/papers" \
   --dry-run
 ```
-正式下载（去掉 `--dry-run`）后读取 `/home/chenyuxi/paper_search/papers/meta.json` 与 `library.json`：
+正式下载（去掉 `--dry-run`）后读取 `$PAPER_DIR/papers/meta.json` 与 `library.json`：
 - `meta.counts`：候选 / 新下载 / 重复 / 无PDF / 失败。
 - `meta.downloads`：本次新下载清单（含 `slug`、`pdf_path`、`status="downloaded"`）。
 - `meta.duplicates` / `meta.no_pdf` / `meta.failed`：分别处理；`failed` 中带「内容校验失败」的说明文件内容与标题不符，可放心忽略该坏档（脚本已删除）。

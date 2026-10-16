@@ -145,8 +145,8 @@ for f in "${RUN_DIR}"/.done/*.done; do echo "✅ $(basename "$f")"; done   # 已
 | 8 | 显著阈值用校正值（0.05/n，常见 3.92e-9/1e-8），别用 0.05 | visualization |
 | 9 | LDBlockShow/ShowLDSVG 工具名拼写；`-InGWAS` 需 `-log10(P)` 列 | ld-block |
 | 10 | 区域 LD 前确认 bfile 染色体编号与 `-Region`/`--chr` 一致；**候选区位点 ≥10 个**（少则 `division by zero`） | ld-block |
-| 10.5 | **LDBlockShow 需 `LD_LIBRARY_PATH=/home/chenyuxi/anaconda3/lib`**（系统 libstdc++ 旧） | ld-block |
-| 11 | **R 环境：需 R ≥ 4.0**（本机用 `conda run -n r-gwas Rscript`，含 rMVP/CMplot/pheatmap/reshape2）；系统 R 3.6 编译新版依赖失败 | 全部（R） |
+| 10.5 | **LDBlockShow 需新版 libstdc++** — 仅系统库过旧时用 `sk_ensure_ld_path`（`skills/_shared/env.sh`）前插 conda lib；系统库够新则别设 `LD_LIBRARY_PATH` | ld-block |
+| 11 | **R 环境：需 R ≥ 4.0**（用 `conda run -n r-gwas Rscript`，含 rMVP/CMplot/pheatmap/reshape2）；系统 R 3.6 编译新版依赖失败 | 全部（R） |
 | 12 | 独立二进制（gcta64/gemma/PopLDdecay/LDBlockShow/Haploview）路径用 `command -v` 检测 | 全部 |
 | 13 | **gcta64/vcftools 缺失时的替代** — 亲缘/PCA 用 GEMMA `-gk 2` + plink `--pca`；vcftools 的 VCF→PLINK 用 plink `--vcf/--recode` | kinship-pca |
 | 14 | **表型与基因型样本必须一致** — 子集 bfile 先 `--keep` 表型样本，再送 GEMMA/rMVP（实测 162/162 匹配才无错） | 全部 |

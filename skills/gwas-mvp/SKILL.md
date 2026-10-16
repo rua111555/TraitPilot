@@ -150,7 +150,7 @@ date > "${DONE_FILE}"
 | 6.5 | **`ncpus` 默认取全部逻辑核** — 大规模全基因组会 OOM/抢满；显式给 `ncpus=4~16` | 机器被拖垮 / 内存峰值过高 |
 | 7 | **多性状一次全算内存翻倍** — 循环跑+`gc()` 更稳 | 内存峰值过高 |
 | 8 | **`method.bin="static"` 时阈值默认 0.05** — 显著性应由 `threshold = 0.05/n` 换算或事后用 BH 校正 | 假阳性显著位点 |
-| 9 | **R 版本/依赖** — rMVP 依赖强编译包（RcppArmadillo/bigmemory/dplyr），**R ≥ 4.0 才稳**；系统 R 3.6 编译新版 C++ 依赖会失败（`GLIBCXX` / `C++14 required`）— 本机用 conda R 4.3 环境 `/home/chenyuxi/anaconda3/envs/r-gwas`（需先补装 conda gxx 工具链） | `library(rMVP)` 失败或安装崩溃 |
+| 9 | **R 版本/依赖** — rMVP 依赖强编译包（RcppArmadillo/bigmemory/dplyr），**R ≥ 4.0 才稳**；系统 R 3.6 编译新版 C++ 依赖会失败（`GLIBCXX` / `C++14 required`）— 用 conda R 4.3 环境 `r-gwas`（`conda run -n r-gwas Rscript`，需先补装 conda gxx 工具链） | `library(rMVP)` 失败或安装崩溃 |
 | 10 | **结果 CSV 的第 8 列是 P 值** — S4 作图取 `[,c(1,2,3,8)]` | 作图取错列 |
 
 ## 输出汇报

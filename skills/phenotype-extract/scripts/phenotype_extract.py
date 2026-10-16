@@ -29,6 +29,12 @@ import json
 import time
 import argparse
 
+# 数据根目录：可用环境变量覆盖（便于换机器）；缺省沿用历史布局。
+GENO_DIR  = os.environ.get("PIG_GENO_DIR",  "/data1/chenyx/Pig_geno")
+IMAGE_DIR = os.environ.get("PIG_IMAGE_DIR", "/data1/chenyx/Pig_image")
+DEF_DB     = os.environ.get("PIPELINE_DB",   os.path.join(GENO_DIR, "pipeline.db"))
+DEF_OUTDIR = os.path.join(GENO_DIR, "phenotype")
+
 import numpy as np
 import cv2
 import pandas as pd
@@ -80,13 +86,17 @@ def main():
     ap = argparse.ArgumentParser(description="通用表型提取: DB图片→模型→CSV→GWAS表型")
     ap.add_argument("--pheno", default=None,
                     help="要提取的表型名(phenotypes/ 插件中的 name)。不带则列出并建议")
-    ap.add_argument("--db", default="/data1/chenyx/Pig_geno/pipeline.db")
-    ap.add_argument("--outdir", default="/data1/chenyx/Pig_geno/phenotype")
-    ap.add_argument("--fam", default="/data1/chenyx/Pig_geno/04_snp_indel/et277.fm.snp.fam",
+    ap.add_argument("--db", default=DEF_DB,
+                    help=f"SQLite 数据库(默认 $PIPELINE_DB 或 {DEF_DB})")
+    ap.add_argument("--outdir", default=DEF_OUTDIR,
+                    help=f"输出根目录(默认 $PIG_GENO_DIR/phenotype, 即 {DEF_OUTDIR})")
+    ap.add_argument("--fam", default=os.path.join(GENO_DIR, "04_snp_indel", "et277.fm.snp.fam"),
                     help=".fam 仅作 PLINK 文件样本排序基准(取其在 fam 的相对行序); 缺失则按 et 号排序")
-    ap.add_argument("--nir-xls", default="/data1/chenyx/Pig_image/肌内脂肪含量_近红外测定.xls")
+    ap.add_argument("--nir-xls", default=os.path.join(IMAGE_DIR, "肌内脂肪含量_近红外测定.xls"),
+                    help=f"NIR 真值表(默认 $PIG_IMAGE_DIR 下的 {os.path.join(IMAGE_DIR, '肌内脂肪含量_近红外测定.xls')})")
     ap.add_argument("--corr-xls",
-                    default="/data1/chenyx/Pig_image/0-重要-测序数据编号与屠宰耳号对应情况.xls")
+                    default=os.path.join(IMAGE_DIR, "0-重要-测序数据编号与屠宰耳号对应情况.xls"),
+                    help="et→猪号 关联表(默认 $PIG_IMAGE_DIR 下)")
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--size", type=int, default=512, help="推理输入分辨率(可用 ckpt 自带值)")
     ap.add_argument("--num-labels", type=int, default=2,

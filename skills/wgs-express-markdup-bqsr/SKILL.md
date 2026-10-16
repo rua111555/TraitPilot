@@ -45,11 +45,14 @@ GATK 4.3 非 Spark 版中这两个工具**都是单线程的**。加速方式：
 - **给足内存**：`-Xmx`（从 `run.params.json` 的 `java_xmx` 读取）
 - **使用 SSD/tmpfs** 作为临时目录
 
-### 工具全路径
+### 工具路径（运行时探测，勿写死本机路径）
+
+阶段脚本经 `conda run -n Agent bash` 执行，工具已在 PATH 中：
 
 ```bash
-GATK="/home/chenyuxi/anaconda3/envs/Agent/bin/gatk"
-SAMTOOLS="/home/chenyuxi/anaconda3/envs/Agent/bin/samtools"
+resolve_tool() { command -v "$1" || { echo "✗ 找不到 $1 —— 请激活 conda 环境 Agent" >&2; exit 1; }; }
+GATK="$(resolve_tool gatk)"
+SAMTOOLS="$(resolve_tool samtools)"
 ```
 
 ### MarkDuplicates 标准用法

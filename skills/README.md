@@ -13,9 +13,12 @@ skills/<name>/scripts/…         # 可选：脚本
 发现顺序（`SkillRegistry`）：显式 `--skills-dir` → `<project>/skills` →
 `<project>/.claude/skills`（legacy 兼容）→ `~/.claude/skills`。
 
+> ⚠️ 最后一级 `~/.claude/skills` 是**用户级兜底**：若目标机器存在该目录，会混入**非本项目**的技能。
+> 只想暴露本仓库技能时，显式传 `--skills-dir <project>/skills` 即可跳过全部回退。
+
 ## 本目录内容
 
-18 个技能，`gwas-*` / `wgs-express-*` / `phenotype-extract` 等，均为 WGS / GWAS 分析管线。
+21 个技能，`gwas-*` / `wgs-express-*` / `phenotype-extract` 等，均为 WGS / GWAS 分析管线。
 
 ## 模型权重（未随仓库分发）
 

@@ -118,7 +118,7 @@ mkdir -p "$(dirname "${LOG_FILE}")" "$(dirname "${DONE_FILE}")" "$(dirname "${PI
 echo $$ > "${PID_FILE}"
 trap 'rm -f "${PID_FILE}"' EXIT
 
-PLINK="/home/chenyuxi/anaconda3/envs/Agent/bin/plink"
+PLINK="$(command -v plink || { echo "✗ 找不到 plink —— 请激活 conda 环境 Agent" >&2; exit 1; })"
 PED_NAME="${PREFIX}"          # 无扩展名；--file 会找 ${PED_NAME}.ped/.map
 
 # ─── QC 报告 ───

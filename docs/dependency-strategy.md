@@ -24,7 +24,7 @@
 
 | 候选能力 | 实测 | 备注 |
 |---|---|---|
-| Python | **3.13.9**（anaconda3 base） | 初稿误写 3.11 |
+| Python | **≥3.10**（实测 3.12.13 / 3.13.9） | 初稿误写 3.11 |
 | `pip download mcp` | ✅ mcp 2.3.0 可下 | 但见下一行 |
 | `pip install --dry-run mcp` | ❌ **~30 个包闭包** | 见 §1.1，决定性证据 |
 | `node` / `npx` | ✅ v24.16.0 / 11.13.0 | 多数 MCP server 走 npx |
@@ -136,7 +136,7 @@ MCP stdio 传输就是「换行分隔的 JSON-RPC 2.0」，用 stdlib（`subproc
 但**编排的完成真值是 `.done` 文件存在**（`gwas-pipeline/SKILL.md:83-88`、`wgs-expressive-pipeline/SKILL.md:83-85`
 「完成状态以 .done 文件为准」）。**只要把 `RUN_DIR` 以相同宿主路径 bind-mount**，`.done` 就落在宿主，
 自动推进 / `--resume` 照常；仅 skill 自带的「运行中」显示会退化——这是可接受的已知代价。
-需挂载：宿主 cwd、`RUN_DIR`（如 `/data1/chenyx/Pig_geno/temp/runs/...`）及硬编码工具路径。
+需挂载：宿主 cwd、`RUN_DIR`（`run.params.json` 的 `run_dir`，如 `$PIG_GENO_DIR/temp/runs/...`）及工具所在目录（工具用 `command -v` 运行时探测）。
 
 ---
 

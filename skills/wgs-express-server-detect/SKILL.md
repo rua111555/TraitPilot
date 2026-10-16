@@ -73,7 +73,7 @@ lspci | grep -iE "nvidia|Radeon|3D controller"
 
 **分析要点**：
 - **GPU 数量、型号、单卡 VRAM** → 决定 `parallel_samples`（样本并行上限）与单卡显存是否够用
-- **compute capability** → Parabricks 要求 CC ≥ 7.0；本机 RTX 4090 为 CC 8.9，达标
+- **compute capability** → Parabricks 要求 CC ≥ 7.0（从 `nvidia-smi --query-gpu=compute_cap` 读实际值，勿照抄示例）
 - **gpu_class 分类**：datacenter（V100/T4/A100/H100/L40S/L4/RTX-A6000 等，官方验证）vs
   consumer（GeForce/RTX 4090 等**非官方支持**）→ 记入 `parabricks_ready`，consumer 卡**必须先过冒烟测试**
 - **当前利用率/已用显存** → 若其他用户占用 GPU，减少分配或提示
@@ -157,19 +157,19 @@ if GPU_VRAM_GB < 32:
 
 ### 输出格式
 
-检测结果必须组织为 JSON 格式返回给编排 skill：
+检测结果必须组织为 JSON 格式返回给编排 skill（**以下数值仅为格式示例，实际由本机探测填入**）：
 
 ```json
 {
   "server_detection": {
-    "total_cores": 128,
-    "sockets": 2,
-    "cores_per_socket": 32,
-    "threads_per_core": 2,
-    "numa_nodes": 2,
-    "numa_node0_cpus": "0-31,64-95",
-    "numa_node1_cpus": "32-63,96-127",
-    "cpu_model": "Intel(R) Xeon(R) Platinum 8358P @ 2.60GHz",
+    "total_cores": "<lscpu 探测>",
+    "sockets": "<lscpu 探测>",
+    "cores_per_socket": "<lscpu 探测>",
+    "threads_per_core": "<lscpu 探测>",
+    "numa_nodes": "<numactl -H 探测>",
+    "numa_node0_cpus": "<numactl -H 探测，如 0-31,64-95>",
+    "numa_node1_cpus": "<numactl -H 探测，如 32-63,96-127>",
+    "cpu_model": "<lscpu 探测>",
     "load_average": 90.5,
     "cpu_idle_pct": 30.2,
     "total_mem_gb": 503,

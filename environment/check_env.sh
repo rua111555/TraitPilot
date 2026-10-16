@@ -24,6 +24,12 @@ CORE_MISS=0
 WARN_MISS=0
 OK=0
 
+# 数据根：优先环境变量；未设置时回退到历史布局（本机默认），换机器请 export 覆盖
+GENO_DIR="${PIG_GENO_DIR:-/data1/chenyx/Pig_geno}"
+IMAGE_DIR="${PIG_IMAGE_DIR:-/data1/chenyx/Pig_image}"
+DB_FILE="${PIPELINE_DB:-$GENO_DIR/pipeline.db}"
+EXT_SCRIPT_DIR="${PAPER_SEARCH_DIR:-$HOME/paper_search}"
+
 c_ok()   { OK=$((OK+1));        [ "$QUIET" = 1 ] || printf "  \033[32m✓\033[0m %s\n" "$1"; }
 c_bad()  { CORE_MISS=$((CORE_MISS+1)); printf "  \033[31m✗\033[0m %s\n" "$1"; }
 c_warn() { WARN_MISS=$((WARN_MISS+1)); [ "$QUIET" = 1 ] || printf "  \033[33m!\033[0m %s\n" "$1"; }
@@ -161,7 +167,7 @@ hdr "⑤ 生信工具链 —— GWAS 独立二进制（不在 conda）"
 have gemma       "GEMMA（LMM 关联，必需）"            "下载 gemma 二进制放到 PATH"
 have gcta64      "gcta64（GRM/PCA，可选①）"           "下载 gcta64 二进制"
 have vcftools    "vcftools（VCF→PLINK，可选②）"       "★本机缺失：用 plink --vcf --make-bed 替代"
-have LDBlockShow "LDBlockShow（区域 LD block）"       "源码 make，见 /data1/.../biosoft/LDBlockShow"
+have LDBlockShow "LDBlockShow（区域 LD block）"       "源码 make 安装到 ~/.local/bin（见 references）"
 have ShowLDSVG   "ShowLDSVG（SVG 精排）"              "随 LDBlockShow 源码分发"
 have PopLDdecay  "PopLDdecay（LD 衰减，可选）"        "下载 PopLDdecay 二进制"
 have perl        "perl（Plot_OnePop.pl 画衰减曲线）"  "系统自带 / conda install perl"
@@ -217,20 +223,24 @@ hdr "⑨ 数据与外部服务（按需）"
 if [ -n "$CONDA" ]; then
   for cue in "$CONDA/envs/Agent/bin"; do :; done
 fi
-for d in /data1/chenyx/Pig_geno /data1/chenyx/Pig_image; do
-  [ -d "$d" ] && c_ok "数据目录 $d" || c_warn "数据目录 $d 不存在（WGS/GWAS/表型技能默认路径）"
+for d in "$GENO_DIR" "$IMAGE_DIR"; do
+  [ -d "$d" ] && c_ok "数据目录 $d" || c_warn "数据目录 $d 不存在（WGS/GWAS/表型技能默认路径；可用 PIG_GENO_DIR/PIG_IMAGE_DIR 覆盖）"
 done
-[ -f /data1/chenyx/Pig_geno/pipeline.db ] && c_ok "pipeline.db" || c_warn "缺 /data1/chenyx/Pig_geno/pipeline.db"
+[ -f "$DB_FILE" ] && c_ok "pipeline.db" || c_warn "缺 $DB_FILE（可用 PIPELINE_DB 覆盖）"
 # 技能文档写的是 .../reference/ref.fa，本机实际在 03_reference/ —— 两处都探
-if [ -f /data1/chenyx/Pig_geno/reference/ref.fa ]; then
+if [ -f "$GENO_DIR/reference/ref.fa" ]; then
   c_ok "参考基因组 ref.fa (reference/)"
-elif [ -f /data1/chenyx/Pig_geno/03_reference/ref.fa ]; then
+elif [ -f "$GENO_DIR/03_reference/ref.fa" ]; then
   c_warn "参考基因组在 03_reference/，但技能文档写的是 reference/ —— 需改 run.params.json 或建软链"
 else
   c_warn "缺参考基因组 ref.fa/.fai/.dict（WGS 形态必需）"
 fi
 have pdftotext "pdftotext（paper-search PDF 校验）" "poppler-utils"
-c_warn "agent-news / paper-search 的脚本不在本仓库，在 /home/chenyuxi/paper_search/（部署时需一并带过去）"
+if [ -d "$EXT_SCRIPT_DIR" ]; then
+  c_ok "外部脚本目录 $EXT_SCRIPT_DIR"
+else
+  c_warn "agent-news / paper-search 的脚本不在本仓库；放到任意目录并设 PAPER_SEARCH_DIR / AGENT_NEWS_DIR（当前探 $EXT_SCRIPT_DIR）"
+fi
 
 }   # end CORE_ONLY
 

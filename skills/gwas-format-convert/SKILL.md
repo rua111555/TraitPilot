@@ -87,9 +87,9 @@ mkdir -p "${LOG_DIR}" "${DONE_DIR}" "${PID_DIR}"
 echo $$ > "${PID_FILE}"
 trap 'rm -f "${PID_FILE}"' EXIT
 
-# 工具路径（Agent conda env + 独立二进制，按实际环境检测）
-PLINK="/home/chenyuxi/anaconda3/envs/Agent/bin/plink"
-# ⚠ vcftools 本机缺失：优先直接用 plink --vcf --make-bed 替代（见「↑ 直接 VCF → PLINK bed」）
+# 工具路径（运行时探测，勿写死本机路径；阶段脚本经 `conda run -n Agent` 执行）
+PLINK="$(command -v plink || { echo "✗ 找不到 plink —— 请激活 conda 环境 Agent" >&2; exit 1; })"
+# ⚠ vcftools 常缺失：优先直接用 plink --vcf --make-bed 替代（见「↑ 直接 VCF → PLINK bed」）
 VCFTOOLS="$(command -v vcftools || echo '')"
 
 # gz VCF → ped/map
@@ -110,7 +110,7 @@ date > "${DONE_FILE}"
 | 2 | **vcftools 对 `--vcf` 中的多等位/非 SNP 位点会报错** — 输入应是过滤后的 SNP-only VCF | 转换中断 |
 | 3 | **`wc -l` 必做** — 确认位点数/个体数与预期一致再进入下游 | 空数据集跑完整个管线才发现 |
 | 4 | **`--allow-extra-chr`** — 非标准染色体名（`chr7`/`SSC7` / X/Y） | plink 拒绝或丢弃染色体 |
-| 5 | **工具路径** — plink 用 Agent conda 绝对路径；vcftools 需 `command -v` 检测 | 子 shell 丢 PATH |
+| 5 | **工具路径** — plink 用 `command -v` 运行时探测（勿写死本机路径）；vcftools 同样检测 | 子 shell 丢 PATH |
 | 6 | **别用 plink2 的 `--export-bed` 参数名混到 plink1.9** | 参数不识别 |
 
 ## QC 输出汇报

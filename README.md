@@ -10,7 +10,7 @@ API 凭证/配置从本目录的 `config.json` 读取——**不依赖 Claude Co
 ## 快速开始
 
 ```bash
-cd /home/chenyuxi/skill/agent
+cd <repo>
 
 # 1) 配置凭证（一次性）：复制模板为 config.json 并填写
 cp config.json.example config.json
@@ -46,7 +46,7 @@ bash environment/check_env.sh --core   # 只查 Agent 本体，不碰生信管�
 ## 常用命令
 
 ```bash
-cd /home/chenyuxi/skill/agent
+cd <repo>
 
 # 列出发现的 skills
 python3 run.py list
@@ -62,7 +62,7 @@ python3 run.py chat -p "列出 phenotype-extract 提供哪些表型" -m DSv4-fla
 ## Web 前端
 
 ```bash
-cd /home/chenyuxi/skill/agent
+cd <repo>
 ./start_web.sh                    # 推荐：后台启动/状态检查（log=web.log；停止 ./start_web.sh stop）
 # 或前台式：python run_web.py     # 浏览器打开 http://127.0.0.1:8787
 ```

@@ -126,11 +126,12 @@ PID_FILE="${RUN_DIR}/.pid/05_ld_block.pid"
 mkdir -p "$(dirname "${LOG_FILE}")" "$(dirname "${DONE_FILE}")" "$(dirname "${PID_FILE}")"
 echo $$ > "${PID_FILE}"; trap 'rm -f "${PID_FILE}"' EXIT
 
-LDBLOCK="$(command -v LDBlockShow || find '/data1/yangqinghua/biosoft' -maxdepth 3 -name LDBlockShow 2>/dev/null | head -1)"
+LDBLOCK="$(command -v LDBlockShow || find "$HOME" /opt /usr/local -maxdepth 5 -name LDBlockShow -type f 2>/dev/null | head -1)"
 SHOWSVG="$(command -v ShowLDSVG || printf '%s/../../ShowLDSVG' "$(dirname "${LDBLOCK}")")"
 
-# ⚠ LDBlockShow 需新版 libstdc++（详见错误预防 5.5）
-export LD_LIBRARY_PATH=/home/chenyuxi/anaconda3/lib:$LD_LIBRARY_PATH
+# ⚠ LDBlockShow 需新版 libstdc++（详见错误预防 5.5）。仅当系统库过旧时才前插 conda lib，
+#   新机器系统库够新则不动 LD_LIBRARY_PATH（避免遮蔽更新的库）：
+sk_ensure_ld_path   # 定义见 skills/_shared/env.sh；或在脚本内联该函数
 
 # ─── LDBlockShow：区域 + GWAS + GFF ───
 "${LDBLOCK}" -InPlink "${BFILE}" -OutPut "${OUTPREFIX}" \
@@ -160,7 +161,7 @@ date > "${DONE_FILE}"
 | 3 | **`-Cutline` 是 -log10 尺度** — `-Cutline 8.4` ≈ 3.92e-9；给 0.05 会画在地板上 | 显著线画错 |
 | 4 | **`-TopSite` 中心位点在区域内** — 不在 `-Region` 范围内会警告/空 | 图无中心峰 |
 | 5 | **`-Region` 用起点:终点，染色体编号要与 bfile/bim 一致** — 猪自动/额外 chr 需 `--allow-extra-chr` | 区域为空 |
-| 5.5 | **LDBlockShow/ShowLDSVG 二进制需新版 libstdc++** — 本机系统 `/usr/lib64` 旧导致 `GLIBCXX_3.4.29 not found`；运行前 `export LD_LIBRARY_PATH=/home/chenyuxi/anaconda3/lib:$LD_LIBRARY_PATH` | 命令无法启动 |
+| 5.5 | **LDBlockShow/ShowLDSVG 二进制需新版 libstdc++** — 系统 `/usr/lib64` 旧时会报 `GLIBCXX_3.4.29 not found`。**仅在系统库过旧时**用 `sk_ensure_ld_path`（见 `skills/_shared/env.sh`）前插 conda `lib`；新机器系统库够新则**不要**设置 `LD_LIBRARY_PATH`（会遮蔽新库） | 命令无法启动 / 或误遮蔽新库 |
 | 5.6 | **候选区域标记太少（<2 个）时报 division by zero / SNPNumber:0** — 随机抽样或低密度区常见；实测 25 个位点窗口成功（SNPNumber≈14），优先选 ≥10 个位点的窗口 | SVG 空白 / `Illegal division by zero` |
 | 6 | **Haploview 输入是 per-chrom 文件**（`--recode HV` 拆分）— 直接用总 ped 会失败 | 报 `NO_VARIANTS` 等 |
 | 7 | **Haploview 需 `-info` 文件匹配 `-pedfile`** | INFO 错误 |

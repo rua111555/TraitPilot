@@ -28,8 +28,9 @@ allowed-tools:
 使用 `db_query.py` 获取所有必需路径：
 
 ```bash
-conda run -n Agent python skills/wgs-expressive-pipeline/scripts/db_query.py \
-  --db /data1/chenyx/Pig_geno/pipeline.db --action query-all --samples <SAMPLE_NUMBERS>
+conda run -n Agent python "$(dirname "${BASH_SOURCE[0]:-$0}")/../wgs-expressive-pipeline/scripts/db_query.py" \
+  --action query-all --samples <SAMPLE_NUMBERS>
+# --db 缺省取 $PIPELINE_DB，其次 $PIG_GENO_DIR/pipeline.db；需要时显式 --db <路径>
 ```
 
 获取内容：
@@ -60,9 +61,9 @@ conda run -n Agent python skills/wgs-expressive-pipeline/scripts/db_query.py \
   - HaplotypeCaller --native-pair-hmm-threads min(8, usable_cores / parallel_samples / 4)
   - CombineGVCFs/GenotypeGVCFs: 单线程
 
-Java Xmx 分配：
-  - 总内存 503GB，其他用户占用 ~300GB，可用 ~200GB
-  - 推荐 -Xmx32g（给 GATK 足够堆空间，减少 GC 暂停）
+Java Xmx 分配（**按 S0 探测到的可用内存计算，勿套用某一台机器的固定值**）：
+  - 取 S0 的 `available_mem_gb`，按并行样本数分摊后留余量
+  - 推荐 `-Xmx` = min(48, available_mem_gb / parallel_samples) GB（GATK 堆空间足够即可，减少 GC）
 ```
 
 ### 后端决策：compute_backend
@@ -101,7 +102,7 @@ else:
   "parabricks": {
     "runtime": "docker",
     "image": "nvcr.io/nvidia/clara/clara-parabricks:4.3.2-1",
-    "mounts": ["/data1:/data1", "/home/chenyuxi:/home/chenyuxi"],
+    "mounts": ["<数据根>:<数据根>", "<示例:$HOME>:<示例:$HOME>"],
     "gpus_to_use": 8,
     "parallel_samples": 8,
     "per_gpu_cpus": 16,
@@ -129,9 +130,11 @@ PB_PERMISSION="-u $(id -u):$(id -g)"      # 容器写出的文件属主=当前�
 # 每样本: PBRUN <宿主GPU索引> <pbrun 子命令> ...
 PBRUN() {
     local gpu="${1}"; shift
+    # 挂载数据根与家目录（用同一宿主路径映射，容器内外路径一致）
+    local GENO; GENO="$(sk_geno_dir 2>/dev/null || echo "${PIG_GENO_DIR:-/data}")"
     docker run --rm ${PB_PERMISSION} \
         --gpus "device=${gpu}" \
-        -v "/data1:/data1" -v "/home/chenyuxi:/home/chenyuxi" \
+        -v "${GENO}:${GENO}" -v "${HOME}:${HOME}" \
         -w "$(pwd)" \
         "${PB_IMAGE}" pbrun "$@"
 }
@@ -147,7 +150,9 @@ PBRUN() {
 
 ## 输出：`run.params.json`
 
-LLM **必须**生成以下 JSON 文件并保存至 `{RUN_DIR}/run.params.json`：
+LLM **必须**生成以下 JSON 文件并保存至 `{RUN_DIR}/run.params.json`。
+**所有路径必须来自 `db_query.py` 的查询结果或用户输入**（`<GENO>` = 数据根，见环境变量
+`PIG_GENO_DIR`，缺省 `/data1/chenyx/Pig_geno`，切勿把某一台机器的路径写进生成物）：
 
 ```json
 {
@@ -156,16 +161,16 @@ LLM **必须**生成以下 JSON 文件并保存至 `{RUN_DIR}/run.params.json`�
   "samples": ["1", "2", "10"],
   "sample_names": ["et1", "et2", "et10"],
   "reference": {
-    "fasta": "/data1/chenyx/Pig_geno/reference/ref.fa",
-    "dict": "/data1/chenyx/Pig_geno/reference/ref.dict",
-    "fai": "/data1/chenyx/Pig_geno/reference/ref.fa.fai"
+    "fasta": "<GENO>/reference/ref.fa",
+    "dict": "<GENO>/reference/ref.dict",
+    "fai": "<GENO>/reference/ref.fa.fai"
   },
   "known_sites": {
-    "indels": "/data1/chenyx/Pig_geno/snp_indel/clean.indels.vcf.gz",
-    "snps": "/data1/chenyx/Pig_geno/snp_indel/clean.snp.vcf.gz"
+    "indels": "<GENO>/snp_indel/clean.indels.vcf.gz",
+    "snps": "<GENO>/snp_indel/clean.snp.vcf.gz"
   },
-  "output_dir_base": "/data1/chenyx/Pig_geno/temp",
-  "fastq_dir": "/data1/chenyx/Pig_geno/fastq",
+  "output_dir_base": "<GENO>/temp",
+  "fastq_dir": "<GENO>/fastq",
   "compute_backend": "parabricks",
   "server_detection": {
     "total_cores": 128,
@@ -192,13 +197,13 @@ LLM **必须**生成以下 JSON 文件并保存至 `{RUN_DIR}/run.params.json`�
   "parabricks": {
     "runtime": "docker",
     "image": "nvcr.io/nvidia/clara/clara-parabricks:4.3.2-1",
-    "mounts": ["/data1:/data1", "/home/chenyuxi:/home/chenyuxi"],
+    "mounts": ["<数据根>:<数据根>", "<示例:$HOME>:<示例:$HOME>"],
     "gpus_to_use": 8,
     "parallel_samples": 8,
     "per_gpu_cpus": 16,
     "smoke_test": "passed"
   },
-  "run_dir": "/data1/chenyx/Pig_geno/temp/runs/wgs_20260716_143000",
+  "run_dir": "<GENO>/temp/runs/wgs_20260716_143000",
   "resume": false,
   "threads": 40,
   "bwa_threads": 8,
@@ -217,12 +222,12 @@ LLM **必须**生成以下 JSON 文件并保存至 `{RUN_DIR}/run.params.json`�
 LLM **必须**以表格形式展示所有参数给用户审核：
 
 ```
-===== Server Status =====
-CPU: Intel(R) Xeon(R) Platinum 8358P @ 2.60GHz
-Sockets: 2 × 32 cores × 2 threads = 128 logical CPUs
-Memory: 503GB total, ~200GB available
-Load: 90.56
-GPU: 8 × RTX 4090 (24GB, CC 8.9) — parabricks ready: ✓ (NOT data-center GPU, smoke test passed)
+===== Server Status =====   （数值全部来自 S0 的 server_detection，不要照抄示例）
+CPU: {cpu_model}
+Sockets: {sockets} × {cores_per_socket} cores × {threads_per_core} threads = {total_cores} logical CPUs
+Memory: {total_mem_gb}GB total, ~{avail_mem_gb}GB available
+Load: {load_avg}
+GPU: {gpu_count} × {gpu_model} ({gpu_vram_gb}GB, CC {compute_cap}) — parabricks ready: {✓/✗} ({gpu_class})
 
 ===== Parameter Proposal =====
 Run ID: wgs_20260716_143000
@@ -230,16 +235,16 @@ Samples: 1 (et1), 2 (et2), 10 (et10)
 
 Parameter                         Value           Reasoning
 ─────────────────────────────────────────────────────────────────
-compute_backend                   parabricks      GPU 存在 + 冒烟通过 → GPU 加速
-parallelism.parallel_samples      3               (GATK 回退基准)
-parabricks.parallel_samples       8               GPU 卡数主导
-parabricks.gpus_to_use            8               每样本绑 1 卡（--gpus device=N）
-parabricks.per_gpu_cpus           16              每 GPU 配套 CPU 线程
+compute_backend                   {parabricks|gatk-cpu}   {GPU 存在 + 冒烟通过 → GPU 加速 / 否则 CPU}
+parallelism.parallel_samples      {N}             (GATK 回退基准)
+parabricks.parallel_samples       {N}             GPU 卡数主导
+parabricks.gpus_to_use            {N}             每样本绑 1 卡（--gpus device=N）
+parabricks.per_gpu_cpus           {N}             每 GPU 配套 CPU 线程
 parabricks.runtime                docker          NGC 容器
-parabricks.image                  nvcr.io/nvidia/clara/clara-parabricks:4.6.0-1
-bwa.threads                       8               ...
-samtools.sort.threads             4               ...
-java.xmx                          32g             ...
+parabricks.image                  {NGC 镜像 tag}
+bwa.threads                       {N}             ...
+samtools.sort.threads             {N}             ...
+java.xmx                          {Xmx}g          ...
 ...
 
 Please review. Do you approve? (y/N)

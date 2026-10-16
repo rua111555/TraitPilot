@@ -65,21 +65,30 @@ log_done()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [DONE]  $*"; }
 log_error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $*"; }
 ```
 
-### 工具全路径（⚠️ 必须使用 conda 绝对路径）
+### 工具路径（⚠️ 运行时探测，禁止写死本机 conda 绝对路径）
+
+阶段脚本经 `conda run -n Agent bash` 执行，工具已在 PATH 中；用 `command -v` 探测即可，
+**不要**写 `/home/<用户>/anaconda3/envs/Agent/bin/...`（换机器即失效）。若 `Agent` 环境不在
+PATH（直接跑脚本时），可 `source skills/_shared/env.sh` 后用 `sk_tool bwa` 解析。
 
 ```bash
-BWA="/home/chenyuxi/anaconda3/envs/Agent/bin/bwa"
-SAMTOOLS="/home/chenyuxi/anaconda3/envs/Agent/bin/samtools"
-NUMACTL="/home/chenyuxi/anaconda3/envs/Agent/bin/numactl"
+# 运行时探测（任一工具缺失即早失败，避免跑到一半才报错）
+resolve_tool() { command -v "$1" || { echo "✗ 找不到 $1 —— 请激活 conda 环境 Agent" >&2; exit 1; }; }
+BWA="$(resolve_tool bwa)"
+SAMTOOLS="$(resolve_tool samtools)"
+NUMACTL="$(command -v numactl || echo '')"     # 可选：缺省则不绑 NUMA
 ```
 
-### NUMA 亲和性配置
+### NUMA 亲和性配置（可选；核数从 `lscpu`/`numactl -H` 探测，勿写死）
 
 ```bash
-NUMA_NODE0_CPUS="0-31,64-95"
-NUMA_NODE1_CPUS="32-63,96-127"
+# 探测本机 NUMA 拓扑（S0 已采集）；无 numactl 或无多 NUMA 节点时 NUMACTL="" 即为直跑
+NUMA_NODE0_CPUS="${NUMA_NODE0_CPUS:-}"     # 从 run.params.json.server_detection.numa_node0_cpus 读取
+NUMA_NODE1_CPUS="${NUMA_NODE1_CPUS:-}"
 assign_numa_cmd() {
     local idx=$1
+    [ -z "${NUMACTL}" ] && { echo ""; return; }        # 无 numactl → 不绑
+    [ -z "${NUMA_NODE0_CPUS}" ] && { echo ""; return; } # 未探测到 NUMA → 不绑
     if (( idx % 2 == 0 )); then
         echo "${NUMACTL} --physcpubind=${NUMA_NODE0_CPUS}"
     else
@@ -231,8 +240,8 @@ LLM 在执行前后应更新数据库：
 
 1. ✅ **BWA 输出禁止管道** — SAM 写到文件，stderr 单独捕获
 2. ✅ **BWA 必须加 `-R` (Read Group)**
-3. ✅ 所有命令在 `conda run -nAgent` 环境下执行
-4. ✅ 工具使用 conda 绝对路径
+3. ✅ 所有命令在 `conda run -n Agent` 环境下执行
+4. ✅ 工具用 `command -v` 运行时探测（**禁止**写死本机 conda 绝对路径）
 5. ✅ `set -euo pipefail`
 6. ✅ SESSION-SAFE 保护（`.done` + `.pid` + nohup）
 7. ✅ 样本并行 + NUMA 绑定（多样本时）

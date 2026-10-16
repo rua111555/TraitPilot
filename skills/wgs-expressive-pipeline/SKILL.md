@@ -49,7 +49,7 @@ allowed-tools:
 1. 每阶段脚本必须生成 → 用户审批 → 才能执行（不可自动执行）
 2. 逐阶段串行，一次只跑一个阶段
 3. 每阶段参考对应子 skill 的 `SKILL.md` 获取详细规范、脚本模板、错误预防清单
-4. 脚本中所有工具使用 conda 环境绝对路径（GPU 路径额外含 `pbrun` 或其容器镜像）
+4. 脚本中所有工具用 `command -v` 运行时探测（`conda run -n Agent` 下工具已在 PATH；GPU 路径额外含 `pbrun` 或其容器镜像）
 5. 完成后自动推进到下一阶段
 6. **`compute_backend=parabricks` 时，阶段 1-4 使用对应子 skill 的「Parabricks 模式」模板；
    阶段 5 过滤恒用 GATK；任何阶段 Parabricks 失败 → 该阶段回退 GATK CPU 路径**
@@ -63,7 +63,7 @@ allowed-tools:
 | `--samples` | **必填**，逗号分隔样本编号 | — |
 | `--prefix` | VCF 输出前缀（不提供则 LLM 自动生成） | 自动 |
 | `--threads` | 线程数上限 | `40` |
-| `--db` | SQLite 数据库路径 | `/data1/chenyx/Pig_geno/pipeline.db` |
+| `--db` | SQLite 数据库路径 | `$PIPELINE_DB`，其次 `$PIG_GENO_DIR/pipeline.db` |
 | `--resume` | 断点续跑 | 关闭 |
 | `--backend` | 计算后端覆盖：`gatk-cpu` / `parabricks` | 自动（GPU+Parabricks 就绪则 parabricks） |
 
@@ -127,8 +127,9 @@ nohup conda run -n Agent bash "${SCRIPT_PATH}" &
 ### 4. 数据库机制
 
 ```bash
-conda run -n Agent python skills/wgs-expressive-pipeline/scripts/db_query.py --action query-all --samples N
+conda run -n Agent python "$(dirname "$0")/scripts/db_query.py" --action query-all --samples N
 ```
+（`--db` 缺省 `$PIPELINE_DB` / `$PIG_GENO_DIR/pipeline.db`；脚本路径按仓库内 `skills/wgs-expressive-pipeline/scripts/` 相对定位）
 - 启动阶段：INSERT `pipeline_runs` / `sample_steps` (status='running')
 - 完成后：UPDATE `sample_steps` / `pipeline_runs` (status='completed')
 
@@ -158,7 +159,7 @@ done
 ## 输出目录结构
 
 ```
-/data1/chenyx/Pig_geno/temp/runs/{run_id}/
+{output_dir_base}/temp/runs/{run_id}/        # output_dir_base 来自 run.params.json（缺省 $PIG_GENO_DIR/temp）
 ├── run.params.json     # 所有参数（server_detection + parallelism）
 ├── scripts/            # 各阶段生成的脚本
 │   ├── 01_bwa_sort.sh ...
@@ -177,7 +178,8 @@ done
 | 2 | BWA 必须加 `-R`（Read Group） | align-sort |
 | 3 | GATK 用 `--java-options`，不是 `-J` | 全部 |
 | 4 | 各 GATK 工具参数名可能不同，用 `--help` 确认 | 全部 |
-| 5 | 所有命令在 `conda run -nAgent` 下执行 | 全部 |
+| 5 | 所有命令在 `conda run -n Agent` 下执行 | 全部 |
+| 5.1 | **工具用 `command -v` 运行时探测**（禁止写死本机 conda 绝对路径） | 全部 |
 | 6 | **HaplotypeCaller HMM 线程必须严格遵循 `run.params.json` 的 `threads_per_sample`**，不可凭感觉设定（已在 haplotypecaller SKILL.md 中记录了具体规则） | haplotypecaller |
 | 7 | **FASTQ gzip 损坏导致 BWA 失败**（`invalid compressed data` / `the 2nd file has fewer sequences`）——启动前需批量 `gzip -t` 校验，R1/R2 配对必须一致 | align-sort |
 | 8 | **wait+unset 并发池缺陷导致样本被跳过**（Stage 1 首跑跳过 18/161）——控制并发池时勿用 `unset` 破坏数组索引，改用标记法或独立计数器 | align-sort |

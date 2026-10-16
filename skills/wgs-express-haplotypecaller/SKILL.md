@@ -35,10 +35,14 @@ allowed-tools:
 
 完整的 `.done` / `.pid` / 日志配置（同前）。
 
-### 工具全路径
+### 工具路径（运行时探测，勿写死本机路径）
+
+阶段脚本经 `conda run -n Agent bash` 执行，工具已在 PATH 中：
 
 ```bash
-GATK="/home/chenyuxi/anaconda3/envs/Agent/bin/gatk"
+resolve_tool() { command -v "$1" || { echo "✗ 找不到 $1 —— 请激活 conda 环境 Agent" >&2; exit 1; }; }
+GATK="$(resolve_tool gatk)"
+TABIX="$(resolve_tool tabix)"     # 供 GVCF 索引（子 shell 内可直接用 $TABIX）
 ```
 
 ### HaplotypeCaller 标准用法
@@ -104,7 +108,6 @@ for i in "${!samples[@]}"; do
           --native-pair-hmm-threads "${HMM_THREADS}"
         
         # 索引
-        TABIX="/home/chenyuxi/anaconda3/envs/Agent/bin/tabix"
         ${TABIX} -p vcf "${GVCF}"
     ) 2>&1 | stdbuf -oL tee -a "${LOG_FILE}" &
     pids+=($!)
