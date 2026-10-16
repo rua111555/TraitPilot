@@ -34,13 +34,14 @@ LDBlockShow / Haploview…）、表型提取的 ML 栈（跑在 conda base）以
 **完整环境清单、逐步部署指引与常见坑见 [`environment/README.md`](environment/README.md)。**
 
 ```bash
-bash environment/check_env.sh          # 环境自检（九块检查 + 安装提示）
+bash environment/install.sh --list     # 先看要装哪些虚拟环境 / 软件 / 版本
+bash environment/install.sh            # 一键安装（逐步确认；--yes 无人值守）
+bash environment/check_env.sh          # 装完自检（九块检查 + 安装提示）
 bash environment/check_env.sh --core   # 只查 Agent 本体，不碰生信管线
-bash environment/check_env.sh --quiet  # 只打印缺失项
 ```
 
 自检末尾汇总「核心缺失 / 可选缺失」，核心有缺即返回非零退出码。`environment/` 下另有
-`Agent.yml` / `r-gwas.yml`（两套 conda 环境的完整导出），可 `conda env create -f` 直接复刻。
+`Agent.yml` / `r-gwas.yml`（两套 conda 环境的完整导出，供复刻本机参考）。
 
 ## 常用命令
 

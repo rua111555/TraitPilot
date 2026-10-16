@@ -16,6 +16,16 @@ bash environment/check_env.sh --quiet  # 只打印缺失项
 
 它按九个块检查并给出安装提示；末尾汇总「核心缺失 / 可选缺失」，核心有缺则返回非零退出码。
 
+或者直接**一键安装**（本文提供的全部环境由脚本落实）：
+
+```bash
+bash environment/install.sh --list     # 先看要装什么、什么版本
+bash environment/install.sh            # 安装（逐步确认）
+bash environment/install.sh --yes      # 无人值守
+bash environment/install.sh --only agent   # 只装某一层 / --skip pheno 跳过某层
+bash environment/install.sh --cpu      # 无 GPU：torch 装 CPU 版
+```
+
 ---
 
 ## 0. 三分钟速览：这项目到底需要什么
@@ -253,9 +263,11 @@ bash environment/check_env.sh
 | 文件 | 说明 |
 |---|---|
 | `README.md` | 本文（部署总览） |
+| `install.sh` | **一键安装**：按本目录规格装齐所有虚拟环境 / 软件 / 版本（`--list` 看规格） |
 | `check_env.sh` | 环境自检脚本（九块检查 + 安装提示） |
 | `Agent.yml` | conda 环境 `Agent` 的完整导出（`conda env export -n Agent --no-builds`） |
 | `r-gwas.yml` | conda 环境 `r-gwas` 的完整导出 |
 
-> `*.yml` 是**本机实况导出**，含大量传递依赖；跨平台导入时若个别包不可解，
-> 按 §1.3 / §1.4 的表格手动建环境即可。
+> `*.yml` 是**本机实况导出**，含大量传递依赖且频道写死为清华镜像，**直接导入常解不开**
+> （实测 `Agent.yml` 会 `LibMambaUnsatisfiableError`）。因此 `install.sh` 用的是 §1.3/§1.4
+> 的**最小集公式**（实测可解），`*.yml` 仅作复刻本机的参考。
