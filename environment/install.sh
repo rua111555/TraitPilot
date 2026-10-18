@@ -84,19 +84,23 @@ HARNESS_PKGS=(
   "PyYAML>=6.0"        # 6.0.3
   "flask>=3.0"         # 3.1.3 仅 Web 前端
 )
+
+# 独立二进制的下载源（curl 取文件）。gemma/gcta64/LDBlockShow/PopLDdecay 为可执行二进制；
+# Haploview 是 Java jar，用 `java -jar Haploview.4.2.jar` 运行（见 gwas-ld-block 技能）。
 declare -A BIN_URL=(
   [gemma]="https://github.com/genetics-statistics/GEMMA/releases/download/v0.98.5/gemma-0.98.5-linux-static-AMD64.gz"
   [gcta64]="https://yanglab.westlake.edu.cn/software/gcta/bin/gcta-1.95.4-linux-x86_64.zip"
   [LDBlockShow]="https://github.com/BGI-shenzhen/LDBlockShow/archive/refs/tags/v1.41.tar.gz"
   [PopLDdecay]="https://github.com/BGI-shenzhen/PopLDdecay/archive/refs/tags/v3.42.tar.gz"
+  [Haploview.4.2.jar]="https://www.broadinstitute.org/ftp/pub/mpg/haploview/Haploview.jar"
 )
-BIN_DIR="${HOME}/.local/bin"          # 独立二进制落点（须在 PATH 中）
+BIN_DIR="${HOME}/.local/bin"          # 独立二进制落点（须在 PATH 中，装完由 do_verify 写入 shell rc）
 
 # 【③ 本地额外软件 —— 命令行工具】经 conda 装到 base（用户态）
 LOCAL_TOOLS=(
   "perl"               # ShowLDSVG.pl / Plot_OnePop.pl 运行
   "imagemagick"        # convert：SVG→PNG
-  "poppler"            # pdftotext：paper-search PDF 校验
+  "poppler"            # pdftotext：PDF 文本校验
   "ripgrep"            # rg：Grep 工具加速
   "bash>=4.3"          # wait -n 并发池（系统 bash 常 <4.3）
   "vcftools"           # VCF→PLINK（可选，plink 可替代）
@@ -170,7 +174,7 @@ print_spec() {
   echo
   c "36" "⑦ 数据（本脚本不装，需另行放置）"
   echo "   pipeline.db · 参考基因组 ref.fa/.fai/.dict · FASTQ · 表型图片 · best_model.pth(263MB)"
-  echo "   见 environment/README.md §1.6 与 ../MIGRATE.md"
+  echo "   见 environment/README.md §1.6"
 }
 
 if [ "$LIST_ONLY" = 1 ]; then print_spec; exit 0; fi
@@ -257,10 +261,17 @@ do_pheno() {
   fi
   local PPY="$CONDA/envs/$PHENO_ENV_NAME/bin/python"
   [ -x "$PPY" ] || { warn "Phenotype 环境无 python，跳过 pip 包"; return; }
-  [ "$DRY" = 1 ] && { echo "  [dry-run] pip install ${PHENO_PIP[*]}"; return; }
-  local idx=(--index-url "$PHENO_TORCH_INDEX")
-  [ "$CPU" = 1 ] && idx=(--index-url https://download.pytorch.org/whl/cpu)
-  "$PPY" -m pip install --quiet "${idx[@]}" "${PHENO_PIP[@]}" || die "ML 栈安装失败"
+  [ "$DRY" = 1 ] && { echo "  [dry-run] pip install torch(+pytorch 源) 与 ${PHENO_PIP[*]}"; return; }
+  # torch 走 pytorch 官方源（该源只托管 torch/numpy 等少数包）；
+  # 其余包必须走 PyPI——否则 transformers/pandas/scipy/... 在 pytorch 源里取不到。
+  local torch_idx="$PHENO_TORCH_INDEX"
+  [ "$CPU" = 1 ] && torch_idx="https://download.pytorch.org/whl/cpu"
+  "$PPY" -m pip install --quiet --index-url "$torch_idx" "torch==2.14.0" \
+    || die "torch 安装失败（源：$torch_idx）"
+  local rest=()
+  for p in "${PHENO_PIP[@]}"; do case "$p" in torch==*) ;; *) rest+=("$p");; esac; done
+  "$PPY" -m pip install --quiet --index-url https://pypi.org/simple "${rest[@]}" \
+    || die "ML 栈安装失败（PyPI 源）"
   for spec in "numpy" "pandas" "scipy" "cv2:opencv-python-headless" "torch" "transformers" \
               "huggingface_hub:huggingface-hub" "openpyxl" "xlrd"; do
     m="${spec%%:*}"; p="${spec##*:}"
@@ -313,10 +324,20 @@ do_bins() {
       && ok "PopLDdecay → $BIN_DIR" || warn "PopLDdecay 编译失败"
   else ok "PopLDdecay 已存在"; fi
 
-  case ":$PATH:" in
-    *":$BIN_DIR:"*) : ;;
-    *) warn "$BIN_DIR 不在 PATH：请在 ~/.bashrc 加 export PATH=\"$BIN_DIR:\$PATH\"" ;;
-  esac
+  # Haploview —— Java jar（非可执行二进制），`java -jar Haploview.4.2.jar` 运行
+  if [ ! -f "$BIN_DIR/Haploview.4.2.jar" ]; then
+    ( cd "$src" && curl -fL --proto '=https,ftp' -o Haploview.4.2.jar "${BIN_URL[Haploview.4.2.jar]}" \
+      && mv -f Haploview.4.2.jar "$BIN_DIR/Haploview.4.2.jar" ) \
+      && ok "Haploview.4.2.jar → $BIN_DIR/Haploview.4.2.jar（用 java -jar 运行）" \
+      || warn "Haploview.4.2.jar 下载失败（请自行下载后放入 $BIN_DIR）"
+  else ok "Haploview.4.2.jar 已存在"; fi
+
+  # 独立二进制必须能被 command -v 找到：把 BIN_DIR 落进 shell rc（并立即导出）
+  export PATH="$BIN_DIR:$PATH"
+  local rc line="export PATH=\"$BIN_DIR:\$PATH\""
+  for rc in "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"; do
+    if [ -e "$rc" ] && ! grep -qsF "$line" "$rc"; then echo "$line" >> "$rc"; ok "已写入 $rc：$line"; fi
+  done
   warn "gemma/gcta64/LDBlockShow 若报 GLIBCXX_3.4.29：说明系统 libstdc++ 过旧，需前插 conda lib（技能用 sk_ensure_ld_path 自动检测）"
 }
 
@@ -354,7 +375,6 @@ do_verify() {
   step "数据/环境位置（用环境变量覆盖，无需改代码）"
   echo "  技能里的工具已用 command -v 运行时探测；数据/环境位置用环境变量指定即可："
   echo "    export GENO_DIR=<数据根>  IMAGE_DIR=<图片根>  PIPELINE_DB=<pipeline.db>"
-  echo "    export PAPER_SEARCH_DIR=<paper_search 脚本目录>  AGENT_NEWS_DIR=<agent_news 脚本目录>"
 }
 
 # ────────────────────────────── 主流程 ─────────────────────────────────────

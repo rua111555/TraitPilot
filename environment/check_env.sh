@@ -28,16 +28,16 @@ OK=0
 GENO_DIR="${GENO_DIR:-$HOME/genomics_data}"
 IMAGE_DIR="${IMAGE_DIR:-$GENO_DIR/images}"
 DB_FILE="${PIPELINE_DB:-$GENO_DIR/pipeline.db}"
-EXT_SCRIPT_DIR="${PAPER_SEARCH_DIR:-$HOME/paper_search}"
 
 c_ok()   { OK=$((OK+1));        [ "$QUIET" = 1 ] || printf "  \033[32m✓\033[0m %s\n" "$1"; }
 c_bad()  { CORE_MISS=$((CORE_MISS+1)); printf "  \033[31m✗\033[0m %s\n" "$1"; }
 c_warn() { WARN_MISS=$((WARN_MISS+1)); [ "$QUIET" = 1 ] || printf "  \033[33m!\033[0m %s\n" "$1"; }
 hdr()    { [ "$QUIET" = 1 ] || printf "\n\033[1m%s\033[0m\n" "$1"; }
 
-# have <命令名> <展示名> <安装提示>
+# have <命令名> <展示名> <安装提示>  —— 先查 PATH，再查 ~/.local/bin（install.sh 的落点）
 have() {
   if command -v "$1" >/dev/null 2>&1; then c_ok "$2 → $(command -v "$1")"
+  elif [ -x "$HOME/.local/bin/$1" ]; then c_ok "$2 → $HOME/.local/bin/$1（不在 PATH，请加 ~/.local/bin 到 PATH）"
   else c_warn "$2 未找到  |  $3"; fi
 }
 # need <命令名> <展示名> <安装提示>   —— 缺了算核心失败
@@ -235,12 +235,11 @@ elif [ -f "$GENO_DIR/03_reference/ref.fa" ]; then
 else
   c_warn "缺参考基因组 ref.fa/.fai/.dict（WGS 形态必需）"
 fi
-have pdftotext "pdftotext（paper-search PDF 校验）" "poppler-utils"
-if [ -d "$EXT_SCRIPT_DIR" ]; then
-  c_ok "外部脚本目录 $EXT_SCRIPT_DIR"
-else
-  c_warn "agent-news / paper-search 的脚本不在本仓库；放到任意目录并设 PAPER_SEARCH_DIR / AGENT_NEWS_DIR（当前探 $EXT_SCRIPT_DIR）"
-fi
+have java "java（Haploview.4.2.jar 运行）" "openjdk"
+[ -f "$HOME/.local/bin/Haploview.4.2.jar" ] \
+  && c_ok "Haploview.4.2.jar（$HOME/.local/bin）" \
+  || c_warn "缺 $HOME/.local/bin/Haploview.4.2.jar（GWAS S5 单倍型 Block）| install.sh 会下载，或自行放入"
+have pdftotext "pdftotext（PDF 文本校验）" "poppler-utils"
 
 }   # end CORE_ONLY
 
@@ -251,7 +250,7 @@ if [ "$CORE_MISS" -gt 0 ]; then
   exit 1
 fi
 printf "\033[32m核心就绪。\033[0m下一步：\n"
-printf "  python3 run.py list        # 应列出 21 个技能\n"
+printf "  python3 run.py list        # 应列出 18 个技能\n"
 printf "  python3 run.py chat -p \"用 gwas-pipeline 说明标准流程，先别跑数据\"\n"
 [ "$STRICT" = 1 ] && [ "$WARN_MISS" -gt 0 ] && exit 1
 exit 0

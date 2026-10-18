@@ -4,8 +4,8 @@
   skills/<name>/SKILL.md
   frontmatter: name(必需) / description / allowed-tools / disable-model-invocation
 
-查找顺序：显式 skills_dir → ``<project>/skills`` → ``<project>/.claude/skills``（legacy 兼容）。
-另兼容用户级目录 ~/.claude/skills 下的裸 .md 文件（视为无 frontmatter 的普通指令）。
+来源只有两处：显式 skills_dir（--skills-dir）与 ``<project>/skills``。
+**不再回退 .claude/skills**（项目级或用户级）——只读本仓库自带的技能，避免混入外部技能。
 """
 from __future__ import annotations
 
@@ -89,22 +89,13 @@ class SkillRegistry:
 
     def _discover(self) -> None:
         paths = []
-        # 1) 显式指定的技能目录（最高优先）
+        # 1) 显式指定的技能目录（最高优先，--skills-dir）
         if self.skills_dir and self.skills_dir.is_dir():
             paths.append(self.skills_dir)
-        # 2) 项目自带：<project>/skills（自包含的默认来源）
+        # 2) 项目自带：<project>/skills（唯一的默认来源）
         proj_skills = self.project / "skills"
-        has_own = proj_skills.is_dir()
-        if has_own and proj_skills not in paths:
+        if proj_skills.is_dir() and proj_skills not in paths:
             paths.append(proj_skills)
-        # 3) legacy：<project>/.claude/skills（仅在无自带 skills/ 时回退，保持兼容）
-        legacy = self.project / ".claude" / "skills"
-        if not paths and legacy.is_dir():
-            paths.append(legacy)
-        # 4) 用户级：~/.claude/skills（仅在项目未自带 skills/ 时才扫描，避免运行时混入外部技能）
-        user_dir = Path.home() / ".claude" / "skills"
-        if not has_own and user_dir.is_dir():
-            paths.append(user_dir)
 
         for base in paths:
             for p in sorted(base.iterdir()):

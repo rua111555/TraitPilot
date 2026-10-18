@@ -5,12 +5,14 @@
 
 一个**完整、可用、自包含**的单 Agent 系统：技能放在本仓库的 [`skills/`](skills/)，
 API 凭证/配置从本目录的 `config.json` 读取——**不依赖 Claude Code**。
-自带 21 个技能（WGS / GWAS 两大管线 + 表型提取等）。
+自带 18 个技能（WGS / GWAS 两大管线 + 表型提取）。
 
 ## 快速开始
 
 ```bash
-cd <repo>
+# 0) 取代码（仓库根即项目根：含 skills/、run.py、environment/，不要再进子目录）
+git clone https://github.com/rua111555/WGS_Agent.git ~/WGS_Agent
+cd ~/WGS_Agent
 
 # 1) 配置凭证（一次性）：复制模板为 config.json 并填写
 cp config.json.example config.json
@@ -27,7 +29,7 @@ python3 -m skill_agent          # 或 python3 run.py / python3 run.py chat
 
 ## 部署到新机器
 
-`requirements.txt` 只有三个包，**只够 Agent 本体**（对话 / 读技能 / 执行 Bash）。自带 21 个技能
+`requirements.txt` 只有三个包，**只够 Agent 本体**（对话 / 读技能 / 执行 Bash）。自带 18 个技能
 背后还有三套 conda 环境（`Agent` / `r-gwas` / `Phenotype`）、不在 conda 的独立二进制（gemma / gcta64 /
 LDBlockShow / Haploview…）以及数据文件。
 
@@ -46,7 +48,7 @@ bash environment/check_env.sh --core   # 只查 Agent 本体，不碰生信管�
 ## 常用命令
 
 ```bash
-cd <repo>
+cd ~/WGS_Agent                         # 仓库根
 
 # 列出发现的 skills
 python3 run.py list
@@ -62,9 +64,9 @@ python3 run.py chat -p "列出 phenotype-extract 提供哪些表型" -m DSv4-fla
 ## Web 前端
 
 ```bash
-cd <repo>
+cd ~/WGS_Agent          # 仓库根（含 skills/）
 ./start_web.sh                    # 推荐：后台启动/状态检查（log=web.log；停止 ./start_web.sh stop）
-# 或前台式：python run_web.py     # 浏览器打开 http://127.0.0.1:8787
+# 或前台式：python3 run_web.py    # 浏览器打开 http://127.0.0.1:8787
 ```
 
 - **单文件前端**（无构建、无 node），REST + SSE 流式：聊天气泡、实时工具调用卡片
@@ -206,9 +208,9 @@ SKILL_AGENT_RETRIEVAL=1 python3 -m skill_agent chat          # 环境变量方�
 ```
 agent/                        # 本目录即仓库根，也是「项目根」（含 skills/）
 ├── run.py                  # CLI 入口（等效 python -m skill_agent）
-├── run_web.py              # Web 入口：python run_web.py → http://127.0.0.1:8787
+├── run_web.py              # Web 入口：python3 run_web.py → http://127.0.0.1:8787
 ├── config.json.example     # 配置模板（复制为 config.json 填 api_key）
-├── skills/                 # 自带技能库（21 个；模型权重 .pth 已 gitignore）
+├── skills/                 # 自带技能库（18 个；模型权重 .pth 已 gitignore）
 ├── requirements.txt        # requests + PyYAML + flask（**仅 Agent 本体**，本机已预装）
 ├── environment/            # 完整部署环境：README.md（清单/指引）+ check_env.sh（自检）+ Agent.yml/r-gwas.yml
 ├── skill_agent/
@@ -230,8 +232,8 @@ agent/                        # 本目录即仓库根，也是「项目根」（
 
 ### 技能机制
 
-- **发现**：扫描 `<项目>/skills/<name>/SKILL.md`（优先）；无 `skills/` 时回退 `<项目>/.claude/skills`
-  （legacy 兼容）或 `~/.claude/skills`。可用 `--skills-dir` 显式指定。
+- **发现**：扫描 `<项目>/skills/<name>/SKILL.md`（唯一来源；显式 `--skills-dir` 可覆盖）。
+  **不再回退 `.claude/skills`**——只读本仓库自带的技能，避免混入外部技能。
 - **注入**：system prompt 只放技能**清单**（name + 用途）；模型按需调用 `Skill(name)` 工具，
   工具结果即返回该 skill 的完整指令（含 usage-guide 与目录内文件清单），再据此执行——
   编排类（`wgs-expressive-pipeline` / `gwas-pipeline`）会继续指示调用子 skill。

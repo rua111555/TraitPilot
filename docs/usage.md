@@ -2,7 +2,7 @@
 
 > 本机自研、**自包含**的单 Agent harness：技能放在本仓库 [`skills/`](../skills/)，
 > 配置从本目录 `config.json` 读取——**不依赖 Claude Code**。
-> 自带 21 个技能（WGS / GWAS 两大管线 + 表型提取等）。入口在仓库根 `agent/`。
+> 自带 18 个技能（WGS / GWAS 两大管线 + 表型提取）。入口在仓库根 `agent/`。
 >
 > 本文覆盖：安装与凭证、三种入口、全部命令行参数、环境变量、REPL 命令、Web 前端、
 > 12 个可选 harness 能力、技能机制、端到端示例、故障排查。
@@ -33,14 +33,14 @@
 （与 WGS/GWAS 管线共用同一环境）；Python ≥3.10（本机 `Agent` 环境为 3.12.13）。
 
 ```bash
-cd <repo>
+cd ~/WGS_Agent          # 仓库根（含 skills/）
 conda run -n Agent python -c "import requests, yaml, flask; print('ok')"   # 确认依赖在位
 ```
 
 > 用哪套解释器都行（`Agent` 环境 / base / 系统 python3 均可），只要装了这三个包。本项目的
 > `start_web.sh` 会优先挑 `Agent` 环境的解释器。
 
-> ⚠️ 这三个包**只够 Agent 本体**（对话 / 读技能 / 执行 Bash）。自带 21 个技能背后还有三套 conda
+> ⚠️ 这三个包**只够 Agent 本体**（对话 / 读技能 / 执行 Bash）。自带 18 个技能背后还有三套 conda
 > 环境（`Agent` / `r-gwas` / `Phenotype`）、若干独立二进制与数据文件。
 > **一键安装**：`bash environment/install.sh`（`--list` 先看规格）；
 > **完整清单**见 [`environment/README.md`](../environment/README.md)；
@@ -57,7 +57,7 @@ Agent 从**本目录的 `config.json`** 与环境变量取配置，优先级：
 首次使用：复制模板并填写 `api_key`：
 
 ```bash
-cd <repo>
+cd ~/WGS_Agent          # 仓库根（含 skills/）
 cp config.json.example config.json
 # 编辑 config.json：填 api_key（及可选 base_url / model）
 python3 -m skill_agent
@@ -109,7 +109,7 @@ Agent 需要找到「含 `skills/` 的项目根」。默认从当前目录**向�
 可用 `--project <dir>` 显式指定，用 `--cwd <dir>` 指定工具执行目录（默认 = 项目根）。
 
 ```bash
-cd <repo> && python3 run.py list      # 自动探测到 <repo>
+cd ~/WGS_Agent && python3 run.py list    # 自动探测到仓库根
 ```
 
 ---
@@ -119,7 +119,7 @@ cd <repo> && python3 run.py list      # 自动探测到 <repo>
 ### 2.1 列技能
 
 ```bash
-cd <repo>
+cd ~/WGS_Agent          # 仓库根（含 skills/）
 python3 run.py list              # 表格：技能 / 自动可调 / 用途
 python3 run.py list --json       # JSON：description/path/model_invocable/allowed_tools
 ```
@@ -141,7 +141,7 @@ python3 run.py chat -p "列出 phenotype-extract 提供哪些表型" -m DSv4-fla
 
 `-p/--prompt` 跑完即退出，适合脚本/批处理。
 
-> **入口等价**：`python3 run.py <args>` 与 `cd agent && python3 -m skill_agent <args>` 完全等价。
+> **入口等价**：`python3 run.py <args>` 与 `cd ~/WGS_Agent && python3 -m skill_agent <args>` 完全等价。
 
 ---
 
@@ -247,7 +247,7 @@ python3 run.py chat -p "列出 phenotype-extract 提供哪些表型" -m DSv4-fla
 
 ### 4.1 技能数据路径（与物种/项目无关）
 
-技能与脚本用下面这组环境变量定位**数据与外部脚本**，均可用环境变量直接设置，或写进
+技能与脚本用下面这组环境变量定位**数据文件**，均可用环境变量直接设置，或写进
 `config.json` 的 `env` 块（启动时注入进程环境；**真实环境变量优先**，不覆盖）：
 
 | 变量 | 含义 | 缺省 |
@@ -257,8 +257,6 @@ python3 run.py chat -p "列出 phenotype-extract 提供哪些表型" -m DSv4-fla
 | `PIPELINE_DB` | SQLite 库路径 | `$GENO_DIR/pipeline.db` |
 | `FAM_PATH` | 表型输出排序基准 `.fam`（可选） | 空 → 按样本号排 |
 | `NIR_XLS` / `CORR_XLS` | 表型参照真值表 / 样本-个体关联表（可选） | 空 |
-| `PAPER_SEARCH_DIR` | `paper-search` 脚本所在目录 | `$HOME/paper_search` |
-| `AGENT_NEWS_DIR` | `agent-news` 脚本所在目录 | `$HOME/paper_search` |
 
 > 这些变量名与物种无关——项目本身通用，不含任何特定物种的硬编码；实际用到哪套数据由你
 > 通过上述变量（或 `config.json` 的 `env` 块）指定。技能里的**工具**路径则是运行时用
@@ -288,7 +286,7 @@ python3 run.py chat -p "列出 phenotype-extract 提供哪些表型" -m DSv4-fla
 ## 6. Web 前端
 
 ```bash
-cd <repo>
+cd ~/WGS_Agent          # 仓库根（含 skills/）
 ./start_web.sh                       # 后台启动；日志 web.log；探活 /api/config
 ./start_web.sh 9000                  # 指定端口（host 仍 127.0.0.1）
 ./start_web.sh 0.0.0.0:8787          # 局域网可访问（谨慎）
@@ -494,7 +492,7 @@ python3 -m skill_agent chat --trace
 
 （Agent 内建）
 
-- **发现**：扫描 `<项目>/skills/<name>/SKILL.md`（优先）；无 `skills/` 时回退 `<项目>/.claude/skills`（legacy 兼容）或 `~/.claude/skills`；可用 `--skills-dir` 显式指定。
+- **发现**：扫描 `<项目>/skills/<name>/SKILL.md`（唯一来源；显式 `--skills-dir` 可覆盖）。**不再回退 `.claude/skills`**。
 - **注入**：system prompt 只放技能**清单**（name + 用途）；模型按需调用 `Skill(name)` 工具，工具结果即返回该
   skill 的完整指令（含 usage-guide 与目录内文件清单），再据此执行——编排类（`wgs-expressive-pipeline` / `gwas-pipeline`）
   会继续指示调用子 skill。
@@ -508,11 +506,11 @@ python3 -m skill_agent chat --trace
 · `Read` · `Write` · `Edit` · `Glob` · `Grep`（优先 rg，本机无 rg 时纯 Python 回退）· `TaskOutput`。
 可选挂载：`TodoWrite`（`--todo`）、`Search`/`RepoMap`（`--retrieval`）、插件工具（`--plugin-dir`）。
 
-### 自带技能（21 个）
+### 自带技能（18 个）
 
 - **WGS**：`wgs-expressive-pipeline`（编排） + `wgs-express-server-detect` / `-params-propose` / `-fastp-qc` / `-align-sort` / `-markdup-bqsr` / `-haplotypecaller` / `-joint-genotyping` / `-filtering`
 - **GWAS**：`gwas-pipeline`（编排） + `gwas-format-convert` / `-qc-filter` / `-kinship-pca` / `-gemma` / `-mvp` / `-visualization` / `-ld-block`
-- **表型/其他**：`phenotype-extract`、`fan-files`、`paper-search`、`agent-news`
+- **表型**：`phenotype-extract`
 
 ---
 
@@ -521,7 +519,7 @@ python3 -m skill_agent chat --trace
 ### 9.1 跑 WGS 全流程（长任务可靠性组合）
 
 ```bash
-cd <repo>
+cd ~/WGS_Agent          # 仓库根（含 skills/）
 python3 run.py chat --persist --max-turns 200 --loop-guard \
   -p "用 wgs-expressive-pipeline 跑这批样本"
 ```
@@ -572,7 +570,7 @@ python3 run.py chat --resume 20261014T101530-a1b2
 |---|---|
 | `缺少 API 凭证` | `config.json` 无 `api_key` 且环境变量 `ANTHROPIC_AUTH_TOKEN` 未设（复制 `config.json.example` 填写） |
 | 模型 503 / 无响应 | 代理侧 `claude-*` 常不可用；用 `-m DSv4-flash`，或用 `--fallback-models` 兜底 |
-| `python3 -m skill_agent` 报 `No module named` | 需在 `agent/` 目录下运行，用 `run.py` 或 `cd agent` |
+| `python3 -m skill_agent` 报 `No module named` | 需在仓库根（含 `skills/`）目录下运行，用 `run.py` 或 `cd` 到仓库根 |
 | 找不到技能 | `--project <含 skills/ 的根>`，或确认从项目内运行；`--skills-dir` 可显式指定 |
 | `Search`/`RepoMap` 报「索引不可用」 | 目录不可写或本机缺 FTS5；`--index-dir` 换目录，或确认 `import sqlite3` FTS5 可用 |
 | 检索结果陈旧 | 索引按 `(mtime,size)` 增量；`--index-rebuild` 强制重建 |

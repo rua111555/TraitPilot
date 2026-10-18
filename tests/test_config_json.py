@@ -206,15 +206,16 @@ def test_discovers_project_skills_dir():
         assert "alpha" in reg.names()
 
 
-def test_falls_back_to_legacy_claude_skills():
+def test_does_not_read_legacy_claude_skills():
+    """已彻底移除 .claude 回退：项目级 .claude/skills 不再被发现。"""
     with tempfile.TemporaryDirectory() as d:
         proj = Path(d)
         _skill(proj / ".claude" / "skills", "legacy-one")
         reg = SkillRegistry(proj)
-        assert "legacy-one" in reg.names()
+        assert "legacy-one" not in reg.names()
 
 
-def test_skills_dir_overrides_and_prefers_own_over_legacy():
+def test_skills_dir_overrides_and_ignores_legacy():
     with tempfile.TemporaryDirectory() as d:
         proj = Path(d)
         _skill(proj / "skills", "own")
@@ -231,7 +232,7 @@ def test_skills_dir_overrides_and_prefers_own_over_legacy():
         assert "custom-skill" in reg.names()
 
 
-def test_default_skills_dir_prefers_own():
+def test_default_skills_dir_is_always_project_skills():
     with tempfile.TemporaryDirectory() as d:
         proj = Path(d)
         _skill(proj / "skills", "x")
@@ -239,7 +240,7 @@ def test_default_skills_dir_prefers_own():
     with tempfile.TemporaryDirectory() as d:
         proj = Path(d)
         _skill(proj / ".claude" / "skills", "x")
-        assert default_skills_dir(proj) == proj / ".claude" / "skills"
+        assert default_skills_dir(proj) == proj / "skills"
 
 
 def test_config_env_block_injects_os_environ():

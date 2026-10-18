@@ -50,7 +50,8 @@
     "GENO_DIR": "",
     "IMAGE_DIR": "",
     "PIPELINE_DB": "",
-    "PAPER_SEARCH_DIR": "",
-    "AGENT_NEWS_DIR": ""
+    "FAM_PATH": "",
+    "NIR_XLS": "",
+    "CORR_XLS": ""
   }
 }

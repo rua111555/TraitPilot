@@ -401,13 +401,10 @@ class CodeIndex:
         if (proj / "skill_agent").is_dir() or (proj / "webapp").is_dir():
             roots.append((proj, None))
             return roots
-        # 否则：技能语料（优先自带 skills/，其次 legacy .claude/skills）+ 源码 <project>/agent
+        # 否则：技能语料（仅自带 skills/）+ 源码 <project>/agent
         skills = proj / "skills"
-        legacy_skills = proj / ".claude" / "skills"
         if skills.is_dir():
             roots.append((skills, None))
-        elif legacy_skills.is_dir():
-            roots.append((legacy_skills, None))
         agent_src = proj / "agent"
         if agent_src.is_dir():
             roots.append((agent_src, None))

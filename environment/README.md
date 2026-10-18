@@ -2,7 +2,7 @@
 
 > **这份文档面向「把 SkillAgent 装到一台新机器上的人」，不是本机备忘。**
 > 它列的是**跑通整个项目**所需的环境；`requirements.txt` 只是其中最小的一块（Agent 本体的三个
-> pip 包），**远不能代表全貌** —— 21 个技能背后还有两套 conda 环境、若干独立二进制、
+> pip 包），**远不能代表全貌** —— 18 个技能背后还有两套 conda 环境、若干独立二进制、
 > R 包、docker/GPU 栈、参考基因组与数据库。
 
 先跑自检，缺什么一目了然：
@@ -39,7 +39,6 @@ bash environment/install.sh --cpu      # 无 GPU：torch 装 CPU 版
 | **E. 表型提取** | conda 环境 **`Phenotype`**：torch/transformers/numpy/pandas/opencv/scipy/pillow… + HF 缓存 + 模型权重 | 跑 phenotype-extract 时必需 |
 | **F. 数据** | `pipeline.db`、参考基因组 `ref.fa/.fai/.dict`、FASTQ、表型图片、known-sites VCF | 跑真实数据时必需 |
 | **G. GPU 加速（可选）** | NVIDIA 驱动 ≥545 + docker + nvidia-container-toolkit + `clara-parabricks` NGC 镜像 | **可选**，缺了自动回退 CPU |
-| **H. 三个信息类技能** | `agent-news` / `paper-search` / `fan-files`：脚本**不在本仓库**，需另外放置 | 用它们时必需 |
 
 > 只想要「能对话、能读技能、能跑 shell」→ 只需要 A + B。其余按你要跑哪条管线补。
 
@@ -133,7 +132,7 @@ conda env create -f environment/r-gwas.yml      # R 4.3.3 + rMVP/CMplot/pheatmap
 | `gcta64` | S1 GRM/PCA | 可选（可用 GEMMA `-gk 2` + plink `--pca` 替代） |
 | `vcftools` | VCF→PLINK | 可选（用 plink 替代） |
 | `LDBlockShow` / `ShowLDSVG` | S5 区域 LD block | 必需（源码编译安装到 `~/.local/bin`，`command -v` 探测） |
-| `Haploview.4.2.jar`（需 Java） | S5 单倍型 Block | 必需 |
+| `Haploview.4.2.jar`（需 Java） | S5 单倍型 Block | 必需（`install.sh` 下载到 `~/.local/bin/Haploview.4.2.jar`，`java -jar` 运行） |
 | `PopLDdecay`、`Plot_OnePop.pl`（perl） | S0.5 LD 衰减 | 可选 |
 | ImageMagick `convert` / `librsvg` | SVG→PNG | 可选（有 SVG 兜底） |
 | **新版 `libstdc++`（GLIBCXX ≥3.4.29）** | LDBlockShow 等新编译二进制的运行期库 | 视系统而定。技能用 `sk_ensure_ld_path`（`skills/_shared/env.sh`）**检测后再决定**是否前插 conda `lib`——系统库够新的机器不会被遮蔽 |
@@ -197,27 +196,13 @@ conda run -n Phenotype python phenotype_extract.py --pheno IMF # 提取
 | `.fam` 排序基准 | 由 `--fam` / `$FAM_PATH` 指定（与基因型文件对齐） | 表型输出排序（缺则按样本号排） |
 | **LLM API 出口** | `config.json` 的 `base_url`（默认 `https://api.anthropic.com`）或自建代理 | **必需** |
 
-### 1.7 外部网络出口（按技能）
+### 1.8 外部网络出口（按技能）
 
 | 技能 | 需要的出口 |
 |---|---|
 | Agent 本体 | `api.anthropic.com`（或你的代理端点） |
-| `agent-news` | `api.github.com`（Releases REST）、OpenAI RSS、Anthropic /news、`export.arxiv.org`、HF Blog（`hf-mirror.com` 兜底） |
-| `paper-search` | OpenAlex（主）、Crossref（降级）、PMC/OA PDF 站点 |
 | `phenotype-extract` | 冷启动需 `huggingface.co` 或镜像 `HF_ENDPOINT=https://hf-mirror.com` |
-| `fan-files` | `raw.githubusercontent.com` / GitHub Releases（装它的二进制） |
 | Parabricks | `nvcr.io`（NGC 镜像，需 `docker login`） |
-
-### 1.8 三个「脚本不在本仓库」的技能
-
-`skills/agent-news/`、`skills/paper-search/`、`skills/fan-files/` 的 SKILL.md 只描述流程，
-**真正的脚本/配置在别处**，部署时需一并带过去，否则技能不可运行：
-
-| 技能 | 需要的东西 | 放置方式 |
-|---|---|---|
-| `agent-news` | `agent_news.py` + `sources.json` + 产物目录 `agent_news/` +（可选）5 天一次 cron | 放到任意目录，设 `AGENT_NEWS_DIR=<该目录>` |
-| `paper-search` | `paper_search.py` + `curate_run.py` + `venues.json`（**缺它脚本直接 FileNotFoundError**）+ `pdftotext` | 放到任意目录，设 `PAPER_SEARCH_DIR=<该目录>` |
-| `fan-files` | `fan-files` 二进制（`curl … install.sh` 装）+ 一次 LLM provider 配置 | `~/.local/bin/fan-files` |
 
 ---
 
@@ -225,7 +210,8 @@ conda run -n Phenotype python phenotype_extract.py --pheno IMF # 提取
 
 ```bash
 # ── 0) 取代码 ─────────────────────────────────────────────
-git clone <repo> ~/skill/agent && cd ~/skill/agent/agent
+git clone https://github.com/rua111555/WGS_Agent.git ~/WGS_Agent
+cd ~/WGS_Agent        # 仓库根即项目根（含 skills/、run.py、environment/），不要再进子目录
 
 # ── 1) conda（没有就先装 Miniconda，用户态）───────────────
 wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
@@ -246,12 +232,18 @@ bash environment/check_env.sh
 #   数据不在默认位置时，用环境变量覆盖即可（完全不用改代码）：
 export GENO_DIR=/your/data/geno  IMAGE_DIR=/your/data/images
 export PIPELINE_DB=/your/data/geno/pipeline.db
-#   三个「脚本不在本仓库」的技能也用环境变量指向脚本目录：
-export PAPER_SEARCH_DIR=/path/to/paper_search  AGENT_NEWS_DIR=/path/to/agent_news
 
 # ── 6) 数据就位：pipeline.db / ref.fa / FASTQ / 表型图片 / 模型权重(+注册)
 #      并把 DB 的 models.model_path 指向本机 best_model.pth（见 §3）
 ```
+
+> **克隆后仍缺、需自备的文件**（`.gitignore` 排除或本就不随仓库分发）：
+>
+> | 缺的东西 | 怎么补 |
+> |---|---|
+> | `config.json`（含凭证） | `cp config.json.example config.json` 后填 `api_key`（也可用 `ANTHROPIC_AUTH_TOKEN`） |
+> | `skills/phenotype-extract/model/best_model.pth`（~263MB） | 自行提供；`mkdir -p skills/phenotype-extract/model` 后放入，并在 `pipeline.db` 的 `models` 表注册（`model_path` 指向本机实际路径） |
+> | `pipeline.db` 与数据 | 参考基因组 `ref.fa`(+`bwa index`/`faidx`/`.dict`)、FASTQ、表型图片——按 `$GENO_DIR` 布局放置 |
 
 > **无需任何路径改写工具。** 技能里的工具路径是**运行时**用 `command -v` 从你当前的 conda
 > 环境探测的，数据/环境位置由上面这批环境变量决定——「读用户自己的环境、自己适配」，因此
@@ -275,7 +267,8 @@ export PAPER_SEARCH_DIR=/path/to/paper_search  AGENT_NEWS_DIR=/path/to/agent_new
 | `FTS5` 不可用 | sqlite 编译未开 FTS5 或版本 <3.34 | 换 conda 的 python；或不用 `--retrieval`/`--memory` |
 | Parabricks 容器起不来（`cuda>=12.8`） | 驱动太旧配不上镜像 tag | 见 `skills/wgs-expressive-pipeline/references/parabricks-setup.md` §0.1 兼容表；本机 550.67 只能用 `4.3.2-1` |
 | docker 权限不足 | 不在 docker 组 | `sudo usermod -aG docker $USER` 后**重新登录** |
-| `paper_search.py` 启动即崩 | 缺 `venues.json` | 把它放到脚本同级目录 |
+| `gemma`/`gcta64`/`LDBlockShow` `command -v` 找不到 | `~/.local/bin` 不在 PATH | `install.sh` 已写入 shell rc；当前会话 `export PATH="$HOME/.local/bin:$PATH"` 后重登 |
+| `Haploview` 报找不到 jar | 未下载 / 不在预期路径 | `java -jar ~/.local/bin/Haploview.4.2.jar`（`install.sh` 会下载） |
 
 ---
 

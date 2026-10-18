@@ -148,8 +148,8 @@ def _apply_file_overrides(cfg: "Config", data: dict) -> None:
     _str("index_dir")
 
     # —— 技能数据路径（config.json 的 `env` 块 → 注入进程环境）——
-    # 技能/脚本用 os.environ 读取 GENO_DIR / IMAGE_DIR / PIPELINE_DB / PAPER_SEARCH_DIR /
-    # AGENT_NEWS_DIR 等；这里让 config.json 也能作为它们的单一配置面板。
+    # 技能/脚本用 os.environ 读取 GENO_DIR / IMAGE_DIR / PIPELINE_DB / FAM_PATH / NIR_XLS /
+    # CORR_XLS 等；这里让 config.json 也能作为它们的单一配置面板。
     # 已存在的真实环境变量优先（不覆盖），保持「CLI/环境变量 > config.json」的口径。
     env_block = data.get("env")
     if isinstance(env_block, dict):
@@ -165,7 +165,7 @@ class Config:
     model: str
     max_tokens: int = DEFAULT_MAX_TOKENS
     cwd: Path = Path(".")          # 工具执行的 cwd（默认=项目根）
-    project: Path = Path(".")      # 项目根（含 skills/ 或 legacy .claude/skills）
+    project: Path = Path(".")      # 项目根（含 skills/）
     skills_dir: Path | None = None  # 显式技能目录（默认 <project>/skills）
     permission: str = "auto"       # auto | ask（ask=每个 Bash 都询问）
     stream: bool = True
@@ -227,7 +227,7 @@ class Config:
              verbose: bool = False, max_turns: int | None = None,
              skills_dir: Path | None = None,
              config_file: str | Path | None = None) -> "Config":
-        # 项目根：显式指定 > 从 cwd 向上找含 skills/ 或 .claude/skills 的目录 > 直接取 cwd
+        # 项目根：显式指定 > 从 cwd 向上找含 skills/ 的目录 > 直接取 cwd
         if project is None:
             project = _auto_project(cwd or Path.cwd())
         if cwd is None:
@@ -355,20 +355,14 @@ def _auto_project(start: Path) -> Path:
     if p.is_file():
         p = p.parent
     for d in [p, *p.parents]:
-        if (d / "skills").is_dir() or (d / ".claude" / "skills").is_dir():
+        if (d / "skills").is_dir():
             return d
     return p
 
 
 def default_skills_dir(project: Path) -> Path:
-    """技能目录：优先项目自带 skills/，其次 legacy .claude/skills。"""
-    own = Path(project) / "skills"
-    if own.is_dir():
-        return own
-    legacy = Path(project) / ".claude" / "skills"
-    if legacy.is_dir():
-        return legacy
-    return own
+    """技能目录：项目自带的 skills/（唯一来源，不回退 .claude/skills）。"""
+    return Path(project) / "skills"
 
 
 def default_session_dir() -> Path:
