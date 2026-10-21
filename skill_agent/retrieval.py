@@ -385,10 +385,15 @@ class CodeIndex:
     # ---------------- 语料遍历（安全核心） ----------------
 
     def _corpus_roots(self) -> list[tuple[Path, str | None]]:
-        """返回 (目录, 仅这些扩展) 列表；include_dirs 覆盖时只取它们。"""
+        """返回 (目录, 仅这些扩展) 列表；include_dirs 覆盖时只取它们。
+
+        默认从 index root 上溯推断 project：``<project>/.skill-agent/index`` → ``<project>``。
+        找不到语义 project 时**回退到索引目录的父目录**，而不是静默返回空 ——
+        旧行为下 ``--index-dir /tmp/idx_probe`` 会一路建成空库、只打印「0 文件 / 0 建立」，
+        用户完全看不出索引是空的（D10）。
+        """
         if self.include_dirs:
             return [(d, None) for d in self.include_dirs]
-        # 默认从 index root 上溯推断 project：<project>/.skill-agent/index → <project>
         proj = self.root
         for _ in range(3):
             if proj.name == ".skill-agent":
@@ -408,9 +413,14 @@ class CodeIndex:
         agent_src = proj / "agent"
         if agent_src.is_dir():
             roots.append((agent_src, None))
-        if not roots:                    # 兜底：语义上的 project 不存在则空
-            return []
-        return roots
+        if roots:
+            return roots
+        # 兜底：索引目录就建在某个真实目录里 → 拿它当语料根（至少索引点东西出来），
+        # 让「--index-dir 指向项目外」不再产出静默空库。
+        for cand in (self.root.parent, self.root):
+            if cand and cand.is_dir():
+                return [(cand, None)]
+        return []
 
     def _should_index(self, p: Path, ext: str) -> bool:
         if ext not in _INDEX_EXTS:

@@ -477,18 +477,24 @@ class Agent:
             pass
 
     def _remember_phase_facts(self, summary: str) -> None:
-        """把摘要中携带的关键事实（路径/pid/.done 等）抽进 archival 记忆。"""
+        """把摘要中携带的关键事实（路径/pid/.done 等）抽进 archival 记忆。
+
+        注意：``task_id``/``pid`` 这类必须捕获**整段 ``key=value``**，不能只捕获键名
+        （``re.findall`` 带组时只返回组内容，会丢掉 ``12345``/``T7`` 这些值）。
+        值用 ``[^\\s，。；、）】」,;]+`` 而非 ``\\S+``：中文句读不是空白字符，``\\S+`` 会把
+        ``pid=12345。标记文件`` 整串吞进来，落库成畸形事实。
+        """
         if not self.memory:
             return
         import re as _re
         for pat, kind in (
-            (r"(/[\w./\-]+\.(?:done|pid))", "marker"),
-            (r"\b(task_id|pid)\s*[=:]\s*\S+", "task"),
-            (r"(/[\w./\-]+(?:\.vcf\.gz|\.bed|\.bim|\.fam|\.grm|\.log|\.csv))", "path"),
+            (r"/[\w./\-]+\.(?:done|pid)", "marker"),
+            (r"\b(?:task_id|pid)\s*[=:]\s*[^\s，。；、）】」,;]+", "task"),
+            (r"/[\w./\-]+(?:\.vcf\.gz|\.bed|\.bim|\.fam|\.grm|\.log|\.csv)", "path"),
         ):
             for m in _re.findall(pat, summary)[:20]:
-                self.memory.remember(m if isinstance(m, str) else str(m),
-                                     kind=kind, source="summary")
+                if isinstance(m, str) and m.strip():
+                    self.memory.remember(m.strip(), kind=kind, source="summary")
 
     def _safe_cut(self, start: int) -> int:
         """start 起向后找到第一个「合法消息边界」：role=user，且前一条 assistant 无 tool_use。"""

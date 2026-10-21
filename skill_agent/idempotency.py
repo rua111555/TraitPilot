@@ -7,7 +7,8 @@
 
 - **只对有副作用工具生效**（``Bash`` / ``Write`` / ``Edit``）；只读工具（``Read``/``Grep``/``Glob``/
   ``TaskOutput``）不参与去重——它们天然可重复且常需取最新状态。
-- **键 = 工具名 + 规范化 JSON 参数**（键排序，保证稳定）。
+- **键 = 工具名 + 规范化 JSON 参数**（键排序，保证稳定）；**``description`` 等纯说明字段不参与
+  键计算**——否则模型改写一句描述即可绕过去重。
 - **默认关**（opt-in）：未显式开启时 ``ToolSet`` 行为与改造前完全一致。
 - 命中策略二选一：
   - ``reuse``（默认）：复用上次结果，并附一行「幂等：相同调用，已复用结果」说明；
@@ -24,6 +25,10 @@ from dataclasses import dataclass
 
 # 参与去重的有副作用工具（只读工具显式排除）
 SIDE_EFFECT_TOOLS = frozenset({"Bash", "Write", "Edit"})
+
+# 不参与键计算的参数：这些是**给模型自己看的说明**，不影响实际副作用。
+# 若把它们算进键，模型只要改写一句描述就能绕过整个去重（D2）。
+_KEY_IGNORED_ARGS = frozenset({"description"})
 
 _MODES = ("reuse", "deny")
 
@@ -50,10 +55,16 @@ class IdempotencyGuard:
     # ---------------- 键 ----------------
     @staticmethod
     def key(name: str, args: dict) -> str:
+        """键 = 工具名 + 规范化后的**有效**参数（剔除 description 等纯说明字段）。"""
         try:
-            canon = json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
+            effective = {k: v for k, v in (args or {}).items()
+                         if k not in _KEY_IGNORED_ARGS}
+        except AttributeError:
+            effective = args
+        try:
+            canon = json.dumps(effective, sort_keys=True, ensure_ascii=False, default=str)
         except (TypeError, ValueError):
-            canon = repr(args)
+            canon = repr(effective)
         return name + "\x00" + hashlib.sha256(canon.encode("utf-8")).hexdigest()[:32]
 
     @staticmethod

@@ -20,6 +20,44 @@ from pathlib import Path
 
 MAX_CORE_CHARS = 4000
 
+# 拉丁词元 / 中文串（中文没有空格，FTS5 trigram 也需要 ≥3 字的连续片段）
+_WORD = re.compile(r"[A-Za-z0-9_.\-/]+")
+_CJK = re.compile(r"[一-鿿]+")
+# 自然语言里的高频虚词，切 n-gram 时会把它们拼进去产生噪声（如「那个任」）
+_STOP = frozenset("的了是在有个那这我你他和与及或就都也还很把被给对从到把")
+
+
+def _tokens(query: str) -> list[str]:
+    """把 query 切成可检索的词元：拉丁词原样 + 中文 3-gram/2-gram 片段。
+
+    「继续执行阶段 S3 那个任务」→ ['继续执行阶段','继续执','续执行','执行阶','行阶段',
+    'S3','那个任务','那个任','个任务', …]，这样即使目标文本里没有整段长串，
+    也能靠 2–3 字片段命中（D9）。
+    """
+    q = query or ""
+    out: list[str] = []
+    for m in _WORD.finditer(q):
+        out.append(m.group(0))
+    for m in _CJK.finditer(q):
+        s = m.group(0)
+        if len(s) <= 3:
+            out.append(s)
+            continue
+        out.append(s)                      # 整段先试（最精确）
+        for n in (3, 2):                   # 再补 n-gram 片段
+            for i in range(len(s) - n + 1):
+                g = s[i:i + n]
+                if n == 2 and (g[0] in _STOP or g[1] in _STOP):
+                    continue               # 双字虚词噪声太大，跳过
+                out.append(g)
+    seen, uniq = set(), []
+    for t in out:
+        t = t.strip()
+        if t and t not in seen:
+            seen.add(t)
+            uniq.append(t)
+    return uniq
+
 
 @dataclass
 class MemoryItem:
@@ -79,13 +117,19 @@ class MemoryStore:
             pass
 
     def search(self, query: str, limit: int = 5) -> list[MemoryItem]:
-        """检索：优先 FTS5(trigram) 关键词；短查询回退 LIKE；出错一律返回空。"""
+        """检索：优先 FTS5(trigram) 关键词；不足则 LIKE 兜底（OR 语义 + 命中数排序）。
+
+        D9 修正：自然语言 query（「继续执行阶段 S3 那个任务」）里没有任何一段 3 字连续
+        子串能在目标文本中原样出现，旧的「全部词元 AND」LIKE 兜底必然召回为空。
+        现在把中文长串拆成 2 字/3 字片段、LIKE 用 OR，并按命中片段数排序。
+        """
         if not self.enabled or not (query or "").strip():
             return []
-        terms = [t for t in re.findall(r"[\w一-龥]+", query) if len(t) >= 3]
+        text_tokens = _tokens(query)
+        fts_terms = [t for t in text_tokens if len(t) >= 3]
         rows = []
-        if terms:
-            match = " OR ".join(dict.fromkeys(terms[:8]))
+        if fts_terms:
+            match = " OR ".join(dict.fromkeys(fts_terms[:8]))
             try:
                 con = self._connect()
                 rows = con.execute(
@@ -95,23 +139,31 @@ class MemoryStore:
                 con.close()
             except sqlite3.Error:
                 rows = []
-        if not rows:                       # 短查询/无命中 → LIKE 兜底（2 字中文等）
-            rows = self._like_search(query.strip(), limit)
+        if len(rows) < limit:              # 不足 → LIKE(OR) 兜底并补足
+            seen = {r[0] for r in rows}
+            for r in self._like_search(query.strip(), limit, skip=seen):
+                if len(rows) >= limit:
+                    break
+                rows.append(r)
         return [MemoryItem(*r) for r in rows]
 
-    def _like_search(self, query: str, limit: int) -> list:
-        needles = [t for t in re.findall(r"[\w一-龥]+", query) if len(t) >= 2][:4] or [query]
+    def _like_search(self, query: str, limit: int, skip: set | None = None) -> list:
+        """按「命中词元数」排序的 LIKE 兜底（OR 语义，任一命中即可）。"""
+        needles = _tokens(query)[:8] or [query]
         try:
             con = self._connect()
-            where = " AND ".join(["text LIKE ?"] * len(needles))
+            where = " OR ".join(["text LIKE ?"] * len(needles))
             rows = con.execute(
                 f"SELECT id, text, kind, source, ts FROM mem WHERE {where} "
                 f"ORDER BY id DESC LIMIT ?",
-                tuple(f"%{n}%" for n in needles) + (int(limit),)).fetchall()
+                tuple(f"%{n}%" for n in needles) + (max(int(limit) * 4, 20),)).fetchall()
             con.close()
-            return rows
         except sqlite3.Error:
             return []
+        skip = skip or set()
+        scored = [(sum(1 for n in needles if n in r[1]), r) for r in rows if r[0] not in skip]
+        scored.sort(key=lambda x: (-x[0], -x[1][0]))
+        return [r for _s, r in scored[:limit]]
 
     def all_items(self, limit: int = 100) -> list[MemoryItem]:
         if not self.enabled:

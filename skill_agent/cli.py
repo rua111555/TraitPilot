@@ -189,8 +189,22 @@ def main(argv=None) -> int:
             print(f"[检索] 索引重建完成：{st['files']} 文件 / "
                   f"{st['indexed']} 建立 / {st['removed']} 移除 → {retrieval.db_path}",
                   file=sys.stderr)
+            if st["files"] == 0:
+                print("[检索] ⚠️ 语料为空：该索引目录下没有可索引的文件，"
+                      "Search/RepoMap 将检索不到任何内容。请把 --index-dir 指到项目内，"
+                      "或用 config.json 的 retrieval_roots / 环境变量 "
+                      "SKILL_AGENT_INDEX_ROOTS 指定语料根。",
+                      file=sys.stderr)
         else:
-            print(f"[检索] 已启用（Search/RepoMap，索引 {retrieval.db_path}）", file=sys.stderr)
+            st = retrieval.refresh()
+            print(f"[检索] 已启用（Search/RepoMap，索引 {retrieval.db_path}；"
+                  f"语料 {st['files']} 文件）", file=sys.stderr)
+            if st["files"] == 0:
+                print("[检索] ⚠️ 语料为空：该索引目录下没有可索引的文件，"
+                      "Search/RepoMap 将检索不到任何内容。请把 --index-dir 指到项目内，"
+                      "或用 config.json 的 retrieval_roots / 环境变量 "
+                      "SKILL_AGENT_INDEX_ROOTS 指定语料根。",
+                      file=sys.stderr)
 
     tools = ToolSet(registry, cfg.cwd, cfg.permission, verbose=cfg.verbose,
                     permission_model=pmodel, hooks=hooks,
@@ -243,7 +257,8 @@ def main(argv=None) -> int:
         print(f"[persist] 会话 id={agent.session_id}（继续：--resume {agent.session_id}）",
               file=sys.stderr)
 
-    if args.prompt:
+    # 裸跑（不带 chat/list 子命令）时 args 上没有 prompt 属性：按 REPL 处理，不再崩。
+    if getattr(args, "prompt", None):
         return _oneshot(agent, cfg, args.prompt)
     return _repl(agent, cfg, registry, tools)
 

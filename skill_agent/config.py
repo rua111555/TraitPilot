@@ -44,21 +44,35 @@ def load_config_file(project: Path | None = None,
     return {}
 
 
-def _apply_file_overrides(cfg: "Config", data: dict) -> None:
+def _apply_file_overrides(cfg: "Config", data: dict, env_keys: set | None = None) -> None:
     """把 config.json 里的键覆盖到 Config（仅出现才覆盖；类型非法则忽略该键）。
 
     支持全部可选能力开关，使 config.json 成为单一控制面板。
     便捷键：``spill: true`` → 默认落盘目录；``trace: true`` → 启用示例 trace 钩子。
+
+    ``env_keys``：这些键**已经由环境变量给出**，config.json 不得再覆盖它们。
+    优先级口径是「CLI > 环境变量 > config.json > 代码默认」，而 ``Config.load`` 是先把
+    env 值赋进 cfg、再调本函数用文件覆盖 —— 不设这个闸门的话文件会反过来压过 env，
+    把优先级方向做反（D12）。
     """
     if not data:
         return
 
+    blocked = env_keys or set()
+
+    def _skip(key: str, attr: str | None = None) -> bool:
+        return (attr or key) in blocked
+
     def _str(key: str, attr: str | None = None) -> None:
+        if _skip(key, attr):
+            return
         v = data.get(key)
         if isinstance(v, str) and v.strip():
             setattr(cfg, attr or key, v.strip())
 
     def _int(key: str, attr: str | None = None) -> None:
+        if _skip(key, attr):
+            return
         v = data.get(key)
         if isinstance(v, bool):
             return
@@ -68,15 +82,21 @@ def _apply_file_overrides(cfg: "Config", data: dict) -> None:
             setattr(cfg, attr or key, int(v))
 
     def _float(key: str, attr: str | None = None) -> None:
+        if _skip(key, attr):
+            return
         v = data.get(key)
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             setattr(cfg, attr or key, float(v))
 
     def _bool(key: str, attr: str | None = None) -> None:
+        if _skip(key, attr):
+            return
         if key in data and isinstance(data[key], bool):
             setattr(cfg, attr or key, data[key])
 
     def _list(key: str, attr: str | None = None) -> None:
+        if _skip(key, attr):
+            return
         v = data.get(key)
         if isinstance(v, list):
             items = [str(x).strip() for x in v if str(x).strip()]
@@ -93,6 +113,16 @@ def _apply_file_overrides(cfg: "Config", data: dict) -> None:
     # —— M8a 权限 ——
     _bool("restrict_paths")
     _bool("write_approval")
+    _list("permission_roots")
+    _list("extra_roots")
+    # 规则表是 list[dict]，不能用 _list（它会 str() 每个元素）；只接受结构正确的项，
+    # 其余静默丢弃——否则拼错的规则会以「看起来生效了」的姿态留在配置里。
+    raw_rules = data.get("permission_rules")
+    if isinstance(raw_rules, list) and not _skip("permission_rules"):
+        cfg.permission_rules = [
+            r for r in raw_rules
+            if isinstance(r, dict) and r.get("action") in ("allow", "deny", "ask")
+        ] or None
 
     # —— M12 上下文与记忆 ——
     _bool("summary_compaction")
@@ -115,20 +145,20 @@ def _apply_file_overrides(cfg: "Config", data: dict) -> None:
     _list("plugin_dirs")
     _list("plugin_allow")
     _bool("hooks_enabled", "hooks_enabled")
-    if data.get("trace") is True:
+    if data.get("trace") is True and not _skip("hooks_enabled"):
         cfg.hooks_enabled = True
 
     # —— M7 工具治理 ——
     _str("spill_dir")
     _int("spill_threshold")
     _bool("parallel_tools")
-    if data.get("spill") is True and not cfg.spill_dir:
+    if data.get("spill") is True and not cfg.spill_dir and not _skip("spill_dir"):
         cfg.spill_dir = str(default_spill_dir())
 
     # —— M9 沙箱 ——
-    if data.get("sandbox") in ("host", "rlimit", "docker"):
+    if data.get("sandbox") in ("host", "rlimit", "docker") and not _skip("sandbox"):
         cfg.sandbox = data["sandbox"]
-    if isinstance(data.get("sandbox_spec"), dict):
+    if isinstance(data.get("sandbox_spec"), dict) and not _skip("sandbox_spec"):
         cfg.sandbox_spec = data["sandbox_spec"]
     _bool("sandbox_strict")
 
@@ -309,7 +339,41 @@ class Config:
             retrieval_excludes=_env_list("SKILL_AGENT_INDEX_EXCLUDES"),
             index_dir=os.environ.get("SKILL_AGENT_INDEX_DIR") or None,
         )
-        _apply_file_overrides(cfg, file_cfg)   # config.json 覆盖可选开关（存在才覆盖）
+        # 哪些可选开关**已由环境变量显式给出**——这些键 config.json 不得再覆盖，
+        # 保证优先级为「CLI > 环境变量 > config.json > 代码默认」（D12）。
+        _env_backed = {
+            attr for env_name, attr in (
+                ("SKILL_AGENT_RESTRICT_PATHS", "restrict_paths"),
+                ("SKILL_AGENT_WRITE_APPROVAL", "write_approval"),
+                ("SKILL_AGENT_SUMMARY_COMPACTION", "summary_compaction"),
+                ("SKILL_AGENT_MEMORY", "memory_enabled"),
+                ("SKILL_AGENT_SUMMARY_MODEL", "summary_model"),
+                ("SKILL_AGENT_PERSIST", "persist"),
+                ("SKILL_AGENT_MAX_TURNS", "max_turns"),
+                ("SKILL_AGENT_MAX_OUTPUT_TOKENS", "max_output_tokens"),
+                ("SKILL_AGENT_MAX_SECONDS", "max_seconds"),
+                ("SKILL_AGENT_LOOP_GUARD", "loop_guard"),
+                ("SKILL_AGENT_PLUGIN_DIRS", "plugin_dirs"),
+                ("SKILL_AGENT_HOOKS", "hooks_enabled"),
+                ("SKILL_AGENT_SPILL_DIR", "spill_dir"),
+                ("SKILL_AGENT_PARALLEL_TOOLS", "parallel_tools"),
+                ("SKILL_AGENT_SANDBOX", "sandbox"),
+                ("SKILL_AGENT_SANDBOX_SPEC", "sandbox_spec"),
+                ("SKILL_AGENT_SANDBOX_STRICT", "sandbox_strict"),
+                ("SKILL_AGENT_IDEMPOTENCY", "idempotency"),
+                ("SKILL_AGENT_IDEMPOTENCY_MODE", "idempotency_mode"),
+                ("SKILL_AGENT_TODO", "todo"),
+                ("SKILL_AGENT_PROMPT_CACHE", "prompt_cache"),
+                ("SKILL_AGENT_FALLBACK_MODELS", "fallback_models"),
+                ("SKILL_AGENT_RETRIEVAL", "retrieval"),
+                ("SKILL_AGENT_INDEX_ROOTS", "retrieval_roots"),
+                ("SKILL_AGENT_INDEX_EXCLUDES", "retrieval_excludes"),
+                ("SKILL_AGENT_INDEX_DIR", "index_dir"),
+            )
+            if os.environ.get(env_name) is not None
+            and str(os.environ.get(env_name)).strip()
+        }
+        _apply_file_overrides(cfg, file_cfg, env_keys=_env_backed)
         return cfg
 
 

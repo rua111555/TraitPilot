@@ -45,12 +45,34 @@ def _typename(value: Any) -> str:
     }.get(type(value), type(value).__name__)
 
 
+def _numeric_string_ok(value: Any, expected: str) -> bool:
+    """数字被写成字符串时照样放行（并允许 executor 自己 ``int(...)``）。
+
+    模型很常把 ``"timeout": "5"`` 写出来；执行器的 ``int(args.get('timeout'))`` 能吃下，
+    所以不该在校验层拦。只有**确实转不成数**的字符串（如 ``"abc"``）才算类型错。
+    """
+    if not isinstance(value, str) or expected not in ("integer", "number"):
+        return False
+    s = value.strip()
+    if not s or s == "-":
+        return False
+    try:
+        num = float(s)
+    except ValueError:
+        return False
+    if expected == "integer":
+        return num.is_integer()
+    return True
+
+
 def _type_ok(value: Any, expected: Any) -> bool:
     """宽松类型匹配。
 
     - expected 为字符串：查表；未知类型名放行（不认识就不拦）。
     - expected 为 list：任一匹配即可（JSON Schema 联合类型）。
     - ``bool`` 是 ``int`` 的子类，需特判：声明 integer/number 时不接受 bool。
+    - **数字型字符串放行**（``"5"`` 对 integer、``"1.5"`` 对 number）——docstring
+      承诺的「宽容优先…避免把数字传成字符串判错」在此兑现（D8）。
     """
     if isinstance(expected, list):
         return any(_type_ok(value, e) for e in expected)
@@ -58,6 +80,8 @@ def _type_ok(value: Any, expected: Any) -> bool:
         return True
     if isinstance(value, bool) and expected in ("integer", "number"):
         return False
+    if isinstance(value, str) and expected in ("integer", "number"):
+        return _numeric_string_ok(value, expected)
     return isinstance(value, _TYPE_MAP[expected])
 
 

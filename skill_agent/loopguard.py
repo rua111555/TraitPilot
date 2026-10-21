@@ -29,6 +29,78 @@ _TS = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}")
 _HEX = re.compile(r"\b[0-9a-f]{8,}\b")
 _POLL_SUFFIX = (".log", ".done", ".pid")
 
+# Bash 里「只读地看状态」的命令白名单：只有这些命令才配得上「轮询可永不硬停」的豁免。
+# 豁免的前提是**无副作用**——`rm -f stale.pid` 虽然碰巧含 `.pid`，但它在删文件，
+# 让它靠子串匹配混进豁免会让带副作用的死循环永不被熔断（D5）。
+_POLL_READONLY_CMDS = frozenset({
+    "cat", "ls", "ll", "tail", "head", "grep", "egrep", "fgrep", "zgrep",
+    "wc", "stat", "file", "test", "[", "ps", "pgrep", "sleep",
+    "less", "more", "nl", "tac", "du", "find", "readlink", "realpath",
+})
+
+# 会改变磁盘/进程状态的写命令；出现在命令里即失去轮询豁免。
+_POLL_WRITE_CMDS = frozenset({
+    "rm", "mv", "cp", "dd", "truncate", "touch", "mkdir", "rmdir", "ln",
+    "chmod", "chown", "sed", "tee", "kill", "pkill", "shutdown", "reboot",
+    "nohup", "unlink", "shred", "install",
+})
+
+# 命令分隔符：按段拆开后再逐段判定，避免 `sleep 5 && rm x.pid` 被整段放过。
+_CMD_SPLIT = re.compile(r"(?:\|\||&&|[|;]|\n)")
+
+
+def _bash_polling(command: str) -> bool:
+    """Bash 是否属于「只读轮询」：整条命令都由只读命令组成、且不碰写命令。"""
+    cmd = (command or "").strip()
+    if not cmd:
+        return False
+    for seg in _CMD_SPLIT.split(cmd):
+        seg = seg.strip()
+        if not seg:
+            continue
+        # 有重定向（> / >>）就是在写盘，不是只读轮询
+        if re.search(r"(?<![0-9<>])>>?(?!&)", seg):
+            return False
+        words = [w for w in re.split(r"\s+", seg) if w]
+        # 跳过 `VAR=x` 形式的前缀赋值
+        heads = [w for w in words if "=" not in w.split("/")[0] or w.startswith("/")]
+        if not heads:
+            return False
+        # 取每一段里第一个真正的命令词（去掉 sudo/timeout 之类的包装）
+        head = heads[0]
+        while head in ("sudo", "command", "time", "timeout", "env", "nohup", "xargs"):
+            heads = heads[1:]
+            if not heads:
+                return False
+            head = heads[0]
+        base = head.rsplit("/", 1)[-1]
+        if base in _POLL_WRITE_CMDS:
+            return False
+        if base not in _POLL_READONLY_CMDS:
+            return False
+    return True
+
+
+def is_polling(name: str, args: dict) -> bool:
+    """轮询类工具：``TaskOutput``，或**只读地**查看 ``*.log``/``*.done``/``*.pid`` 的调用。
+
+    豁免只给无副作用的等待：命中轮询后缀**且**整条命令是只读的（``cat``/``tail``/``grep``…）。
+    ``rm -f stale.pid``、``echo x > y.log`` 这类会改变状态的重复命令不再享受豁免，
+    否则副作用死循环永远不会被熔断。
+    """
+    if name == "TaskOutput":
+        return True
+    args = args or {}
+    # 结构化工具（Read/Grep/Glob）：路径参数命中后缀即算轮询（它们本身无副作用）
+    if name != "Bash":
+        blob = " ".join(str(v) for v in args.values())
+        return any(blob.endswith(s) or s in blob for s in _POLL_SUFFIX)
+    command = str(args.get("command", "") or "")
+    blob = " ".join(str(v) for v in args.values())
+    if not any(s in blob for s in _POLL_SUFFIX):
+        return False
+    return _bash_polling(command)
+
 
 class GuardLevel(str, enum.Enum):
     OK = "ok"
@@ -65,16 +137,6 @@ def action_fingerprint(name: str, args: dict) -> str:
 
 def observation_fingerprint(text: str) -> str:
     return hashlib.sha1(normalize_observation(text).encode("utf-8")).hexdigest()[:16]
-
-
-def is_polling(name: str, args: dict) -> bool:
-    """轮询类工具：TaskOutput，或读取 *.log/*.done/*.pid 的 Read/Bash。"""
-    if name == "TaskOutput":
-        return True
-    blob = " ".join(str(v) for v in (args or {}).values())
-    if any(blob.endswith(s) or s in blob for s in _POLL_SUFFIX):
-        return True
-    return False
 
 
 def _made_progress(meta: dict | None, prev_meta: dict | None) -> bool:

@@ -120,13 +120,24 @@ class PermissionModel:
         return False, ""
 
     def is_denied(self, name: str, args: dict) -> str | None:
-        """显式 deny 返回原因（供调用方直接拒绝，不进入交互确认）。"""
+        """显式 deny 返回原因（供调用方直接拒绝，不进入交互确认）。
+
+        必须与 ``needs_confirm`` 用同一套「按序首次命中」语义：一旦某条 **allow/ask**
+        规则先命中，后面的 deny 就不再生效。否则 ``rules=[allow ^echo, deny ^echo]``
+        里 allow 形同虚设、和模块自称的「按序首次命中」自相矛盾。
+        """
         primary = str(args.get(_PRIMARY_ARG.get(name, ""), "") or "")
         for rule in self.rules:
-            if isinstance(rule, dict) and rule.get("tool", "*") in ("*", name) \
-                    and _rule_match(rule.get("match"), primary) \
-                    and rule.get("action") == "deny":
-                return f"命中 deny 规则：tool={rule.get('tool', '*')}, match={rule.get('match')!r}"
+            if not isinstance(rule, dict):
+                continue
+            rtool = rule.get("tool", "*")
+            if rtool not in ("*", name):
+                continue
+            if not _rule_match(rule.get("match"), primary):
+                continue
+            if rule.get("action") == "deny":
+                return f"命中 deny 规则：tool={rtool}, match={rule.get('match')!r}"
+            return None                # 首次命中的是 allow/ask → 不再是「显式 deny」
         return None
 
     def preview(self, name: str, args: dict) -> str:

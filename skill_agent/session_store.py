@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import threading
 import time
 from pathlib import Path
@@ -207,17 +208,31 @@ class SessionStore:
             return False
 
     def delete(self, sid: str) -> bool:
-        """删除会话文件（archive 与根目录都尝试）。"""
+        """删除会话文件（archive 与根目录都尝试）。返回是否删掉了至少一个文件。
+
+        两条要点（D13）：
+        - **持 ``self._lock``**：``append`` 也持同一把锁，否则「delete 返回 True」之后
+          并发的 writer 可能立刻把文件重建出来，「已删除」就成了假的。
+        - **不跟随符号链接**：``<sid>.jsonl`` 若是指向外部真实文件的软链，直接
+          ``unlink`` 只删链、目标内容原样留在磁盘；这里用 ``lstat`` 判定，对软链只删
+          链接本身并如实返回，绝不假装「内容已从磁盘消失」。
+        """
         if not self.enabled or not self._valid(sid):
             return False
         ok = False
-        for p in (self._path(sid), self._path(sid, True)):
-            try:
-                if p.is_file():
+        with self._lock:
+            for p in (self._path(sid), self._path(sid, True)):
+                try:
+                    st = p.lstat()             # lstat：不跟随软链
+                except OSError:
+                    continue
+                if not stat.S_ISREG(st.st_mode) and not stat.S_ISLNK(st.st_mode):
+                    continue
+                try:
                     p.unlink()
                     ok = True
-            except OSError:
-                pass
+                except OSError:
+                    pass
         return ok
 
     def append_meta_at(self, path: Path, meta: dict) -> None:
@@ -323,6 +338,26 @@ def _same_message(a: dict, b: dict) -> bool:
         and (a or {}).get("content") == (b or {}).get("content")
 
 
+def _same_turn(a: dict, b: dict) -> bool:
+    """宽松同轮判定：``_analyze`` 会从 assistant 里剔掉悬挂的 tool_use 块，
+    导致清洗后的 content 与展示用的原文不再逐字相等。此时只要 role 相同、
+    且比较短的那份 content 是另一份的**子序列**，就认为指同一轮。
+
+    没有这一层，``_boundary_index`` 会在「已完成轮里混了未答 tool_use 块」的输入上
+    对不齐、一路走到兜底 ``return len(display)``，前端据此画不出「尚未完成」分隔条（D14）。
+    """
+    if _same_message(a, b):
+        return True
+    if (a or {}).get("role") != (b or {}).get("role"):
+        return False
+    ba, bb = _blocks(a), _blocks(b)
+    if not ba or not bb:
+        return ba == bb
+    short, long_ = (ba, bb) if len(ba) <= len(bb) else (bb, ba)
+    it = iter(long_)
+    return all(any(x == y for y in it) for x in short)   # 子序列匹配
+
+
 def _boundary_index(display: list[dict], strict: list[dict]) -> int:
     """在展示列表里找出「续跑前缀」的结束下标（分隔条画在这里）。
 
@@ -330,17 +365,35 @@ def _boundary_index(display: list[dict], strict: list[dict]) -> int:
     tool_use 的 assistant」（展示列表保留它），所以需要按序对齐前缀，而不是拿长度
     直接相减 —— 否则分隔条会画错位置（多轮工具会话甚至会画到最前面）。
 
+    对齐用 ``_same_turn``（宽容子序列匹配）：``_analyze`` 还会从 assistant 里剔掉单个
+    悬挂 tool_use 块，逐字比较会对不上，那样兜底会把分隔条推到末尾、等于没画。
+
     严格视图为空 → 0（整段都属于「续跑不会带上」）。
     """
     if not strict:
         return 0
     j = 0
     for i, m in enumerate(display):
-        if j < len(strict) and _same_message(m, strict[j]):
+        if j < len(strict) and _same_turn(m, strict[j]):
             j += 1
             if j == len(strict):
                 return i + 1
-    return len(display)             # 兜底：理论上到不了
+    # 对不齐时的兜底：严格前缀没能在展示序列里走完。仍取**最长的匹配前缀**所到的位置，
+    # 而不是 len(display)（后者会让前端彻底画不出分隔条）。
+    return _longest_prefix_index(display, strict)
+
+
+def _longest_prefix_index(display: list[dict], strict: list[dict]) -> int:
+    """兜底：贪心对齐能走多远就切多远；一个都对不上则退化为 0。"""
+    j = 0
+    last = 0
+    for i, m in enumerate(display):
+        if j >= len(strict):
+            break
+        if _same_turn(m, strict[j]):
+            j += 1
+            last = i + 1
+    return last
 
 
 
