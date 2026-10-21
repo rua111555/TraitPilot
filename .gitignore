@@ -17,3 +17,4 @@ skills/**/model/*.onnx
 
 # 派生产物
 .skill-agent/
+logs/
