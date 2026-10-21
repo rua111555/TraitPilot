@@ -91,6 +91,101 @@ def _fetch_models() -> list[str]:
     return ids
 
 
+@app.get("/api/sessions")
+def api_sessions():
+    """M13：列出历史会话（读 checkpoint 目录）。?archived=1 列出归档会话。"""
+    from skill_agent.config import default_checkpoint_dir
+    from skill_agent.session_store import SessionStore
+    archived = request.args.get("archived") in ("1", "true", "yes")
+    try:
+        store = SessionStore(default_checkpoint_dir())
+        items = store.sessions(archived=archived)
+    except Exception:
+        items = []
+    return jsonify(items)
+
+
+@app.post("/api/session/archive")
+def api_session_archive():
+    """归档 / 取消归档某会话。body: {session, archived}"""
+    from skill_agent.config import default_checkpoint_dir
+    from skill_agent.session_store import SessionStore
+    data = request.get_json(silent=True) or {}
+    sid = data.get("session")
+    archived = bool(data.get("archived", True))
+    store = SessionStore(default_checkpoint_dir())
+    if not sid:
+        return jsonify({"ok": False, "error": "缺少 session"}), 400
+    ok = store.archive(sid) if archived else store.unarchive(sid)
+    return jsonify({"ok": ok})
+
+
+@app.post("/api/session/delete")
+def api_session_delete():
+    """永久删除某会话文件。body: {session}"""
+    from skill_agent.config import default_checkpoint_dir
+    from skill_agent.session_store import SessionStore
+    data = request.get_json(silent=True) or {}
+    sid = data.get("session")
+    if not sid:
+        return jsonify({"ok": False, "error": "缺少 session"}), 400
+    store = SessionStore(default_checkpoint_dir())
+    ok = store.delete(sid)
+    return jsonify({"ok": ok})
+
+
+@app.get("/api/session/<sid>")
+def api_session_messages(sid):
+    """读取某历史会话的原始消息（用于侧栏点击后在主区重建对话）。
+
+    仅暴露渲染所需字段：role / type / text / thinking / name / input / content。
+
+    用 ``load_view``（展示视图）而**不是** ``load``（续跑视图）：后者为满足 Messages API
+    的续跑不变量会丢弃尾部未完成的一轮、甚至在无完成回复时整段清空 —— 拿它渲染会让
+    用户「切到历史会话后一片空白」。这里如数回放磁盘内容，并通过
+    ``resume_count``/``discarded``/``reason`` 告诉前端「哪一段续跑不会带上」。
+    """
+    from skill_agent.config import default_checkpoint_dir
+    from skill_agent.session_store import SessionStore
+    store = SessionStore(default_checkpoint_dir())
+    if not (store.exists(sid) or store.is_archived(sid)):
+        return jsonify({"ok": False, "error": "not found"}), 404
+    data = store.load_view(sid)             # 已做路径安全校验
+    out = []
+    for m in data.get("messages", []):
+        role = m.get("role")
+        c = m.get("content")
+        if isinstance(c, str):
+            out.append({"role": role, "blocks": [{"type": "text", "text": c}]})
+            continue
+        blocks = []
+        for b in (c or []):
+            if not isinstance(b, dict):
+                continue
+            t = b.get("type")
+            if t == "text":
+                blocks.append({"type": "text", "text": b.get("text", "")})
+            elif t == "thinking":
+                blocks.append({"type": "thinking", "text": b.get("thinking", "")})
+            elif t == "tool_use":
+                blocks.append({"type": "tool_use", "id": b.get("id", ""),
+                               "name": b.get("name", ""), "input": b.get("input", {})})
+            elif t == "tool_result":
+                content = b.get("content", "")
+                if isinstance(content, list):
+                    content = "".join(x.get("text", "") for x in content
+                                      if isinstance(x, dict))
+                blocks.append({"type": "tool_result", "tool_use_id": b.get("tool_use_id", ""),
+                               "content": content, "is_error": bool(b.get("is_error"))})
+        out.append({"role": role, "blocks": blocks})
+    return jsonify({"ok": True, "meta": {k: v for k, v in data.get("meta", {}).items()
+                                         if k != "_meta"},
+                    "messages": out,
+                    "resume_count": data.get("resume_count", len(out)),
+                    "discarded": data.get("discarded", 0),
+                    "reason": data.get("reason")})
+
+
 @app.get("/api/usage")
 def api_usage():
     """M1a：返回某会话本轮累计用量。"""

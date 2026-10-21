@@ -21,7 +21,7 @@ class _FakeClient:
     def __init__(self):
         self.n = 0
 
-    def create(self, *, system, tools, messages, stream, on_delta):
+    def create(self, *, system, tools, messages, stream, on_delta, on_thinking=None):
         self.n += 1
         # 第一次返回 tool_use，第二次返回纯文本收尾
         if self.n == 1:

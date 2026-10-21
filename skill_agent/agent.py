@@ -123,7 +123,7 @@ class Agent:
         self._active_skills.clear()
         return len(self.history)
 
-    def answer(self, user_text: str, on_delta=None) -> str:
+    def answer(self, user_text: str, on_delta=None, on_thinking=None) -> str:
         """执行一个用户请求（可能多轮工具调用），返回最终文本。"""
         self._usage = _new_usage(self.cfg.model)   # 每轮用户请求重置用量累计
         self._last_stop = None
@@ -134,11 +134,11 @@ class Agent:
         self.history.append({"role": "user", "content": user_text})
         self._persist({"role": "user", "content": user_text})
         try:
-            return self._run(on_delta=on_delta)
+            return self._run(on_delta=on_delta, on_thinking=on_thinking)
         finally:
             self._active_skills.clear()   # 新的一轮用户请求，白名单复位
 
-    def _run(self, on_delta=None) -> str:
+    def _run(self, on_delta=None, on_thinking=None) -> str:
         budget = self._init_budget()
         self._guard_halted = False
         if self.loopguard is not None:
@@ -162,7 +162,7 @@ class Agent:
             t0 = time.monotonic()
             blocks, stop_reason, out_tokens = self.client.create(
                 system=system, tools=tools, messages=self.history,
-                stream=self.cfg.stream, on_delta=on_delta,
+                stream=self.cfg.stream, on_delta=on_delta, on_thinking=on_thinking,
             )
             self._record_usage(out_tokens, time.monotonic() - t0)
             # 去伪：忽略空的 thinking 块

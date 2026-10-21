@@ -127,7 +127,7 @@ def test_agent_persist_then_resume_roundtrip():
         ag.session_id = sid
 
         class _Client:
-            def create(self, *, system, tools, messages, stream, on_delta):
+            def create(self, *, system, tools, messages, stream, on_delta, on_thinking=None):
                 return ([{"type": "text", "text": "Z"} if not messages or True else ""], "end_turn", 1)
 
         ag.client = _Client()
@@ -156,6 +156,124 @@ def test_prefixed_boundary_overrides_prefix_messages():
         msgs = st.load(sid)["messages"]
         assert len(msgs) == 2
         assert "前情摘要" in msgs[0]["content"] and "old" not in msgs[0]["content"]
+
+
+# ---------------- 归档 / 删除 ----------------
+
+def test_archive_moves_out_of_listing():
+    with tempfile.TemporaryDirectory() as d:
+        st = SessionStore(Path(d))
+        st.append("s1", {"role": "user", "content": "hi"})
+        st.append("s1", {"role": "assistant", "content": [{"type": "text", "text": "yo"}]})
+        st.append("s2", {"role": "user", "content": "yo"})
+        st.append("s2", {"role": "assistant", "content": [{"type": "text", "text": "ok"}]})
+        assert {s["id"] for s in st.sessions()} == {"s1", "s2"}
+        assert st.archive("s1") is True
+        assert {s["id"] for s in st.sessions()} == {"s2"}          # 归档后默认列表不含
+        assert [s["id"] for s in st.sessions(archived=True)] == ["s1"]
+        assert st.is_archived("s1") and st.exists("s1") is False
+        # 归档文件仍可读（历史查看）
+        assert st.load("s1")["messages"]
+
+
+def test_unarchive_restores():
+    with tempfile.TemporaryDirectory() as d:
+        st = SessionStore(Path(d))
+        st.append("s1", {"role": "user", "content": "hi"})
+        st.archive("s1")
+        assert st.unarchive("s1") is True
+        assert [s["id"] for s in st.sessions()] == ["s1"]
+        assert st.sessions(archived=True) == []
+
+
+def test_delete_removes_file():
+    with tempfile.TemporaryDirectory() as d:
+        st = SessionStore(Path(d))
+        st.append("s1", {"role": "user", "content": "hi"})
+        assert st.delete("s1") is True
+        assert st.sessions() == []
+        assert st.delete("nope") is False
+
+
+def test_archive_and_delete_reject_bad_sid():
+    with tempfile.TemporaryDirectory() as d:
+        st = SessionStore(Path(d))
+        assert st.archive("../evil") is False
+        assert st.delete("../evil") is False
+        assert st.unarchive("../evil") is False
+
+
+# ---------------- 展示视图 load_view（切历史会话看不到内容） ----------------
+
+def test_load_view_keeps_unanswered_user_while_load_drops_it():
+    """用户问了、模型从未回复 → 续跑视图整段清空，展示视图必须保留用户那句话。"""
+    with tempfile.TemporaryDirectory() as d:
+        st = SessionStore(Path(d))
+        st.append("s1", {"role": "user", "content": "数据库里有什么？"})
+        # 续跑视图：仍按边界清空（续跑不变量，不能动）
+        assert st.load("s1")["messages"] == []
+        assert st.load("s1")["discarded"] == 1
+        # 展示视图：磁盘上有的都回放，并说明原因
+        v = st.load_view("s1")
+        assert len(v["messages"]) == 1 and v["messages"][0]["role"] == "user"
+        assert v["reason"] == "no_completed_assistant"
+        assert v["resume_count"] == 0 and v["discarded"] == 1
+
+
+def test_load_view_keeps_incomplete_trailing_turn():
+    """尾轮未完成（悬空 tool_use）→ 展示视图含该轮，load 截断到上一完成轮。"""
+    with tempfile.TemporaryDirectory() as d:
+        st = SessionStore(Path(d))
+        st.append("s2", {"role": "user", "content": "q1"})
+        st.append("s2", {"role": "assistant", "content": [{"type": "text", "text": "a1"}]})
+        st.append("s2", {"role": "user", "content": "q2"})
+        st.append("s2", {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]})
+        assert len(st.load("s2")["messages"]) == 2          # 续跑：截到 a1
+        v = st.load_view("s2")
+        # 展示：q1/a1/q2 全在，连那条只剩悬空 tool_use 的 assistant 也保留
+        assert [m["role"] for m in v["messages"]] == ["user", "assistant", "user", "assistant"]
+        assert v["messages"][2]["content"] == "q2"
+        assert v["resume_count"] == 2 and v["discarded"] == 1
+        assert v["reason"] == "incomplete_turn"
+        assert len(v["incomplete"]) == 2
+
+def test_load_view_marks_complete_session_clean():
+    with tempfile.TemporaryDirectory() as d:
+        st = SessionStore(Path(d))
+        st.append("s3", {"role": "user", "content": "q"})
+        st.append("s3", {"role": "assistant", "content": [{"type": "text", "text": "a"}]})
+        v = st.load_view("s3")
+        assert v["reason"] is None and v["discarded"] == 0
+        assert v["resume_count"] == len(v["messages"]) == 2
+
+
+def test_load_view_covers_multi_tool_round_session():
+    """整段会话每一轮都带 tool_use（常见于「只读数据、还没总结」）→ 以前整段空白。"""
+    with tempfile.TemporaryDirectory() as d:
+        st = SessionStore(Path(d))
+        st.append("s4", {"role": "user", "content": "看看库"})
+        st.append("s4", {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]})
+        st.append("s4", {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]})
+        st.append("s4", {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t2", "name": "Read", "input": {}}]})
+        assert st.load("s4")["messages"] == []              # 续跑：整段清空（无完成边界）
+        v = st.load_view("s4")
+        # 展示：4 条全在（悬空 tool_use 也保留，用户能看到「调了工具但中断」）
+        assert [m["role"] for m in v["messages"]] == ["user", "assistant", "user", "assistant"]
+        assert v["reason"] == "no_completed_assistant"
+        assert v["resume_count"] == 0                       # 全都不会被续跑带上
+        assert len(v["incomplete"]) == 4
+
+
+def test_load_view_tolerates_missing_and_bad_sid():
+    with tempfile.TemporaryDirectory() as d:
+        st = SessionStore(Path(d))
+        v = st.load_view("nope")
+        assert v["found"] is False and v["messages"] == []
+        assert st.load_view("../evil")["messages"] == []
 
 
 if __name__ == "__main__":

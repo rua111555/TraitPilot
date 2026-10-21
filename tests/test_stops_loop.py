@@ -35,7 +35,7 @@ def _agent_with(turns):
     seq = list(turns)
 
     class _Client:
-        def create(self, *, system, tools, messages, stream, on_delta):
+        def create(self, *, system, tools, messages, stream, on_delta, on_thinking=None):
             return seq.pop(0)
 
     ag.client = _Client()

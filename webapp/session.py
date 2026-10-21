@@ -42,6 +42,7 @@ class WebSession:
         self.created_at = time.time()
         self.last_model = cfg.model
         self.last_permission = cfg.permission
+        self.resume_info: dict = {}          # M13：resume 的 {restored, discarded, meta}
 
     # ---------- 参数 ----------
     def set_params(self, model: str | None = None, permission: str | None = None) -> None:
@@ -86,6 +87,7 @@ class WebSession:
             final = self.agent.answer(
                 user_text,
                 on_delta=lambda t: self.event_queue.put({"type": "text", "delta": t}),
+                on_thinking=lambda t: self.event_queue.put({"type": "thinking", "delta": t}),
             )
             self.event_queue.put({
                 "type": "done", "final": final,
@@ -93,7 +95,10 @@ class WebSession:
                 "active": self.agent.active_skills,
                 "usage": self.agent.usage_bar,
                 "stop_reason": getattr(self.agent._last_stop, "reason_code", None),
+                # M13：本轮开始前 resume 丢弃了几条（未完成轮次）→ 前端可提示一次
+                "resume_discarded": int(self.resume_info.get("discarded", 0) or 0),
             })
+            self.resume_info = {}            # 只提示一次
         except Exception as e:  # noqa: BLE001
             self.event_queue.put({"type": "error", "message": f"{type(e).__name__}: {e}"})
         finally:
@@ -159,7 +164,10 @@ def build_session(session_id: str, cfg, registry) -> WebSession:
             store.append_meta(session_id, {"model": cfg.model, "permission": cfg.permission,
                                            "created": time.strftime("%Y-%m-%d %H:%M:%S")})
         else:
-            resume_into(agent, store, session_id)   # 命中磁盘 id → 恢复
+            # 命中磁盘 id → 恢复。resume 走**严格** load：尾部未完成的一轮会被丢弃
+            # （续跑不变量要求 history 以「不含 tool_use 的 assistant」结尾）。
+            # 记下丢弃数，稍后透给前端——否则用户只会觉得「历史莫名其妙少了」。
+            session.resume_info = resume_into(agent, store, session_id)
         agent.store = store
         agent.session_id = session_id
 

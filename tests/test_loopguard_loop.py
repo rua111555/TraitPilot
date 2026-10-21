@@ -30,7 +30,7 @@ class _Reg:
 class _RepeatClient:
     """永远要求同一个工具调用 → 无进展循环。"""
     def __init__(self): self.calls = 0
-    def create(self, *, system, tools, messages, stream, on_delta):
+    def create(self, *, system, tools, messages, stream, on_delta, on_thinking=None):
         self.calls += 1
         return ([{"type": "tool_use", "id": f"t{self.calls}", "name": "Bash",
                   "input": {"command": "true"}}], "tool_use", 5)
@@ -68,7 +68,7 @@ def test_no_loopguard_normal_flow():
     ag = Agent(_Cfg(), _Reg(), _Tools())
 
     class _One:
-        def create(self, *, system, tools, messages, stream, on_delta):
+        def create(self, *, system, tools, messages, stream, on_delta, on_thinking=None):
             return ([{"type": "text", "text": "ok"}], "end_turn", 1)
 
     ag.client = _One()

@@ -24,18 +24,61 @@
   /* ---------- 侧栏 ---------- */
   aside{width:288px;min-width:288px;background:var(--panel);border-right:1px solid var(--border);
     display:flex;flex-direction:column}
-  .brand{padding:18px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+  .brand{padding:18px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;
+    justify-content:space-between}
+  .brand .bl{display:flex;align-items:center;gap:10px;min-width:0}
   .brand .logo{width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,var(--accent),#b95f46);
     display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff;font-size:15px}
   .brand .t1{font-weight:700;font-size:15px}
-  .brand .t2{font-size:11px;color:var(--muted)}
+  .brand .t2{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .brand .icon-btn{background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:8px;
+    font-size:12px;padding:4px 8px;cursor:pointer;flex-shrink:0}
+  .brand .icon-btn:hover{color:var(--text);border-color:var(--accent)}
+
   .skill-head{padding:12px 16px 6px;font-size:11px;color:var(--muted);letter-spacing:.08em;
     display:flex;justify-content:space-between;align-items:center}
+  .skill-head .mini{background:transparent;border:none;color:var(--accent);font-size:11px;cursor:pointer;
+    padding:0;font-family:inherit}
+  .skill-head .mini:hover{color:var(--accent2)}
+  #sessionList{flex:1;overflow:auto;padding:4px 8px 16px}
+  .sess{background:var(--panel2);border:1px solid var(--border);border-radius:10px;
+    padding:9px 10px;margin:6px 4px;cursor:pointer;transition:border-color .15s}
+  .sess:hover{border-color:var(--accent)}
+  .sess.active{border-color:var(--accent);background:#252b36}
+  .sess .r1{font-weight:600;font-size:12.5px;display:flex;align-items:center;gap:6px}
+  .sess .r1 .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);flex-shrink:0}
+  .sess .r1 .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sess .r1 .curtl{font-size:9px;border:1px solid var(--border);color:var(--muted);border-radius:4px;padding:0 4px;flex-shrink:0}
+  .sess .t2{font-size:10.5px;color:var(--muted);margin-top:3px;display:flex;gap:8px;flex-wrap:wrap}
+  .sess .dsc{font-size:11px;color:var(--muted);margin-top:3px;display:-webkit-box;-webkit-line-clamp:2;
+    -webkit-box-orient:vertical;overflow:hidden}
+  .sess.arch{opacity:.72}
+  .sess-group{padding:12px 12px 4px;font-size:11px;color:var(--muted);letter-spacing:.04em;cursor:pointer}
+  .sess-group:hover{color:var(--text)}
+  .sess-group .caret{color:var(--accent)}
+
+  /* 右键菜单 */
+  #ctxMenu{position:fixed;z-index:80;display:none;min-width:140px;background:var(--panel);
+    border:1px solid var(--border);border-radius:10px;padding:4px;box-shadow:0 8px 26px rgba(0,0,0,.45)}
+  #ctxMenu.show{display:block}
+  #ctxMenu .ctx-item{display:block;width:100%;text-align:left;background:transparent;border:none;
+    color:var(--text);font:13px inherit;padding:7px 10px;border-radius:7px;cursor:pointer}
+  #ctxMenu .ctx-item:hover{background:var(--panel2)}
+  #ctxMenu .ctx-item.danger{color:var(--err)}
+  #ctxMenu .ctx-item.danger:hover{background:rgba(248,113,113,.12)}
+
+  /* ---------- Skills 抽屉 ---------- */
+  .drawer{position:fixed;left:0;top:0;bottom:0;width:320px;max-width:92vw;background:var(--panel);
+    border-right:1px solid var(--border);transform:translateX(-100%);transition:transform .2s ease;
+    z-index:60;display:flex;flex-direction:column;box-shadow:6px 0 30px rgba(0,0,0,.35)}
+  .drawer.open{transform:translateX(0)}
+  .drawer .dh{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;
+    justify-content:space-between;font-weight:700}
   #skillList{flex:1;overflow:auto;padding:4px 8px 16px}
   .skill{background:var(--panel2);border:1px solid var(--border);border-radius:10px;
     padding:9px 10px;margin:6px 4px;cursor:pointer;transition:border-color .15s}
   .skill:hover{border-color:var(--accent)}
-  .skill .nm{font-weight:600;font-size:12.5px;display:flex;align-items:center;gap:6px}
+  .skill .nm{font-weight:600;font-size:12.5px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
   .skill .inv{font-size:9px;border:1px solid var(--border);color:var(--muted);border-radius:4px;padding:0 4px}
   .skill .inv.y{color:var(--ok);border-color:rgba(74,222,128,.4)}
   .skill .dsc{font-size:11px;color:var(--muted);margin-top:3px;display:-webkit-box;-webkit-line-clamp:2;
@@ -43,6 +86,10 @@
   .skill .tools{font-size:10px;color:#7d8796;margin-top:5px;word-break:break-all}
   .skill .go{margin-top:6px;font-size:11px;color:var(--accent);display:none}
   .skill:hover .go{display:block}
+  .scrim{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:55;display:none}
+  .scrim.show{display:block}
+
+  .empty{color:var(--muted);font-size:12.5px;padding:8px 2px}
 
   /* ---------- 主区 ---------- */
   main{flex:1;display:flex;flex-direction:column;min-width:0}
@@ -105,6 +152,57 @@
   .thinking{color:var(--muted);font-size:12.5px;padding:8px 2px;display:flex;align-items:center;gap:8px}
   .thinking .dot{width:9px;height:9px;border-radius:50%;background:var(--accent);animation:pulse 1.2s infinite}
   @keyframes pulse{0%,100%{opacity:.25}50%{opacity:1}}
+
+  /* 思考过程（默认只显示前几行，点击展开） */
+  .think-box{border:1px solid var(--border);border-radius:10px;margin:8px 0;background:var(--code);
+    overflow:hidden}
+  .think-box .thd{display:flex;align-items:center;gap:8px;padding:6px 10px;cursor:pointer;
+    user-select:none;font-size:11.5px;color:var(--muted)}
+  .think-box .thd .lb{font-weight:600;color:#8fa1b8}
+  .think-box .thd .tip{margin-left:auto;color:#7d8796;font-size:10.5px}
+  .think-box .tclamp{padding:2px 12px 8px;font:12px/1.6 "SFMono-Regular",Consolas,monospace;
+    color:#9aa3b2;white-space:pre-wrap;word-break:break-word;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+  .think-box.open .tclamp{display:block;overflow:auto;max-height:340px}
+  .think-box.open .thd .tip::after{content:"（点击收起）"}
+  .think-box:not(.open) .thd .tip::after{content:"（点击展开）"}
+  .thinking-live{color:var(--muted);font-size:11.5px;padding:4px 2px;display:flex;align-items:center;gap:8px}
+  .thinking-live .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);animation:pulse 1.2s infinite}
+
+  /* 长内容折叠：默认只显前几行，点击展开（工具参数 / 结果 / 正文代码块 / 表格 / 引用块）。
+     用 max-height 而不是 -webkit-line-clamp，理由：
+       ① 只有真的溢出才该出现「点击展开」暗示。max-height 下 scrollHeight/clientHeight
+          量得准，能据此判定；line-clamp 的溢出量要 JS 自己算，容易误判。
+       ② line-clamp 需要 -webkit-box 布局，套在表格/包装 div 上会改写它们的排版语义。
+     --fold-line 是该上下文「一行」的高度（px），裁线因此落在行边界上；
+     两处 pre 的 overflow:auto 会盖掉折叠，故 .foldable 的选择器刻意写两遍提特异性。 */
+  .foldable.foldable{--fold-lines:6;
+    max-height:calc(var(--fold-lines) * var(--fold-line,20px));
+    overflow:hidden;position:relative}
+  /* 下表按上下文给准「一行的高度」，让裁切线落在行边界上（--fold-lines 默认 6 行） */
+  .md pre.foldable{--fold-line:19.2px;--fold-lines:5;font:12px/1.6 "SFMono-Regular",Consolas,monospace}
+  .md pre.foldable code{line-height:1.6}          /* .md code 的 font 简写把行高重置成了 normal */
+  /* .md pre 有上下各 12px 的 padding，5*19.2+24=120 = 正文行高 1.6 的整数倍，裁线正好压在行边界 */
+  .md .tw.foldable{--fold-line:30px;--fold-lines:5}   /* 表格：12.5px 字 + 上下各 5px padding */
+  .md .tw.foldable:not(.fold-open) table{overflow:hidden}   /* 裁切态由外层裁，内层不要再出滚动条 */
+  .md blockquote.foldable{--fold-line:21.6px;line-height:1.6}
+  .tool-card pre.foldable{--fold-line:18.6px;position:relative}  /* pre-wrap 自动折行，行高干净；角标定位在 pre 内 */
+  /* 表格折外层 .tw 包装（md() 生成），不折 <table> 自身：table 是 display:block + overflow:auto，
+     限高后它能自己滚出被折的行，改 display 又会丢掉横向滚动 —— 外层裁最干净。
+     裁切态一律 overflow:hidden：既不能留滚动条（否则能滚出被折的内容），也不能被
+     .md pre / .tool-card pre 自己的 overflow:auto 翻盘 —— 所以下面这条写两遍提特异性。 */
+  .foldable.foldable:not(.fold-open){overflow:hidden}
+  .foldable.foldable.fold-open{max-height:420px;overflow:auto}
+  .foldable.fold{cursor:pointer}
+  .foldable.fold::after{content:"⋯ 点击展开全文";position:absolute;right:10px;bottom:5px;
+    font:10.5px/1.4 system-ui,sans-serif;color:var(--accent2);background:var(--code);
+    border:1px solid var(--border);border-radius:20px;padding:1px 8px;
+    pointer-events:none;opacity:.92}
+  .foldable.fold.fold-open::after{content:"⋯ 点击收起"}
+  /* 会话切换提示条 */
+  .sess-banner{max-width:860px;margin:0 auto 14px;padding:8px 12px;border:1px dashed var(--accent);
+    border-radius:10px;color:var(--accent2);font-size:12px;background:rgba(224,120,86,.06)}
+  .sess-banner.cut{border-color:var(--warn);color:var(--warn);background:rgba(234,179,8,.08)}
   .empty{color:var(--muted);font-size:12.5px;padding:8px 2px}
 
   /* 输入区 */
@@ -114,9 +212,10 @@
   textarea{flex:1;background:transparent;border:none;outline:none;color:var(--text);resize:none;
     font:14px/1.5 inherit}
   #sendBtn{background:var(--accent);border:none;color:#fff;border-radius:10px;width:38px;height:38px;
-    font-size:16px;cursor:pointer;flex-shrink:0;transition:opacity .15s}
+    font-size:16px;cursor:pointer;flex-shrink:0;transition:opacity .15s,background .15s}
   #sendBtn:hover{background:var(--accent2)}
-  #sendBtn:disabled{opacity:.35;cursor:not-allowed}
+  #sendBtn.running{background:var(--err)}
+  #sendBtn.running:hover{background:#e05a5a}
   .hint{max-width:860px;margin:8px auto 0;font-size:11px;color:var(--muted)}
 
   /* 快捷指令 chips */
@@ -148,14 +247,20 @@
 <div class="app">
   <aside>
     <div class="brand">
-      <div class="logo">S</div>
-      <div>
-        <div class="t1">SkillAgent</div>
-        <div class="t2" id="proj">…</div>
+      <div class="bl">
+        <div class="logo">S</div>
+        <div style="min-width:0">
+          <div class="t1">SkillAgent</div>
+          <div class="t2" id="proj">…</div>
+        </div>
       </div>
+      <button class="icon-btn" id="skillsBtn" title="查看可用 Skills">🧩</button>
     </div>
-    <div class="skill-head"><span>可用 SKILLS</span><span id="skCount"></span></div>
-    <div id="skillList"><div class="empty">加载中…</div></div>
+    <div class="skill-head">
+      <span>对话</span>
+      <button class="mini" id="reloadSessBtn" title="刷新历史会话列表">↻ 刷新</button>
+    </div>
+    <div id="sessionList"><div class="empty">加载中…</div></div>
   </aside>
 
   <main>
@@ -183,12 +288,22 @@
       <div class="chips" id="chips"></div>
       <div class="composer">
         <textarea id="input" rows="1" placeholder="输入任务，如：用 gwas-pipeline 跑 ET277 关联分析…  (Enter 发送，Shift+Enter 换行)"></textarea>
-        <button id="sendBtn" title="发送">➤</button>
+        <button id="sendBtn" title="发送"><span id="sendIconIdle">➤</span><span id="sendIconRun" style="display:none">■</span></button>
       </div>
       <div class="hint" id="hint"></div>
     </footer>
   </main>
 </div>
+
+<div class="scrim" id="scrim"></div>
+<div id="ctxMenu"></div>
+<aside class="drawer" id="skillDrawer">
+  <div class="dh">
+    <span>可用 SKILLS <span class="t2" id="skCount" style="font-weight:400"></span></span>
+    <button class="icon-btn" id="drawerClose" title="关闭">✕</button>
+  </div>
+  <div id="skillList"><div class="empty">加载中…</div></div>
+</aside>
 
 <div class="overlay" id="overlay">
   <div class="modal">
@@ -207,7 +322,8 @@
 <script>
 "use strict";
 const $ = s => document.querySelector(s);
-const SID = (localStorage.sid && sessionStorage.sid===localStorage.sid)
+// 当前会话 id 可运行时切换（点击历史对话 → 基于该会话继续问答）
+let SID = (localStorage.sid && sessionStorage.sid===localStorage.sid)
   ? localStorage.sid : (localStorage.sid = crypto.randomUUID().slice(0,12));
 sessionStorage.sid = localStorage.sid;
 
@@ -233,9 +349,11 @@ const CHIPS = [
     $("#permSel").value = cfg.permission;
     $("#hint").textContent = `API ${cfg.base_url}`;
     $("#connDot").classList.add("on"); $("#connTxt").textContent = "已连接";
-    renderSkills(await (await fetch("/api/skills")).json());
+    // 先加载历史（会主动高亮「当前会话」，修复默认高亮第一项的问题）
+    await renderSessions();
   }catch(e){ $("#connTxt").textContent = "连接失败"; }
   renderChips();
+  try{ renderSkills(await (await fetch("/api/skills")).json()); }catch(e){}
 })();
 
 function renderChips(){
@@ -264,17 +382,333 @@ function renderSkills(skills){
     el.addEventListener("click", ()=>{
       const name = el.dataset.name;
       $("#input").value = `用 Skill(${name}) 加载「${name}」并按它的方法执行。`;
-      autosize(); $("#input").focus();
+      autosize(); $("#input").focus(); closeDrawer();
     });
   });
 }
 
+/* ---------------- 侧栏：对话 / 历史会话 ---------------- */
+let curSessionMeta={};
+const previewCache={};               // 左栏预览缓存：{sid: {mtime, text}}
+let activeViewId=SID;               // 左栏高亮：当前正在查看的会话 id
+
+async function renderSessions(){
+  try{
+    const [active, archived] = await Promise.all([
+      (await fetch("/api/sessions")).json(),
+      (await fetch("/api/sessions?archived=1")).json(),
+    ]);
+    // 左栏标题=该会话里用户问的第一句话；副行=最近一次提问。都按 id+mtime 缓存，
+    // 避免每次 renderSessions（切会话/收尾都会调）都重拉全部会话详情。
+    const all = [...active, ...archived].filter(s=>s.id!==SID);
+    await Promise.all(all.map(async s=>{
+      const hit = previewCache[s.id];
+      if(hit && hit.mtime===s.mtime){ s._title=hit.title; s._preview=hit.text; return; }
+      let title="", text="";
+      try{
+        const d = await (await fetch("/api/session/"+encodeURIComponent(s.id))).json();
+        const ms = d.messages||[];
+        title = firstUserTitle(ms);
+        const lastUser = [...ms].reverse().find(m=>m.role==="user" &&
+          (m.blocks||[]).some(b=>b.type==="text" && b.text));
+        text = lastUser
+          ? lastUser.blocks.filter(b=>b.type==="text").map(b=>b.text).join(" ")
+              .replace(/\s+/g," ").trim().slice(0,60)
+          : "";
+      }catch(e){}
+      previewCache[s.id]={mtime:s.mtime, title:title, text:text};
+      s._title=title; s._preview=text;
+    }));
+    const el=$("#sessionList");
+    const now = active.find(s=>s.id===SID);
+    let html="";
+    // 当前会话置顶（即便尚未落盘也显示）：标题取本会话第一句话，
+    // 还没有第一句话就用「新会话」；预览显示最近一次提问。
+    const curTitle = curSessionMeta.title || "新会话";
+    html += sessItem({id:SID, mtime: now?now.mtime:Date.now()/1000, size: now?now.size:0,
+                      _cur:true, _title:curTitle, _preview:curSessionMeta.preview||""});
+    for(const s of active){
+      if(s.id===SID) continue;
+      html += sessItem(s);
+    }
+    if(archived.length){
+      html += `<div class="sess-group" id="archToggle">📦 已归档（${archived.length}） <span class="caret">▸</span></div>`;
+      html += `<div id="archList" style="display:none">${archived.map(sessItem).join("")}</div>`;
+    }
+    el.innerHTML=html;
+    const at=$("#archToggle");
+    if(at) at.addEventListener("click",()=>{
+      const l=$("#archList"); const open=l.style.display!=="none";
+      l.style.display=open?"none":""; at.querySelector(".caret").textContent=open?"▸":"▾";
+    });
+    el.querySelectorAll(".sess").forEach(node=>{
+      node.addEventListener("click",()=>selectSession(node.dataset.id));
+      node.addEventListener("contextmenu", e=>{ e.preventDefault(); showCtxMenu(e, node); });
+    });
+  }catch(e){
+    $("#sessionList").innerHTML=`<div class="empty">无法加载会话列表</div>`;
+  }
+}
+
+/* 选中某个会话：把它设为「当前会话」，右侧基于它继续问答（不新建、不清空）。 */
+async function selectSession(id){
+  if(state.busy) return;
+  if(id===SID && !viewingHistory){ renderSessions(); return; }
+  // 切换当前会话 → 让后端会话表以该 id 为准
+  SID = id; localStorage.sid = id; sessionStorage.sid = id;
+  curSessionMeta = {};
+  viewingHistory = false;
+  activeViewId = id;
+  // 左栏标题就是「本会话第一句话」：切过来的同时把它记下，切换后标题立刻跟上
+  const pc = previewCache[id];
+  if(pc) curSessionMeta.title = pc.title;
+  // 重新挂载对话框。三种结局都要**画出东西**：以前 ok:false 与 messages 为空
+  // 都走「清空后什么都不画」→ 用户看到纯空白，分不清「历史丢了」还是「会话本就空」。
+  let data=null, netErr=false;
+  try{ data = await (await fetch("/api/session/"+encodeURIComponent(id))).json(); }
+  catch(e){ netErr = true; }
+  chatEl.innerHTML="";
+  const emptyState=(big, sub)=>{
+    chatEl.innerHTML=`<div class="empty-state"><div class="big">${escapeHtml(big)}</div>${escapeHtml(sub)}</div>`;
+  };
+  if(netErr || !data || !data.ok){
+    emptyState(netErr?"加载会话失败":"会话不存在或已被删除",
+               netErr?"网络请求出错，请刷新后重试。":"服务端没有这个 id 的记录。");
+  }else{
+    const msgs=data.messages||[];
+    // 标题与预览都取「磁盘上的第一/最后一次提问」，而不是靠调用方缓存传进来
+    const title = firstUserTitle(msgs) || previewCache[id]?.title || "";
+    if(title) curSessionMeta.title = title;
+    if(msgs.length){
+      const hdr=document.createElement("div");
+      hdr.className="sess-banner";
+      hdr.innerHTML=`📂 已切到会话 <b>${escapeHtml(title || id)}</b> · 继续提问会基于这段历史`;
+      chatEl.appendChild(hdr);
+      replayMessages(msgs, {incompleteFrom: data.resume_count});
+    }else{
+      emptyState("该会话没有可显示的内容",
+                 "磁盘上只保存了元数据，没有收发出过任何消息。");
+    }
+    // 后端如实回放了磁盘内容；这里告诉用户「哪一段续问时不会带上」
+    if(data.reason==="no_completed_assistant"){
+      notice("该会话还没有任何已完成的助手回复。上方内容按磁盘原样显示；续问会从空历史开始。");
+    }else if((data.discarded||0)>0){
+      notice(`已按磁盘原样显示全部内容；但续问会从上一个已完成的轮次接续，`
+             +`末尾 ${data.discarded} 条未完成内容不会发给模型。`);
+    }
+  }
+  renderSessions();
+  scrollBottom();
+  $("#input").focus();
+}
+
+
+/* ---------------- 右键菜单：归档 / 删除 ---------------- */
+// 不要用全局变量暂存右键目标：document 上的 click 会先跑 hideCtxMenu() 并把目标清空，
+// 导致 ctxAction 拿到 null（这正是「点归档/删除没反应」的原因）。改为把目标挂在菜单节点上。
+function showCtxMenu(ev, node){
+  const id=node.dataset.id, archived=node.dataset.arch==="1", isCur=(id===SID);
+  const menu=$("#ctxMenu");
+  menu.dataset.target=JSON.stringify({id: id, archived: archived, isCur: isCur,
+                                      active: (activeViewId===id)});
+  const items=[];
+  if(!isCur){
+    items.push(archived ? ["unarchive","↩ 取消归档"] : ["archive","📦 归档"]);
+  }
+  items.push(["delete","🗑 删除"]);
+  menu.innerHTML=items.map(([act,label])=>
+    `<button class="ctx-item${act==="delete"?" danger":""}" data-act="${act}">${label}</button>`).join("");
+  // 键盘/脚本触发 contextmenu 时 clientX/Y 为 0，兜底到一个可见位置
+  const px=ev.clientX||10, py=ev.clientY||80;
+  menu.style.left=Math.max(0, Math.min(px, window.innerWidth-170))+"px";
+  menu.style.top =Math.max(0, Math.min(py, window.innerHeight-130))+"px";
+  menu.classList.add("show");
+  menu.querySelectorAll(".ctx-item").forEach(b=>{
+    // 阻止冒泡，确保 document 的关闭监听不会干扰这次点击
+    b.addEventListener("click", ev2=>{ ev2.stopPropagation(); ctxAction(b.dataset.act); });
+  });
+}
+function hideCtxMenu(){ $("#ctxMenu").classList.remove("show"); }
+
+async function ctxAction(act){
+  const menu=$("#ctxMenu");
+  let t=null;
+  try{ t=JSON.parse(menu.dataset.target||"null"); }catch(e){}
+  hideCtxMenu();
+  if(!t || !t.id) return;
+  const {id, archived, isCur}=t;
+  if(act==="delete"){
+    if(isCur){ alert("这是当前正在使用的会话，请先「新建会话」再删除它。"); return; }
+    if(!confirm(`确定永久删除会话「${id}」？此操作不可撤销。`)) return;
+    await fetch("/api/session/delete",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({session:id})});
+    if(activeViewId===id) backToCurrent();
+  }else if(act==="archive" || act==="unarchive"){
+    if(isCur){ alert("当前会话无法归档，请先新建会话。"); return; }
+    const toArchive = act==="archive";
+    await fetch("/api/session/archive",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({session:id, archived:toArchive})});
+    if(toArchive && activeViewId===id) backToCurrent();
+  }
+  renderSessions();
+}
+
+/* 从消息列表里取「标题」：第一条**有文字**的用户提问（单行、截断）。
+   忽略以 / 开头的斜杠命令与工具结果消息。为空表示还没有可用的标题。 */
+function firstUserTitle(ms){
+  for(const m of (ms||[])){
+    if(m.role!=="user") continue;
+    const blocks=m.blocks||[];
+    if(blocks.length && blocks.every(b=>b.type==="tool_result")) continue;   // 工具结果
+    const text=blocks.filter(b=>b.type==="text").map(b=>b.text).join(" ").trim();
+    if(!text || text.startsWith("/")) continue;                              // 命令/空
+    return text.replace(/\s+/g," ").slice(0,60);
+  }
+  return "";
+}
+
+function sessItem(s){
+  const t=new Date((s.mtime||0)*1000);
+  const when=t.toLocaleString();
+  const kb=Math.max(1,Math.round((s.size||0)/1024));
+  const isActive = (s.id===activeViewId);
+  // 标题=用户第一句话（认得出是哪次对话）；没有就退回短 id，再没有才显示加载中
+  const title = s._title || "";
+  const fallback = "会话 " + String(s.id).slice(0,8);
+  const name = title || (s._title===undefined ? "加载中…" : fallback);
+  const sub = title && s._preview && s._preview!==title ? s._preview : "";
+  return `<div class="sess${isActive?" active":""}${s.archived?" arch":""}" data-id="${s.id}" data-arch="${s.archived?"1":"0"}" title="会话 id：${escapeHtml(s.id)}">
+    <div class="r1">${s._cur?'<span class="dot"></span>':""}<span class="nm">${escapeHtml(name)}</span>${s._cur?'<span class="curtl">当前</span>':""}${s.archived?'<span class="curtl">归档</span>':""}</div>
+    <div class="t2"><span>${when}</span><span>${kb} KB</span></div>
+    ${sub?`<div class="dsc">${escapeHtml(sub)}</div>`:""}
+  </div>`;
+}
+
+/* 把持久化的消息重建为气泡（历史查看用）。
+   opts.incompleteFrom：从该下标起是「未完成轮次」（后端 resume_count），前面插一条分隔提示。 */
+function replayMessages(msgs, opts){
+  const cut = (opts && opts.incompleteFrom!=null) ? opts.incompleteFrom : Infinity;
+  let flow=null;
+  const list = msgs||[];
+  for(let i=0;i<list.length;i++){
+    if(i===cut){
+      const sep=document.createElement("div");
+      sep.className="sess-banner cut";
+      sep.innerHTML="⚠️ 以下内容尚未完成（模型未回复或中途中断）——续问时不会发给模型";
+      chatEl.appendChild(sep);
+    }
+    const m=list[i];
+    if(m.role==="user"){
+      const blocks=m.blocks||[];
+      const allResults=blocks.length>0 && blocks.every(b=>b.type==="tool_result");
+      if(allResults){
+        // 工具结果 → 填进对应的工具卡（同一 assistant 轮次内）
+        for(const b of blocks){
+          if(b.type!=="tool_result") continue;
+          const card=chatEl.querySelector(`.tool-card[data-id="${b.tool_use_id}"]`);
+          if(card){
+            const st=card.querySelector(".status");
+            st.innerHTML=b.is_error?`<span class="st-err">✗ 出错</span>`:`<span class="st-ok">✓ 完成</span>`;
+            const res=card.querySelector(".res");
+            res.textContent=b.content||"(空)";
+            res.style.color=b.is_error?"var(--err)":"";
+            if(b.is_error) card.classList.add("open");
+            requestAnimationFrame(()=>fitFolds(card));   // 回填后重算「结果」块要不要折
+          }
+        }
+        continue;
+      }
+      const text=blocks.filter(b=>b.type==="text").map(b=>b.text).join("\n");
+      const d=document.createElement("div");
+      d.className="msg user";
+      d.innerHTML=`<div class="msg-role">你</div><div class="bubble">${escapeHtml(text)}</div>`;
+      chatEl.appendChild(d);
+      continue;
+    }
+    // assistant
+    const wrap=document.createElement("div");
+    wrap.className="msg assist";
+    wrap.innerHTML=`<div class="msg-role">SkillAgent</div><div class="bubble"><div class="flow"></div></div>`;
+    chatEl.appendChild(wrap);
+    flow=wrap.querySelector(".flow");
+    for(const b of (m.blocks||[])){
+      if(b.type==="thinking" && (b.text||"").trim()){
+        flow.appendChild(makeThinkBox(b.text));
+      }else if(b.type==="text" && b.text){
+        const t=document.createElement("div"); t.className="md"; t.innerHTML=md(b.text);
+        flow.appendChild(t);
+      }else if(b.type==="tool_use"){
+        const card=document.createElement("div");
+        card.className="tool-card open"; card.dataset.id=b.id;   // 默认展开，折叠交给内部的 fitFolds
+        card.innerHTML=`<div class="hd"><span class="ico">${ICONS[b.name]||"🧰"}</span>
+          <span class="nm">${escapeHtml(b.name)}</span>
+          <span class="status">…</span></div>
+          <div class="body"><div class="lab">调用参数</div><pre>${escapeHtml(safeJson(b.input||{}))}</pre>
+          <div class="lab">结果</div><pre class="res">（无记录）</pre></div>`;
+        card.querySelector(".hd").addEventListener("click",()=>card.classList.toggle("open"));
+        flow.appendChild(card);
+      }
+    }
+    const tail=document.createElement("div");
+    tail.className="tail"; tail.textContent="（历史记录）";
+    flow.appendChild(tail);
+  }
+  foldScanSoon();          // 回放完成 → 给超长的参数/结果/代码块/表格挂上折叠
+}
+
+/* ---------------- Skills 抽屉 ---------------- */
+function openDrawer(){ $("#skillDrawer").classList.add("open"); $("#scrim").classList.add("show"); }
+function closeDrawer(){ $("#skillDrawer").classList.remove("open"); $("#scrim").classList.remove("show"); }
+
 /* ---------------- 会话 ---------------- */
 let curAssist=null, curFlow=null, curTextBox=null, curThinkEl=null;
-let curRenderTimer=null;
+let curThinking=null, curThinkingBuf="";
+let curRenderTimer=null, thinkTimer=null;
+let viewingHistory=false;                     // 正在查看历史会话（只读）时不接收流式写入
 const RENDER_MAX = 120000;          // 流式渲染的源文上限（超出只渲染尾部窗口）
 const FINAL_MAX  = 500000;          // 最终整段渲染上限
 const chatEl = $("#chat");
+
+/* 只读的「思考过程」折叠块：默认 3 行，点击展开/收起 */function makeThinkBox(text, open=false){
+  const box=document.createElement("div");
+  box.className="think-box"+(open?" open":"");
+  const t=(text||"").trim()||"（无思考内容）";
+  box.innerHTML=`<div class="thd"><span class="lb">🧠 思考过程</span><span class="tip"></span></div>`
+    +`<div class="tclamp">${escapeHtml(t)}</div>`;
+  box.querySelector(".thd").addEventListener("click",()=>box.classList.toggle("open"));
+  return box;
+}
+
+/* 折叠的「实测」要等元素真正上屏（display:none / 还没插进 DOM 时 scrollHeight 都是 0） */
+function foldScanSoon(){ requestAnimationFrame(()=>fitFolds()); }
+
+/* 流式思考：先显示一行「思考中…」，收完后原地替换成可折叠块（不占大段空间） */
+function ensureThinkLive(){
+  if(curThinking) return;
+  curThinkingBuf="";
+  const el=document.createElement("div");
+  el.className="thinking-live";
+  el.innerHTML=`<span class="dot"></span>思考中…`;
+  curFlow.appendChild(el);
+  curThinking=el;
+}
+function thinkDelta(d){
+  clearThinking();                 // 有思考 → 移走「思考中…（模型计算中）」占位
+  if(viewingHistory) return;
+  ensureThinkLive();
+  curThinkingBuf+=d;
+  if(thinkTimer) clearTimeout(thinkTimer);
+  thinkTimer=setTimeout(()=>finalizeThink(),350);   // 一段思考写完就变成折叠块
+  scrollBottom();
+}
+function finalizeThink(){
+  if(thinkTimer){ clearTimeout(thinkTimer); thinkTimer=null; }
+  const el=curThinking;                          // 先取节点：下一行会把 curThinking 置空
+  if(!el) return;
+  const txt=curThinkingBuf; curThinking=null; curThinkingBuf="";
+  if(!txt.trim() || !el.isConnected) return;
+  el.replaceWith(makeThinkBox(txt));             // 原地替换为可折叠块
+}
 
 function addUserMsg(text){
   const d=document.createElement("div");
@@ -321,6 +755,8 @@ function flushRender(){
 }
 function doRender(){
   if(!curTextBox) return;
+  // 流式中：整段 innerHTML 重建，字号/缩进都会变，折叠状态要重新量（重建会掀掉 max-height）
+  if(curTextBox._fold) applyFold(curTextBox);
   let buf=curTextBox._buf||"";
   if(buf.length>RENDER_MAX) buf="…[内容过长，流式预览已截断]\n\n"+buf.slice(-RENDER_MAX);
   try{
@@ -335,14 +771,19 @@ function doRender(){
 
 function textDelta(d){
   clearThinking();
+  if(viewingHistory) return;
+  finalizeThink();                       // 正文开始 → 把进行中的思考收成折叠块
   if(!curTextBox){ curTextBox=document.createElement("div"); curTextBox.className="md"; curFlow.appendChild(curTextBox); }
   curTextBox._buf=(curTextBox._buf||"")+d;
   scheduleRender();
 }
 function toolStart(ev){
   clearThinking();
+  if(viewingHistory) return;
+  finalizeThink();
   if(curTextBox) flushRender();          // 渲染挂起缓冲后再插入工具卡
   curTextBox=null;
+  if(!curFlow) return;
   const card=document.createElement("div");
   card.className="tool-card open"; card.dataset.id=ev.id;
   let inp = safeJson(ev.input||{});
@@ -357,6 +798,7 @@ function toolStart(ev){
   const hd=card.querySelector(".hd");
   hd.addEventListener("click",()=>card.classList.toggle("open"));
   curFlow.appendChild(card);
+  scrollBottom();
 }
 function toolEnd(ev){
   const card=curFlow?curFlow.querySelector(`.tool-card[data-id="${ev.id}"]`):null;
@@ -367,22 +809,33 @@ function toolEnd(ev){
   res.textContent = (ev.result||"(空)");
   res.style.color = ev.is_error ? "var(--err)" : "";
   if(ev.is_error) card.classList.add("open");
+  card.classList.add("open");        // 工具卡默认展开，长内容由内部的折叠控制（见 fitFolds）
+  requestAnimationFrame(()=>fitFolds());   // 结果回填后重新量「结果」块要不要折
+  scrollBottom();
 }
 
 function finalize(ev){
-  clearThinking();
+  clearThinking(); finalizeThink();
   flushRender();
+  if(viewingHistory) return;
   const full=(ev.final||"");
   const finalText = full.length>FINAL_MAX ? full.slice(0,FINAL_MAX)+"\n…[最终内容过长，已截断]" : full;
-  if(!curTextBox){ curTextBox=document.createElement("div"); curTextBox.className="md"; curFlow.appendChild(curTextBox); }
+  curTextBox=curTextBox||document.createElement("div");
+  if(!curTextBox.isConnected){ curTextBox.className="md"; curFlow.appendChild(curTextBox); }
   curTextBox._buf=finalText; curTextBox.innerHTML=md(finalText);   // 全文只在此处渲染一次
+  fitFolds(curTextBox);                                            // 收尾：折叠超长的代码块/表格/引用
   const tail=document.createElement("div");
   tail.className="tail";
   const stopTxt = ev.stop_reason && ev.stop_reason!=="end_turn" ? ` · 终止=${ev.stop_reason}` : "";
   if(ev.usage) setUsage(ev.usage);
   tail.textContent = `完成 · ${ev.messages||""} 条上下文消息` + stopTxt + (ev.active&&ev.active.length?` · 激活 skill: ${ev.active.join(", ")}`:"");
   curFlow.appendChild(tail);
-  curAssist=null; curFlow=null; curTextBox=null; scrollBottom();
+  if(ev.resume_discarded>0){
+    notice(`注意：本会话开头有 ${ev.resume_discarded} 条未完成内容未随续问发送给模型`
+           +`（可从左侧切回该会话查看完整内容）。`);
+  }
+  curAssist=null; curFlow=null; curTextBox=null;
+  scrollBottom(); renderSessions();
 }
 
 function setUsage(u){
@@ -396,6 +849,8 @@ function setUsage(u){
 async function send(){
   const text=$("#input").value.trim();
   if(!text||state.busy) return;
+  // 当前会话还没标题 → 用这句话当标题（和左栏「用户第一句话」的规则一致）
+  if(!curSessionMeta.title) curSessionMeta.title = text.replace(/\s+/g," ").slice(0,60);
   setBusy(true);
   addUserMsg(text); $("#input").value=""; autosize();
   addAssistMsg();
@@ -411,7 +866,7 @@ async function send(){
     }
     await consume(res);
   }catch(e){
-    if(e && e.name === "AbortError"){ addErrorMsg("已停止本轮任务。"); return; }  // 用户点「停止」
+    if(e && e.name === "AbortError"){ addErrorMsg("已停止本轮任务。"); cleanupTurn(); return; }  // 用户点「停止」
     if(document.hidden) return;
     console.error("[chat] 读取响应流失败：", e);
     const alloc = e instanceof RangeError;     // 浏览器读流时分配内存失败 ≠ 后端断连
@@ -419,6 +874,7 @@ async function send(){
     addErrorMsg(alloc
       ? `响应流分配内存失败（${tag}）。通常是连接被中途截断/损坏所致，请重试或刷新页面。`
       : `连接中断（${tag}）。`);
+    cleanupTurn();
   }
   finally{ state.controller=null; setBusy(false); }
 }
@@ -455,6 +911,7 @@ function handleEvent(block){
   let ev; try{ ev=JSON.parse(data); }catch(e){ return; }
   switch(ev.type){
     case "text": textDelta(ev.delta||""); break;
+    case "thinking": thinkDelta(ev.delta||""); break;
     case "tool_start": toolStart(ev); break;
     case "tool_end": toolEnd(ev); break;
     case "confirm": showConfirm(ev); break;
@@ -503,6 +960,8 @@ async function stopRun(){
 }
 
 function exportChat(){
+  // 折叠用的是 overflow:hidden（不是 display:none），innerText 仍能拿到被裁掉的文字，
+  // 所以导出无需先展开；工具卡历来读 textContent，也早就免疫。
   const lines=[];
   chatEl.querySelectorAll(".msg").forEach(m=>{
     const who = m.classList.contains("user") ? "你" : "SkillAgent";
@@ -540,30 +999,150 @@ $("#clearBtn").addEventListener("click", async()=>{
   $("#usageBadge").textContent="tokens 0";
   await fetch("/api/clear",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session:SID})});
 });
-$("#newBtn").addEventListener("click", ()=>{ location.reload(); });
+// 新建会话：换一个全新 id，立刻生效（无需刷新）
+$("#newBtn").addEventListener("click", ()=>{
+  if(state.busy) return;
+  const nid=crypto.randomUUID().slice(0,12);
+  setCurrent(nid);
+  curSessionMeta={}; viewingHistory=false;
+  chatEl.innerHTML=""; curAssist=curFlow=curTextBox=null;
+  $("#usageBadge").textContent="tokens 0";
+  renderSessions();
+  $("#input").focus();
+});
 $("#stopBtn").addEventListener("click", stopRun);
 $("#exportBtn").addEventListener("click", exportChat);
+$("#skillsBtn").addEventListener("click", openDrawer);
+$("#drawerClose").addEventListener("click", closeDrawer);
+$("#scrim").addEventListener("click", closeDrawer);
+$("#reloadSessBtn").addEventListener("click", renderSessions);
+document.addEventListener("keydown", e=>{ if(e.key==="Escape"){ closeDrawer(); hideCtxMenu(); } });
+// 点击别处 / 滚动 / 缩放 → 关闭右键菜单
+document.addEventListener("click", e=>{ if(!e.target.closest("#ctxMenu")) hideCtxMenu(); });
+document.addEventListener("contextmenu", e=>{ if(!e.target.closest(".sess")) hideCtxMenu(); });
+window.addEventListener("resize", hideCtxMenu);
+$("#sessionList").addEventListener("scroll", hideCtxMenu);
+function backToCurrent(){ viewingHistory=false; activeViewId=SID; chatEl.innerHTML=""; curAssist=curFlow=curTextBox=null; renderSessions(); }
+// 清空会话时高亮应停在「当前」项；这里同时把 activeViewId 与 SID 对齐
+function setCurrent(id){ SID=id; localStorage.sid=id; sessionStorage.sid=id; activeViewId=id; }
 
 const inputEl=$("#input"), sendBtn=$("#sendBtn");
 inputEl.addEventListener("keydown", e=>{
-  if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); send(); }
+  if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); onPrimary(); }
 });
 inputEl.addEventListener("input", autosize);
-sendBtn.addEventListener("click", send);
+// 发送按钮在空闲时=发送，运行中=强制中断
+sendBtn.addEventListener("click", onPrimary);
+function onPrimary(){ if(state.busy) stopRun(); else send(); }
 function autosize(){ inputEl.style.height="auto"; inputEl.style.height=Math.min(inputEl.scrollHeight,180)+"px"; }
 function setBusy(b){
-  state.busy=b; sendBtn.disabled=b; inputEl.disabled=b;
+  state.busy=b;
+  inputEl.disabled=b;
   $("#stopBtn").style.display=b ? "" : "none";
+  const run=document.getElementById("sendIconRun"), idle=document.getElementById("sendIconIdle");
+  if(run&&idle){ run.style.display=b?"":"none"; idle.style.display=b?"none":""; }
+  sendBtn.classList.toggle("running", b);
+  sendBtn.title = b ? "强制中断本轮任务" : "发送";
   document.querySelectorAll("#chips .chip").forEach(c=>c.style.pointerEvents=b?"none":"");
+}
+/* 中断/异常收尾：把流式中的思考与正文落定，并重算折叠 —— 否则被打断的那段
+   会停在「还没渲染 + 没折叠」的状态（Bash 的中断路径以前什么都不做）。 */
+function cleanupTurn(){
+  clearThinking(); finalizeThink(); flushRender();
+  fitFolds();
 }
 
 /* ---------------- 滚动 ---------------- */
+// 本轮运行中始终自动贴底（用户上翻查看时可临时脱离，回到底部附近即恢复吸附）
 let stick=true;
 function nearBottom(){ const d=chatEl.scrollHeight-chatEl.scrollTop-chatEl.clientHeight; return d<80; }
 function scrollBottom(){ chatEl.scrollTop=chatEl.scrollHeight; }
 let tmr=null;
-function throttleScroll(){ if(tmr) return; tmr=setTimeout(()=>{ tmr=null; if(nearBottom()) scrollBottom(); },120); }
+function throttleScroll(){ if(tmr) return; tmr=setTimeout(()=>{ tmr=null; if(stick||nearBottom()) scrollBottom(); },100); }
+// 用 rAF 在每次 DOM 变化后统一贴底，保证「思考/流式文本/工具卡」都能自动往下滚
+let rafPending=false;
+function scheduleBottom(){
+  if(rafPending) return;
+  rafPending=true;
+  requestAnimationFrame(()=>{ rafPending=false; if(stick||nearBottom()) scrollBottom(); });
+}
+// 性能：批处理 DOM 观察回调，避免每一帧都触发布局读取
+let obsPending=false;
+const _obs=new MutationObserver(()=>{
+  if(obsPending) return;
+  obsPending=true;
+  requestAnimationFrame(()=>{ obsPending=false; scheduleBottom(); fitFoldsSoon(); });
+});
+_obs.observe(chatEl,{childList:true,subtree:true,characterData:true});
 chatEl.addEventListener("scroll", ()=>{ stick=nearBottom(); });
+
+/* ---------------- 长内容折叠（前几行 + 点击展开） ---------------- */
+/* 内容默认用 CSS max-height 裁到前 N 行；这里只负责「谁真的超长了」——
+   只有 scrollHeight 明显超出可视高度才挂 .fold（可点 + 角标），短内容完全不显示折叠痕迹。
+   为什么用测量而不是无脑套 clamp：见 CSS 里 .foldable 的注释。
+   ⚠️ 必须在**可见态**测量。这里有个前提：切换会话/初始化之后代码会 `scrollBottom()` 贴底，
+   所以「刚渲染完」量到的位置反而在视口外（元素被贴到底部了）——按视口过滤会漏掉整屏内容，
+   只剩末尾一两条。真正的隐藏态只有未展开的工具卡体（display:none，量到恒 0），
+   所以过滤条件就是它，不再看视口；单次渲染的元素数量有限，不做视口过滤也不会卡。 */
+const FOLD_SEL="pre,.tw,blockquote";
+function isMeasurable(el){
+  return !el.closest(".tool-card:not(.open)");   // display:none 的工具卡体：等它展开再量
+}
+/* root 省略 = 全量补扫（初始化 / 展开工具卡 / 结果回填）；给 root = 只处理这一块 */
+function fitFolds(root){
+  (root||chatEl).querySelectorAll(FOLD_SEL).forEach(el=>{
+    if(el.closest(".think-box")||el.closest(".modal")) return;   // 思考块 / 权限弹窗自有一套，别动
+    if(el.closest(".tw") && !el.classList.contains("tw")) return; // 表格折外层 .tw，不折内层 table
+    el.classList.add("foldable");
+    if(el.hasAttribute("data-fold") || !isMeasurable(el)) return;
+    el.setAttribute("data-fold","1");
+    applyFold(el);
+  });
+}
+function applyFold(el){
+  if(!isMeasurable(el)) return;                      // display:none 时 scrollHeight 恒为 0，量了会误判
+  if(el.classList.contains("fold-open")){
+    // 已展开：把上限放到「大致整块」再量，否则 420px 的封顶会让它永远显示为溢出
+    el.style.maxHeight="none";
+    void el.offsetHeight;
+    const full=el.scrollHeight;
+    el.style.maxHeight="";
+    el.classList.toggle("fold", full>el.clientHeight+2);
+    return;
+  }
+  el.classList.toggle("fold", el.scrollHeight>el.clientHeight+2);
+}
+/* 窗口尺寸变化 → 行高变了 → 重新判定 */
+function refits(){ chatEl.querySelectorAll(".foldable").forEach(applyFold); }
+
+/* DOM 变动（流式正文每 200ms 重建、历史回放、工具结果回填）后补扫一次。
+   只加/改 class 不触发 MutationObserver（它只观察 childList/characterData），不会自激循环。 */
+let foldPending=false;
+function fitFoldsSoon(){
+  if(foldPending) return;
+  foldPending=true;
+  requestAnimationFrame(()=>{ foldPending=false; fitFolds(); });
+}
+
+/* 展开/收起：一条事件委托覆盖三条建 <pre> 的路径（实时 toolStart、增量 toolEnd、历史回放）。
+   点整卡表头展开时也要顺带量一次刚露出来的参数/结果。 */
+chatEl.addEventListener("click", e=>{
+  if(e.target.closest(".tool-card .hd")){ requestAnimationFrame(()=>fitFolds()); return; }
+  if(e.target.closest(".think-box")) return;
+  const el=e.target.closest(".foldable.fold");
+  if(!el) return;
+  // 拖选复制长内容时，抬手那一下不该把刚选中的块收起
+  const s=getSelection();
+  if(s && !s.isCollapsed && el.contains(s.anchorNode)) return;
+  el.classList.toggle("fold-open");
+  applyFold(el);
+  stick=false;                       // 别让后续流式的自动贴底把刚展开的位置拽走
+  scrollBottom();
+});
+
+/* 折叠的「行数阈值」是 CSS 像素上限，字体/换行变化都要重新量一遍 */
+window.addEventListener("resize", ()=>{ clearTimeout(fitFolds._t);
+  fitFolds._t=setTimeout(refits,200); });
 
 /* ---------------- 工具 ---------------- */
 function escapeHtml(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }

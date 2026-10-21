@@ -31,7 +31,7 @@ class _LoopClient:
     def __init__(self):
         self.calls = 0
 
-    def create(self, *, system, tools, messages, stream, on_delta):
+    def create(self, *, system, tools, messages, stream, on_delta, on_thinking=None):
         self.calls += 1
         return ([{"type": "tool_use", "id": f"t{self.calls}", "name": "Bash", "input": {}}],
                 "tool_use", 10)
@@ -78,7 +78,7 @@ def test_default_no_budget_behaves_like_before():
     ag = Agent(cfg, _Reg(), _Tools())
 
     class _One:
-        def create(self, *, system, tools, messages, stream, on_delta):
+        def create(self, *, system, tools, messages, stream, on_delta, on_thinking=None):
             return ([{"type": "text", "text": "done"}], "end_turn", 1)
 
     ag.client = _One()
