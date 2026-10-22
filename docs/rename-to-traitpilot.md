@@ -239,6 +239,22 @@ $ git ls-remote git@github.com:rua111555/TraitPilot.git HEAD
 
 **未做**：本地目录名 `/home/chenyuxi/skill/agent` 保持原样，未改名（不在「仓库内容」范围，且会影响 `~/.claude` 下的既有会话记录路径）。
 
+### 7.1 从远程克隆的副本实测（推送后复核）
+
+推送后从**新远程**重新克隆一份到 `/tmp/rename/servercheck/repo`，在副本上复核 —— 判据是「查真正推上去的东西」，不是查本地工作区：
+
+| 检查 | 结果 |
+|---|---|
+| 克隆 HEAD | `a35fd95`，与本地 HEAD 同一 commit |
+| 入库文件数 | 109 |
+| 旧名残留（排除本文档） | `WGS_Agent` 0、`SkillAgent` 0、`skillagent` 0 ✅ |
+| 新名落地 | `TraitPilot` 66 处、`traitpilot-` 18 处 ✅ |
+| 保留层（排除本文档后） | `skill_agent` **440**、`SKILL_AGENT_` **174**、`WGS` 领域词 **58** —— 与基线逐字相同 ✅ |
+| 副本可直接跑 | `run.py --help` → `usage: traitpilot ...`；`run.py list` 正常列出技能 ✅ |
+
+**计数差量归因**（克隆副本初次计数为 452 / 181 / 75，高于基线，必须查清而非想当然）：
+差量 +12 / +7 / +17，与本文件（`docs/rename-to-traitpilot.md`）内的引用数 **12 / 7 / 17 精确相等** —— 增长 100% 来自本记录文档自身，保留层零误伤；排除本文件后即回到基线值。
+
 ---
 
 ## 8. 复核命令（可照此重跑）
