@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# SkillAgent 一键环境安装
+# TraitPilot 一键环境安装
 #
 # 本脚本只做一件事：把「跑通整个项目」所需的虚拟环境、软件与版本装到位。
 # 不处理网络代理/镜像，不改系统配置，不用 sudo（除 --with-system 明确要求）。
@@ -149,7 +149,7 @@ confirm() { [ "$YES" = 1 ] && return 0; read -r -p "  继续？[y/N] " r; [ "${r
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 print_spec() {
-  c "1;37" "SkillAgent 环境安装规格"
+  c "1;37" "TraitPilot 环境安装规格"
   echo
   c "36" "① conda 虚拟环境：$AGENT_ENV_NAME   〔WGS 管线〕"
   echo "   包：${AGENT_SPEC[*]}"

@@ -1,4 +1,4 @@
- SkillAgent 现状调研与标准 Agent Harness 组件增补方案
+ TraitPilot 现状调研与标准 Agent Harness 组件增补方案
 
 > 本文仅做调研与方案设计，不含任何实现代码。全文出现的文件名、目录名、接口名、协议名均为设计标识，不构成实现。
 > **注（2026-10）**：文中描述的「复用 Claude Code 的 `.claude/skills` 机制」已解耦——技能现放在仓库自带的

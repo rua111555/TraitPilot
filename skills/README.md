@@ -1,4 +1,4 @@
-# skills/ — SkillAgent 自带技能
+# skills/ — TraitPilot 自带技能
 
 本目录是 Agent **自带**的技能库（不再依赖 Claude Code 的 `.claude/skills`）。
 每个子目录即一个技能：

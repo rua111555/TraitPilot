@@ -127,7 +127,7 @@ MCP stdio 传输就是「换行分隔的 JSON-RPC 2.0」，用 stdlib（`subproc
 
 **解法（选定）：宿主监督进程 pid + 前台 `exec docker run --rm`。**
 `_bash_background` 的 `command.sh` 写成：`cd "<cwd>" && echo $$ > "<pidf>"` 然后
-`exec docker run --rm --name skillagent-<task_id> <flags> -v <cwd>:<cwd> <mounts> <image> /bin/bash -c <json(command)>`。
+`exec docker run --rm --name traitpilot-<task_id> <flags> -v <cwd>:<cwd> <mounts> <image> /bin/bash -c <json(command)>`。
 写下的 `$$` 是**宿主监督 shell 的 pid**，`exec` 把它换成前台 docker 客户端，其生命周期 = 容器生命周期；
 于是 **TaskOutput 无需改动**即可正确判活。拒绝 `--pid=host`（等于丢弃隔离）。
 （备选 `docker run -d` + `docker inspect` 能扛重启，但要动 TaskOutput，且**仍不解决 skill 自己那套宿主 `kill -0`**。）

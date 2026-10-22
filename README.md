@@ -1,4 +1,4 @@
-# SkillAgent — 自带 skills 的本机 Agent
+# TraitPilot — 自带 skills 的本机 Agent
 
 > 📖 **详细使用文档见 [`docs/usage.md`](docs/usage.md)**（安装/凭证、三种入口、全部参数与环境变量、
 > REPL 命令、Web 前端、各 harness 模块、技能机制、端到端示例、故障排查）。本文是快速上手版。
@@ -11,8 +11,8 @@ API 凭证/配置从本目录的 `config.json` 读取——**不依赖 Claude Co
 
 ```bash
 # 0) 取代码（仓库根即项目根：含 skills/、run.py、environment/，不要再进子目录）
-git clone https://github.com/rua111555/WGS_Agent.git ~/WGS_Agent
-cd ~/WGS_Agent
+git clone https://github.com/rua111555/TraitPilot.git ~/TraitPilot
+cd ~/TraitPilot
 
 # 1) 配置凭证（一次性）：复制模板为 config.json 并填写
 cp config.json.example config.json
@@ -48,7 +48,7 @@ bash environment/check_env.sh --core   # 只查 Agent 本体，不碰生信管�
 ## 常用命令
 
 ```bash
-cd ~/WGS_Agent                         # 仓库根
+cd ~/TraitPilot                         # 仓库根
 
 # 列出发现的 skills
 python3 run.py list
@@ -64,7 +64,7 @@ python3 run.py chat -p "列出 phenotype-extract 提供哪些表型" -m DSv4-fla
 ## Web 前端
 
 ```bash
-cd ~/WGS_Agent          # 仓库根（含 skills/）
+cd ~/TraitPilot          # 仓库根（含 skills/）
 ./start_web.sh                    # 推荐：后台启动/状态检查（log=web.log；停止 ./start_web.sh stop）
 # 或前台式：python3 run_web.py    # 浏览器打开 http://127.0.0.1:8787
 ```

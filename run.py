@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SkillAgent 入口：python agent/run.py ...（或 cd agent && python -m skill_agent）"""
+"""TraitPilot 入口：python agent/run.py ...（或 cd agent && python -m skill_agent）"""
 import os
 import sys
 

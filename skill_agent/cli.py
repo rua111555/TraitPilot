@@ -19,7 +19,7 @@ from .tools import ToolSet
 
 BANNER = "\n".join([
     "╭──────────────────────────────────────────────╮",
-    "│  SkillAgent — 自带 skills 的本机 Agent",
+    "│  TraitPilot — 自带 skills 的本机 Agent",
     "╰──────────────────────────────────────────────╯",
 ])
 
@@ -85,7 +85,7 @@ def _common_opts(*, with_cwd: bool = False) -> argparse.ArgumentParser:
 
 def build_parser() -> argparse.ArgumentParser:
     common = _common_opts()
-    p = argparse.ArgumentParser(prog="skill-agent", description="自带 skills 的本机 Agent",
+    p = argparse.ArgumentParser(prog="traitpilot", description="自带 skills 的本机 Agent",
                                 parents=[common])
     p.add_argument("--project", type=Path, default=None, help="项目根（含 skills/，默认自动探测）")
     p.add_argument("--skills-dir", type=Path, default=None,

@@ -1,4 +1,4 @@
-# SkillAgent 使用文档
+# TraitPilot 使用文档
 
 > 本机自研、**自包含**的单 Agent harness：技能放在本仓库 [`skills/`](../skills/)，
 > 配置从本目录 `config.json` 读取——**不依赖 Claude Code**。
@@ -33,7 +33,7 @@
 （与 WGS/GWAS 管线共用同一环境）；Python ≥3.10（本机 `Agent` 环境为 3.12.13）。
 
 ```bash
-cd ~/WGS_Agent          # 仓库根（含 skills/）
+cd ~/TraitPilot          # 仓库根（含 skills/）
 conda run -n Agent python -c "import requests, yaml, flask; print('ok')"   # 确认依赖在位
 ```
 
@@ -57,7 +57,7 @@ Agent 从**本目录的 `config.json`** 与环境变量取配置，优先级：
 首次使用：复制模板并填写 `api_key`：
 
 ```bash
-cd ~/WGS_Agent          # 仓库根（含 skills/）
+cd ~/TraitPilot          # 仓库根（含 skills/）
 cp config.json.example config.json
 # 编辑 config.json：填 api_key（及可选 base_url / model）
 python3 -m skill_agent
@@ -109,7 +109,7 @@ Agent 需要找到「含 `skills/` 的项目根」。默认从当前目录**向�
 可用 `--project <dir>` 显式指定，用 `--cwd <dir>` 指定工具执行目录（默认 = 项目根）。
 
 ```bash
-cd ~/WGS_Agent && python3 run.py list    # 自动探测到仓库根
+cd ~/TraitPilot && python3 run.py list    # 自动探测到仓库根
 ```
 
 ---
@@ -119,7 +119,7 @@ cd ~/WGS_Agent && python3 run.py list    # 自动探测到仓库根
 ### 2.1 列技能
 
 ```bash
-cd ~/WGS_Agent          # 仓库根（含 skills/）
+cd ~/TraitPilot          # 仓库根（含 skills/）
 python3 run.py list              # 表格：技能 / 自动可调 / 用途
 python3 run.py list --json       # JSON：description/path/model_invocable/allowed_tools
 ```
@@ -141,7 +141,7 @@ python3 run.py chat -p "列出 phenotype-extract 提供哪些表型" -m DSv4-fla
 
 `-p/--prompt` 跑完即退出，适合脚本/批处理。
 
-> **入口等价**：`python3 run.py <args>` 与 `cd ~/WGS_Agent && python3 -m skill_agent <args>` 完全等价。
+> **入口等价**：`python3 run.py <args>` 与 `cd ~/TraitPilot && python3 -m skill_agent <args>` 完全等价。
 
 ---
 
@@ -286,7 +286,7 @@ python3 run.py chat -p "列出 phenotype-extract 提供哪些表型" -m DSv4-fla
 ## 6. Web 前端
 
 ```bash
-cd ~/WGS_Agent          # 仓库根（含 skills/）
+cd ~/TraitPilot          # 仓库根（含 skills/）
 ./start_web.sh                       # 后台启动；日志 web.log；探活 /api/config
 ./start_web.sh 9000                  # 指定端口（host 仍 127.0.0.1）
 ./start_web.sh 0.0.0.0:8787          # 局域网可访问（谨慎）
@@ -519,7 +519,7 @@ python3 -m skill_agent chat --trace
 ### 9.1 跑 WGS 全流程（长任务可靠性组合）
 
 ```bash
-cd ~/WGS_Agent          # 仓库根（含 skills/）
+cd ~/TraitPilot          # 仓库根（含 skills/）
 python3 run.py chat --persist --max-turns 200 --loop-guard \
   -p "用 wgs-expressive-pipeline 跑这批样本"
 ```

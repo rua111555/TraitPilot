@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SkillAgent 环境自检 —— 部署到新机器后先跑这个，缺什么一目了然。
+# TraitPilot 环境自检 —— 部署到新机器后先跑这个，缺什么一目了然。
 #
 #   bash environment/check_env.sh              # 全量检查
 #   bash environment/check_env.sh --core       # 只查 Agent 本体（不查生信管线）

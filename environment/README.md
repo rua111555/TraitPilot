@@ -1,6 +1,6 @@
 # 环境与部署（ENVIRONMENT）
 
-> **这份文档面向「把 SkillAgent 装到一台新机器上的人」，不是本机备忘。**
+> **这份文档面向「把 TraitPilot 装到一台新机器上的人」，不是本机备忘。**
 > 它列的是**跑通整个项目**所需的环境；`requirements.txt` 只是其中最小的一块（Agent 本体的三个
 > pip 包），**远不能代表全貌** —— 18 个技能背后还有两套 conda 环境、若干独立二进制、
 > R 包、docker/GPU 栈、参考基因组与数据库。
@@ -210,8 +210,8 @@ conda run -n Phenotype python phenotype_extract.py --pheno IMF # 提取
 
 ```bash
 # ── 0) 取代码 ─────────────────────────────────────────────
-git clone https://github.com/rua111555/WGS_Agent.git ~/WGS_Agent
-cd ~/WGS_Agent        # 仓库根即项目根（含 skills/、run.py、environment/），不要再进子目录
+git clone https://github.com/rua111555/TraitPilot.git ~/TraitPilot
+cd ~/TraitPilot        # 仓库根即项目根（含 skills/、run.py、environment/），不要再进子目录
 
 # ── 1) conda（没有就先装 Miniconda，用户态）───────────────
 wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh

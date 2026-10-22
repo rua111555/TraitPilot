@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SkillAgent</title>
+<title>TraitPilot</title>
 <style>
   :root{
     --bg:#0f1115; --panel:#171a21; --panel2:#1e232c; --border:#2a303b;
@@ -250,7 +250,7 @@
       <div class="bl">
         <div class="logo">S</div>
         <div style="min-width:0">
-          <div class="t1">SkillAgent</div>
+          <div class="t1">TraitPilot</div>
           <div class="t2" id="proj">…</div>
         </div>
       </div>
@@ -628,7 +628,7 @@ function replayMessages(msgs, opts){
     // assistant
     const wrap=document.createElement("div");
     wrap.className="msg assist";
-    wrap.innerHTML=`<div class="msg-role">SkillAgent</div><div class="bubble"><div class="flow"></div></div>`;
+    wrap.innerHTML=`<div class="msg-role">TraitPilot</div><div class="bubble"><div class="flow"></div></div>`;
     chatEl.appendChild(wrap);
     flow=wrap.querySelector(".flow");
     for(const b of (m.blocks||[])){
@@ -719,7 +719,7 @@ function addUserMsg(text){
 function addAssistMsg(){
   curAssist=document.createElement("div");
   curAssist.className="msg assist";
-  curAssist.innerHTML=`<div class="msg-role">SkillAgent</div><div class="bubble"><div class="flow"></div></div>`;
+  curAssist.innerHTML=`<div class="msg-role">TraitPilot</div><div class="bubble"><div class="flow"></div></div>`;
   chatEl.appendChild(curAssist);
   curFlow=curAssist.querySelector(".flow"); curTextBox=null;
   curThinkEl=document.createElement("div");
@@ -731,7 +731,7 @@ function addAssistMsg(){
 function addErrorMsg(text){
   const d=document.createElement("div");
   d.className="msg assist";
-  d.innerHTML=`<div class="msg-role">SkillAgent</div><div class="bubble"><div class="md"><p style="color:var(--err)">${escapeHtml(text)}</p></div></div>`;
+  d.innerHTML=`<div class="msg-role">TraitPilot</div><div class="bubble"><div class="md"><p style="color:var(--err)">${escapeHtml(text)}</p></div></div>`;
   chatEl.appendChild(d); scrollBottom();
 }
 
@@ -964,7 +964,7 @@ function exportChat(){
   // 所以导出无需先展开；工具卡历来读 textContent，也早就免疫。
   const lines=[];
   chatEl.querySelectorAll(".msg").forEach(m=>{
-    const who = m.classList.contains("user") ? "你" : "SkillAgent";
+    const who = m.classList.contains("user") ? "你" : "TraitPilot";
     const bubble = m.querySelector(".bubble");
     if(!bubble) return;
     // 工具卡内容
@@ -981,11 +981,11 @@ function exportChat(){
     if(cards.length) block+="\n"+cards.join("\n");
     if(block.trim()) lines.push(block);
   });
-  const header=`# SkillAgent 对话导出\n\n- 时间：${new Date().toLocaleString()}\n- 模型：${state.model}\n- 项目：${$("#proj").textContent}\n\n---\n\n`;
+  const header=`# TraitPilot 对话导出\n\n- 时间：${new Date().toLocaleString()}\n- 模型：${state.model}\n- 项目：${$("#proj").textContent}\n\n---\n\n`;
   const blob=new Blob([header+lines.join("\n\n---\n\n")],{type:"text/markdown;charset=utf-8"});
   const a=document.createElement("a");
   a.href=URL.createObjectURL(blob);
-  a.download=`skillagent-${SID}-${Date.now()}.md`;
+  a.download=`traitpilot-${SID}-${Date.now()}.md`;
   a.click();
   setTimeout(()=>URL.revokeObjectURL(a.href),3000);
 }

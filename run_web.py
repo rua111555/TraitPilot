@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SkillAgent Web 前端启动器。
+"""TraitPilot Web 前端启动器。
 
 默认绑定 127.0.0.1:8787，仅本机可访问。若需局域网访问加 --host 0.0.0.0（注意：页面可执行本机命令）。
 
@@ -41,7 +41,7 @@ def main() -> int:
 
     app = create_app(cfg, registry)
     n = len(registry.names())
-    print(f"SkillAgent Web 已启动  http://{args.host}:{args.port}")
+    print(f"TraitPilot Web 已启动  http://{args.host}:{args.port}")
     print(f"  project = {cfg.project}（发现 {n} 个 skill）")
     print(f"  skills  = {cfg.skills_dir or (cfg.project / 'skills')}")
     print(f"  model   = {cfg.model}    permission = {cfg.permission}")

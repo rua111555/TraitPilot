@@ -1,5 +1,5 @@
 {
-  "//": "SkillAgent 配置模板。复制为 config.json 后按需修改；config.json 已被 .gitignore 忽略。",
+  "//": "TraitPilot 配置模板。复制为 config.json 后按需修改；config.json 已被 .gitignore 忽略。",
   "//优先级": "CLI 参数 > 环境变量 > config.json > 代码默认值。ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 会覆盖下面的 base_url / api_key。",
   "//用法": "把想要的功能由 false 改成 true 即开启；省略任何键 = 用默认（多数开关默认关）。",
 

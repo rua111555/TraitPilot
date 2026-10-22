@@ -1,4 +1,4 @@
-# SkillAgent 缺陷修复与复测记录（D1–D14）
+# TraitPilot 缺陷修复与复测记录（D1–D14）
 
 > 本文档是 **[test-evidence.md](test-evidence.md) 的续篇**。
 > 基线文档记录「原始测试 + 发现的 14 个缺陷」，本文档记录「**修复 + 复测**」，

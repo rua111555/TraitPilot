@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SkillAgent Web 一键启动/停止
+# TraitPilot Web 一键启动/停止
 #
 #   ./start_web.sh                 启动（后台，日志 web.log）→ http://127.0.0.1:8787
 #   ./start_web.sh 9000            指定端口

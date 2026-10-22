@@ -1,4 +1,4 @@
-"""SkillAgent Web App — Flask + SSE。
+"""TraitPilot Web App — Flask + SSE。
 
 - POST /api/chat           发起一轮对话，返回 text/event-stream（流式增量/工具事件/确认请求）
 - POST /api/confirm        对某条待确认命令给出 approve / reject

@@ -195,7 +195,7 @@ class DockerBackend(SandboxBackend):
 
     def _docker_argv(self, command: str, cwd, task_id: str):
         s = self.spec
-        argv = ["docker", "run", "--rm", "--name", f"skillagent-{task_id}"]
+        argv = ["docker", "run", "--rm", "--name", f"traitpilot-{task_id}"]
         argv += ["--network", str(s.get("network") or "none")]
         if s.get("memory"):
             argv += ["--memory", str(s["memory"])]
