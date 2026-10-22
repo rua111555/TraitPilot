@@ -241,6 +241,24 @@
 
   .empty-state{max-width:860px;margin:40px auto;color:var(--muted);text-align:center}
   .empty-state .big{font-size:15px;color:var(--text);margin-bottom:6px}
+
+  /* 运行中指示：左栏会话项 + 顶部状态条（让「真在跑」看得见） */
+  .sess .run-dot{display:inline-block;width:7px;height:7px;border-radius:50%;
+    background:var(--ok,#3fb950);margin-right:6px;flex:none;
+    animation:pulse 1.4s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+  .sess.running{background:linear-gradient(90deg,rgba(63,185,80,.10),transparent)}
+  .sess .run-sub{font-size:11px;color:var(--ok,#3fb950);margin-top:3px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #runBar{display:none;align-items:center;gap:10px;padding:7px 14px;margin:0 0 8px;
+    background:rgba(63,185,80,.10);border:1px solid rgba(63,185,80,.35);
+    border-radius:10px;font-size:12.5px;color:var(--text)}
+  #runBar.show{display:flex}
+  #runBar .sp{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    color:var(--muted)}
+  #runBar .el{color:var(--muted);font-variant-numeric:tabular-nums}
+  #runBar button{border-radius:8px;padding:4px 12px;border:1px solid var(--border);
+    background:transparent;color:var(--err);cursor:pointer;font-size:12px}
 </style>
 </head>
 <body>
@@ -282,6 +300,8 @@
       <button class="ghost" id="newBtn">新建会话</button>
     </header>
 
+    <!-- 运行状态条：切到别的会话时，仍能看见原会话在跑什么（点击可跳回） -->
+    <div id="runBar"></div>
     <div id="chat"></div>
 
     <footer>
@@ -328,7 +348,162 @@ let SID = (localStorage.sid && sessionStorage.sid===localStorage.sid)
 sessionStorage.sid = localStorage.sid;
 
 const ICONS = {Skill:"📘",Bash:"🖥️",Read:"📄",Write:"✏️",Edit:"🔧",Glob:"🗂️",Grep:"🔍",TaskOutput:"⏱️",Search:"🔎",RepoMap:"🗺️",TodoWrite:"✅"};
+/* runs：每个会话的运行态（sid → {running, run, controller, state, elapsed, progress, ...}）。
+   改造前这里是**一个**全局 state.busy，导致「一个会话在跑 = 整个界面锁死」。
+   现在按会话分别记录：切到别的会话照样能发消息、能新建，原会话的流在后台继续读。 */
+const runs = new Map();
+/* 左栏高亮 / 当前正在查看的会话 id。必须与 runs 一起声明在文件前部：
+   setRun() 会读它来决定要不要同步 state.busy 镜像，声明晚于调用点会踩 TDZ。 */
+let activeViewId=SID;
+/* 当前正被查看的会话是否在跑（保留 state.busy 语义：E2E 与外部脚本依赖它）。 */
 const state = {busy:false, model:"", permission:"auto", pendingConfirm:null, controller:null};
+
+/* ---------------- 每会话运行态 ---------------- */
+function getRun(sid){ return runs.get(sid) || {}; }
+function isRunning(sid){ return !!getRun(sid).running; }
+function setRun(sid, patch){
+  const cur = runs.get(sid) || {};
+  runs.set(sid, Object.assign(cur, patch));
+  if(sid===activeViewId) syncBusyToView();
+  refreshRunBar();
+  return runs.get(sid);
+}
+function markRunning(sid, patch){ return setRun(sid, patch); }
+/* state.busy 现在只是「当前查看会话在跑」的**派生镜像**（E2E/外部脚本读它）。
+   改的是镜像，不是事实来源 —— 事实来源是 runs 表。 */
+function syncBusyToView(){ setBusy(isRunning(activeViewId)); }
+function noteActivity(sid, ev){
+  const r = getRun(sid);
+  if(ev.type==="tool_start"){
+    setRun(sid,{progress:{phase:"tool", tool:ev.name, hint:toolHint(ev)},
+                lastEventAt:Date.now()});
+  }else if(ev.type==="tool_end"){
+    setRun(sid,{progress:{phase:"model", tool:null, hint:""}, lastEventAt:Date.now()});
+  }else{
+    if(!r.lastEventAt) setRun(sid,{lastEventAt:Date.now()});
+  }
+  if(sid===activeViewId) refreshRunBar();
+}
+function toolHint(ev){
+  try{
+    const d = typeof ev.input==="string" ? JSON.parse(ev.input||"{}") : (ev.input||{});
+    return String(d.command||d.file_path||d.pattern||d.skill||"").replace(/\s+/g," ").slice(0,100);
+  }catch(e){ return ""; }
+}
+/* 后端进度快照里 progress.tool 是**对象** {id,name,started_at}（见 runstate.py），
+   前端早先直接把它当字符串拼进模板 → 页面上显示「执行 [object Object]」。
+   统一走这个取值器：对象取 .name，字符串原样用，缺了给空。 */
+function toolLabel(p){
+  const t = p && p.tool;
+  if(!t) return "";
+  return typeof t === "string" ? t : String(t.name||"");
+}
+function applyRunSnapshot(sid, snap, truncated){
+  markRunning(sid,{running:!!snap.running, state:snap.state, run:snap.run,
+                   elapsed:snap.elapsed, progress:snap.progress,
+                   pendingConfirm:snap.pending_confirm, prefix:snap.prefix,
+                   lastSeq:snap.last_seq});
+  refreshRunBar();
+}
+
+/* ---------------- 窗格暂存：切走时原样保留，切回来原样搬回 ----------------
+   用户报的第二个问题就是「切到别的对话，原来那条流就没了」。只把流放后台还不够：
+   真正让「切回来像什么都没发生」成立的是把**窗格 DOM 本身**存下来。
+   存的是 Fragment（脱离文档但节点还活着），里面的折叠状态、展开的工具卡、已渲染的
+   正文都保持原样；切回来时直接搬回 #chat。
+
+   为什么切走时**主动断开**这条流：后端把断开只当退订，Run 照跑、事件进日志。
+   若让旧流继续消费，切回来又按游标补一遍，同一条事件会被画两次。
+   所以任一时刻只有一个消费者：切走=断，切回=从离开时的 seq 续订。
+   离开期间的事件不会丢 —— 它们在后端的追加式日志里等着回放。 */
+const panes = new Map();          // sid → {frag, cursor, run, curAssist, curFlow, curTextBox, curThinkEl, ts}
+
+function stashPane(sid){
+  if(sid==null) return;
+  if(!chatEl.childNodes.length) return;      // 空窗格不必占位置
+  // 先把挂起的节流渲染落定（正文每 200ms 才重渲染一次），否则存下来的是半截内容
+  if(sid===activeViewId){ try{ flushRender(); }catch(e){} }
+  const frag=document.createDocumentFragment();
+  while(chatEl.firstChild) frag.appendChild(chatEl.firstChild);
+  // 游标必须连**轮次 id** 一起记：每轮是新的 Run，seq 从 1 重新开始，
+  // 只存数字的话，下一轮会拿着上一轮的大游标去续订 → 新轮开头的事件被静默跳过。
+  const rt=getRun(sid);
+  panes.set(sid, {frag:frag, cursor: rt.lastSeq||0, run: rt.run||null,
+                  curAssist:curAssist, curFlow:curFlow, curTextBox:curTextBox,
+                  curThinkEl:curThinkEl, ts:Date.now()});
+  // 流式指针随窗格一起封存；当前上下文清空，避免后台事件写进不属于它的节点
+  curAssist=curFlow=curTextBox=curThinkEl=null;
+  if(curThinking){ curThinking=null; curThinkingBuf=""; }
+  // 断开这条流（只退订，不取消任务）。切回来时按 cursor 续订回放。
+  // detached 标记：这是「切走」，不是「停止」—— send() 的 AbortError 分支靠它区分，
+  // 否则切走会弹「已请求停止本轮」，那是撒谎。
+  const ctl=getRun(sid).controller;
+  setRun(sid,{detached:true, streaming:false, controller:null});
+  if(ctl){ try{ ctl.abort(); }catch(e){} }
+  refreshRunBar();
+}
+
+/* 把暂存的窗格搬回来。命中则返回 true（调用方就不该再 replay/rebuild）。
+   游标随窗格一起恢复，调用方用它做 attach(after=...) 补离开期间的事件，不重不漏。
+   若暂存窗格属于**上一轮**（run id 不同），则它不该被续订 —— 续订是「补这一轮」，
+   拿上一轮的游标会跳过新一轮开头。这种情况下当作过期处理，交给磁盘重建。 */
+function restorePane(sid, curRunId){
+  const p=panes.get(sid);
+  if(!p) return false;
+  panes.delete(sid);
+  // 过期不搬（离开太久，磁盘历史更权威），也顺手释放 Fragment
+  if(Date.now()-p.ts > 30*60*1000) return false;
+  // 换轮了：窗格上的「本轮」内容与新的 run 对不上，不续订
+  if(curRunId!=null && p.run!=null && p.run!==curRunId) return false;
+  chatEl.innerHTML="";
+  chatEl.appendChild(p.frag);
+  curAssist=p.curAssist; curFlow=p.curFlow; curTextBox=p.curTextBox; curThinkEl=p.curThinkEl;
+  setRun(sid,{paneCursor: p.cursor, paneRun: p.run, lastSeq: p.cursor});
+  return true;
+}
+/* 该窗格已经画到哪里 —— attach 时用它做 after，避免重放已画内容（会翻倍）。
+   只在「窗格所属轮次 == 当前轮次」时才返回游标；换轮了就不能拿旧游标去续订。 */
+function paneAfter(sid, curRunId){
+  const rt=getRun(sid);
+  if(rt.paneCursor==null) return null;
+  if(curRunId!=null && rt.paneRun!=null && rt.paneRun!==curRunId) return null;
+  return rt.paneCursor;
+}
+/* 事件日志被后端截断（离开太久，旧事件已被淘汰）→ 暂存的窗格不再是真相，
+   丢掉它，改由快照重建。这条分支保证「截断」不会静默地少画一段。 */
+function dropPane(sid){
+  if(panes.has(sid)) panes.delete(sid);
+  setRun(sid,{paneCursor:null, paneRun:null});
+}
+
+/* 切回一个正在跑的会话：把「这一轮已经开始的部分」画出来（真在跑的证据）。
+   内容来自后端 Run 的快照（partial_text / progress），不是凭空猜的。
+   ⚠️ 只在**没有暂存窗格**时用（页面刷新/首次附着）。同一轮内切走再切回走 restorePane：
+   那条路径把原来的 DOM 原样搬回来再从离开时的游标续播，两者不可叠加，否则内容翻倍。 */
+function rebuildLiveTurn(sid, snap){
+  const showable = snap.prefix!=null ? snap.prefix : null;
+  const d=document.createElement("div"); d.className="msg user";
+  d.innerHTML=`<div class="msg-role">你</div><div class="bubble">${escapeHtml(snap.prompt||"")}</div>`;
+  chatEl.appendChild(d);
+  addAssistMsg();
+  const txt=snap.partial_text||"";
+  if(txt){
+    clearThinking();
+    curTextBox=document.createElement("div");
+    curTextBox.className="md"; curTextBox._buf=txt; curTextBox.innerHTML=md(txt);
+    curFlow.appendChild(curTextBox); fitFolds(curTextBox);
+  }
+  const p=snap.progress||{};
+  const tl=toolLabel(p);
+  if(tl){
+    const el=document.createElement("div"); el.className="thinking-live";
+    el.innerHTML=`<span class="dot"></span>正在执行 ${escapeHtml(tl)}`
+      + (p.hint?` · ${escapeHtml(p.hint)}`:"") + `…`;
+    curFlow.appendChild(el);
+  }
+  if(!txt && !tl) return;      // 什么都没产出时保留「思考中…」占位
+  scrollBottom();
+}
 
 const CHIPS = [
   ["列出技能", "列出当前项目可用的全部 skill，并简述每个的用途。"],
@@ -361,7 +536,7 @@ function renderChips(){
     `<span class="chip" data-i="${i}" title="${escapeHtml(text)}">${escapeHtml(label)}</span>`).join("");
   document.querySelectorAll("#chips .chip").forEach(el=>{
     el.addEventListener("click", ()=>{
-      if(state.busy) return;
+      // chips 只是往输入框预填文字，与「有没有会话在跑」无关（输入框本身已不再禁用）
       $("#input").value = CHIPS[+el.dataset.i][1];
       autosize(); $("#input").focus();
     });
@@ -390,7 +565,6 @@ function renderSkills(skills){
 /* ---------------- 侧栏：对话 / 历史会话 ---------------- */
 let curSessionMeta={};
 const previewCache={};               // 左栏预览缓存：{sid: {mtime, text}}
-let activeViewId=SID;               // 左栏高亮：当前正在查看的会话 id
 
 async function renderSessions(){
   try{
@@ -419,14 +593,29 @@ async function renderSessions(){
       previewCache[s.id]={mtime:s.mtime, title:title, text:text};
       s._title=title; s._preview=text;
     }));
+    // 后端在 /api/sessions 里带了运行摘要 → 把它们并进 runs 表，
+    // 这样左栏「谁在跑」是第一手的，不依赖用户点进去才发现。
+    for(const s of [...active, ...archived]){
+      if(s.running){
+        const cur=getRun(s.id);
+        setRun(s.id,{running:true, state:s.state, run:s.run,
+                     elapsed: s.elapsed!=null ? s.elapsed : cur.elapsed,
+                     progress: s.progress || cur.progress,
+                     startedAt: cur.startedAt || (s.elapsed!=null ? Date.now()-s.elapsed*1000 : undefined)});
+      }else if(getRun(s.id).running && s.state){
+        setRun(s.id,{running:false, state:s.state});
+      }
+    }
     const el=$("#sessionList");
     const now = active.find(s=>s.id===SID);
     let html="";
     // 当前会话置顶（即便尚未落盘也显示）：标题取本会话第一句话，
     // 还没有第一句话就用「新会话」；预览显示最近一次提问。
     const curTitle = curSessionMeta.title || "新会话";
+    const curRun = getRun(SID);
     html += sessItem({id:SID, mtime: now?now.mtime:Date.now()/1000, size: now?now.size:0,
-                      _cur:true, _title:curTitle, _preview:curSessionMeta.preview||""});
+                      _cur:true, _title:curTitle, _preview:curSessionMeta.preview||"",
+                      running: !!curRun.running, progress: curRun.progress});
     for(const s of active){
       if(s.id===SID) continue;
       html += sessItem(s);
@@ -445,35 +634,69 @@ async function renderSessions(){
       node.addEventListener("click",()=>selectSession(node.dataset.id));
       node.addEventListener("contextmenu", e=>{ e.preventDefault(); showCtxMenu(e, node); });
     });
+    syncBusyToView();          // 左栏刷新后，「当前会话」的按钮形态跟着它自己的运行态走
+    refreshRunBar();
   }catch(e){
     $("#sessionList").innerHTML=`<div class="empty">无法加载会话列表</div>`;
   }
 }
 
-/* 选中某个会话：把它设为「当前会话」，右侧基于它继续问答（不新建、不清空）。 */
-async function selectSession(id){
-  if(state.busy) return;
-  if(id===SID && !viewingHistory){ renderSessions(); return; }
-  // 切换当前会话 → 让后端会话表以该 id 为准
-  SID = id; localStorage.sid = id; sessionStorage.sid = id;
+/* 选中某个会话：把它设为「当前会话」，右侧基于它继续问答（不新建、不清空）。
+   若该会话正在跑，切过来就**重新附着**它的流（后端 Run 仍在，事件可回放）。 */
+async function selectSession(id, force){
+  if(id===SID && activeViewId===id && !force){ renderSessions(); return; }
+  const prev=activeViewId;
+  // ① 先把当前窗格**原样存起来**（不是丢弃）。后台流事件继续往这个 Fragment 里写，
+  //    所以切回来时看到的是那一轮真实的样子，而不是事后重建的近似品。
+  if(prev!=null && prev!==id) stashPane(prev);
+  setCurrent(id);            // 唯一写入口：顺带把 state.busy 镜像重算到新会话
   curSessionMeta = {};
-  viewingHistory = false;
-  activeViewId = id;
   // 左栏标题就是「本会话第一句话」：切过来的同时把它记下，切换后标题立刻跟上
   const pc = previewCache[id];
   if(pc) curSessionMeta.title = pc.title;
-  // 重新挂载对话框。三种结局都要**画出东西**：以前 ok:false 与 messages 为空
-  // 都走「清空后什么都不画」→ 用户看到纯空白，分不清「历史丢了」还是「会话本就空」。
+  // ② 先问后端：这个会话是不是正在跑？
+  let runInfo=null;
+  try{ runInfo = await (await fetch(`/api/session/${encodeURIComponent(id)}/run`)).json(); }
+  catch(e){}
+  const running = !!(runInfo && runInfo.running);
+  if(running){
+    markRunning(id,{running:true, state:runInfo.state, run:runInfo.run,
+                    elapsed:runInfo.elapsed, progress:runInfo.progress});
+  }else{
+    markRunning(id,{running:false, state:(runInfo&&runInfo.state)||null});
+  }
+  // ③ 如果这个会话有暂存的窗格 → 原样搬回，再从离开时的游标续播（不重放、不重建）
+  const curRunId = running && runInfo ? runInfo.run : null;
+  const restored = restorePane(id, curRunId);
+  if(restored){
+    // 离开期间这一轮可能已经跑完（暂存时主动断了流，末尾几帧没进来）。
+    // 判据：轮次已终态，但窗格游标 < 该轮最后事件号 → 窗格是残缺的，退回磁盘重建。
+    const lastSeq = runInfo && runInfo.last_seq!=null ? runInfo.last_seq : null;
+    const cur = getRun(id);
+    const sameRun = cur.paneRun && runInfo && cur.paneRun===runInfo.run;
+    const stale = !running && lastSeq!=null && sameRun && (cur.paneCursor||0) < lastSeq;
+    if(!stale){
+      if(running) attach(id, paneAfter(id, curRunId));  // after=离开时的 seq → 只补新事件
+      renderSessions();
+      scrollBottom();
+      $("#input").focus();
+      syncBusyToView();
+      return;
+    }
+    dropPane(id);                              // 残缺 → 当作没暂存，走下面的磁盘重建
+  }
+  // ④ 没有暂存窗格（首次切过来 / 页面刚刷新）：按磁盘 + 快照重建
   let data=null, netErr=false;
   try{ data = await (await fetch("/api/session/"+encodeURIComponent(id))).json(); }
   catch(e){ netErr = true; }
-  chatEl.innerHTML="";
+  chatEl.innerHTML=""; curAssist=curFlow=curTextBox=null;
   const emptyState=(big, sub)=>{
     chatEl.innerHTML=`<div class="empty-state"><div class="big">${escapeHtml(big)}</div>${escapeHtml(sub)}</div>`;
   };
   if(netErr || !data || !data.ok){
-    emptyState(netErr?"加载会话失败":"会话不存在或已被删除",
-               netErr?"网络请求出错，请刷新后重试。":"服务端没有这个 id 的记录。");
+    if(!running)
+      emptyState(netErr?"加载会话失败":"会话不存在或已被删除",
+                 netErr?"网络请求出错，请刷新后重试。":"服务端没有这个 id 的记录。");
   }else{
     const msgs=data.messages||[];
     // 标题与预览都取「磁盘上的第一/最后一次提问」，而不是靠调用方缓存传进来
@@ -485,21 +708,31 @@ async function selectSession(id){
       hdr.innerHTML=`📂 已切到会话 <b>${escapeHtml(title || id)}</b> · 继续提问会基于这段历史`;
       chatEl.appendChild(hdr);
       replayMessages(msgs, {incompleteFrom: data.resume_count});
-    }else{
+    }else if(!running){
       emptyState("该会话没有可显示的内容",
                  "磁盘上只保存了元数据，没有收发出过任何消息。");
     }
-    // 后端如实回放了磁盘内容；这里告诉用户「哪一段续问时不会带上」
-    if(data.reason==="no_completed_assistant"){
+    if(data.reason==="no_completed_assistant" && !running){
       notice("该会话还没有任何已完成的助手回复。上方内容按磁盘原样显示；续问会从空历史开始。");
     }else if((data.discarded||0)>0){
       notice(`已按磁盘原样显示全部内容；但续问会从上一个已完成的轮次接续，`
              +`末尾 ${data.discarded} 条未完成内容不会发给模型。`);
     }
   }
+  // 运行中的会话：把本轮已在产出的内容画出来 + 重新附着到它的流
+  if(running){
+    const seat=document.createElement("div"); seat.className="sess-banner";
+    seat.innerHTML=`🟢 这个会话正在后台运行（已跑 ${(runInfo.elapsed||0).toFixed?.(0)||0}s）`
+      +` · 下面的内容会实时更新`;
+    chatEl.appendChild(seat);
+    rebuildLiveTurn(id, runInfo);
+    attach(id, runInfo.last_seq);        // 从当前游标继续，不重放已画出的部分
+  }
+  markRunning(id,{streaming: running ? getRun(id).streaming : false});
   renderSessions();
   scrollBottom();
   $("#input").focus();
+  syncBusyToView();
 }
 
 
@@ -572,15 +805,22 @@ function sessItem(s){
   const when=t.toLocaleString();
   const kb=Math.max(1,Math.round((s.size||0)/1024));
   const isActive = (s.id===activeViewId);
+  const rt = getRun(s.id);
+  const running = !!(s.running || rt.running);
   // 标题=用户第一句话（认得出是哪次对话）；没有就退回短 id，再没有才显示加载中
   const title = s._title || "";
   const fallback = "会话 " + String(s.id).slice(0,8);
   const name = title || (s._title===undefined ? "加载中…" : fallback);
   const sub = title && s._preview && s._preview!==title ? s._preview : "";
-  return `<div class="sess${isActive?" active":""}${s.archived?" arch":""}" data-id="${s.id}" data-arch="${s.archived?"1":"0"}" title="会话 id：${escapeHtml(s.id)}">
-    <div class="r1">${s._cur?'<span class="dot"></span>':""}<span class="nm">${escapeHtml(name)}</span>${s._cur?'<span class="curtl">当前</span>':""}${s.archived?'<span class="curtl">归档</span>':""}</div>
+  const pr = (s.progress || rt.progress);
+  const runSub = running
+    ? `<div class="run-sub">${toolLabel(pr) ? "▸ 执行 "+escapeHtml(toolLabel(pr)) : "▸ 模型生成中"}`
+      + `${pr && pr.hint ? " · "+escapeHtml(String(pr.hint).slice(0,40)) : ""}</div>`
+    : "";
+  return `<div class="sess${isActive?" active":""}${s.archived?" arch":""}${running?" running":""}" data-id="${s.id}" data-arch="${s.archived?"1":"0"}" title="会话 id：${escapeHtml(s.id)}">
+    <div class="r1">${running?'<span class="run-dot"></span>':(s._cur?'<span class="dot"></span>':"")}<span class="nm">${escapeHtml(name)}</span>${s._cur?'<span class="curtl">当前</span>':""}${s.archived?'<span class="curtl">归档</span>':""}</div>
     <div class="t2"><span>${when}</span><span>${kb} KB</span></div>
-    ${sub?`<div class="dsc">${escapeHtml(sub)}</div>`:""}
+    ${runSub}${sub?`<div class="dsc">${escapeHtml(sub)}</div>`:""}
   </div>`;
 }
 
@@ -660,11 +900,62 @@ function replayMessages(msgs, opts){
 function openDrawer(){ $("#skillDrawer").classList.add("open"); $("#scrim").classList.add("show"); }
 function closeDrawer(){ $("#skillDrawer").classList.remove("open"); $("#scrim").classList.remove("show"); }
 
+/* ---------------- 运行状态条（切走后仍看得见原会话在跑） ---------------- */
+function runningSids(){ return [...runs.entries()].filter(([,r])=>r.running).map(([s])=>s); }
+function refreshRunBar(){
+  const bar=$("#runBar");
+  if(!bar) return;
+  const others=runningSids().filter(s=>s!==activeViewId);
+  const cur=runningSids().includes(activeViewId);
+  if(!others.length && !cur){ bar.classList.remove("show"); bar.innerHTML=""; return; }
+  const parts=[];
+  if(cur){
+    const r=getRun(activeViewId), p=r.progress||{};
+    const cancelling = r.state==="cancelling";
+    const tl = toolLabel(p);
+    const what = cancelling ? "正在取消…（正在执行的命令要等它自己返回）"
+      : (tl ? `正在执行 ${escapeHtml(tl)}${p.hint?" · "+escapeHtml(p.hint):""}`
+            : "模型生成中");
+    parts.push(`<span class="dot" style="background:${cancelling?"var(--warn,#facc15)":"var(--ok,#3fb950)"}"></span>`
+      + `<b>${cancelling?"本会话取消中":"本会话运行中"}</b> <span class="sp">${what}</span>`
+      + `<span class="el">${fmtElapsed(r)}</span>`);
+  }
+  for(const s of others){
+    const r=getRun(s), p=r.progress||{};
+    const nm=previewCache[s]?.title || ("会话 "+String(s).slice(0,8));
+    const what = toolLabel(p) ? `执行 ${escapeHtml(toolLabel(p))}` : "模型生成中";
+    parts.push(`<span class="dot" style="background:var(--ok,#3fb950)"></span>`
+      + `<a href="#" data-goto="${escapeHtml(s)}" style="color:inherit">`
+      + `${escapeHtml(nm)}</a> <span class="sp">${what}</span>`
+      + `<span class="el">${fmtElapsed(r)}</span>`);
+  }
+  bar.innerHTML = parts.join(`<span style="color:var(--border)">│</span>`);
+  bar.classList.add("show");
+  bar.querySelectorAll("a[data-goto]").forEach(a=>{
+    a.addEventListener("click", ev=>{ ev.preventDefault(); selectSession(a.dataset.goto); });
+  });
+}
+function fmtElapsed(r){
+  if(!r.startedAt) { r.startedAt = Date.now() - (r.elapsed||0)*1000; }
+  const s=Math.max(0, Math.round((Date.now()-r.startedAt)/1000));
+  return (s>=60 ? `${Math.floor(s/60)}m${String(s%60).padStart(2,"0")}s` : `${s}s`);
+}
+// 秒表：只要有会话在跑就每秒刷新一次
+setInterval(()=>{ if(runningSids().length) refreshRunBar(); }, 1000);
+
 /* ---------------- 会话 ---------------- */
 let curAssist=null, curFlow=null, curTextBox=null, curThinkEl=null;
 let curThinking=null, curThinkingBuf="";
 let curRenderTimer=null, thinkTimer=null;
-let viewingHistory=false;                     // 正在查看历史会话（只读）时不接收流式写入
+/* 流式事件该不该画在当前窗格：只有「事件所属会话 == 正在查看的会话」才画。
+   改造前这里看的是 viewingHistory（切走=只读），导致切回来后原会话的流已经断了；
+   现在切走的会话会「断流 + 暂存窗格」，切回来按游标续订，内容不重不漏。 */
+function liveSid(){ return activeViewId; }
+function shouldRender(evSid){ return evSid===liveSid(); }
+/* 兼容位：旧代码与 tests/ui_fold_e2e.py 会赋值它。新架构里「切走」不再等于「只读回放」
+   —— 流在后台照读 —— 所以它恒为 false。保留声明只为让外部脚本赋值不报错，
+   真正的渲染闸门是上面的 shouldRender()。 */
+let viewingHistory=false;
 const RENDER_MAX = 120000;          // 流式渲染的源文上限（超出只渲染尾部窗口）
 const FINAL_MAX  = 500000;          // 最终整段渲染上限
 const chatEl = $("#chat");
@@ -848,38 +1139,80 @@ function setUsage(u){
 
 async function send(){
   const text=$("#input").value.trim();
-  if(!text||state.busy) return;
-  // 当前会话还没标题 → 用这句话当标题（和左栏「用户第一句话」的规则一致）
+  const sid=SID;
+  if(!text||isRunning(sid)) return;          // 只看**本会话**是否在跑，不看别的会话
   if(!curSessionMeta.title) curSessionMeta.title = text.replace(/\s+/g," ").slice(0,60);
-  setBusy(true);
+  markRunning(sid,{running:true,state:"running"});
   addUserMsg(text); $("#input").value=""; autosize();
   addAssistMsg();
-  const body={session:SID,message:text,model:state.model,permission:state.permission};
-  state.controller=new AbortController();
+  const body={session:sid,message:text,model:state.model,permission:state.permission};
+  const ctl=new AbortController();
+  setRun(sid,{controller:ctl, detached:false, streaming:true});
   try{
     const res=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify(body),signal:state.controller.signal});
+      body:JSON.stringify(body),signal:ctl.signal});
     if(!res.ok || !res.body){
       const j=await res.json().catch(()=>({}));
+      // 409（本会话真在跑）不再是死胡同：直接附着到那一条流上
+      if(res.status===409){ attach(sid); return; }
       addErrorMsg(j.error||"请求失败 ("+res.status+")");
+      markRunning(sid,{running:false});
       return;
     }
-    await consume(res);
+    await consume(res,sid);                   // 流带着 sid 走；切走时只有这一条会断（detached）
   }catch(e){
-    if(e && e.name === "AbortError"){ addErrorMsg("已停止本轮任务。"); cleanupTurn(); return; }  // 用户点「停止」
+    if(e && e.name === "AbortError"){
+      // 两种 abort 全然不同，必须分开：
+      //   切走（detached）→ 只是退订，任务还在跑，什么都不该说；
+      //   点「停止」   → 已发 /api/cancel，但 python 杀不掉正在执行的 Bash，
+      //                 说「已停止」就是撒谎，如实讲清「要等它自己返回」。
+      if(getRun(sid).detached){ cleanupTurn(); return; }
+      notice("已请求停止本轮 —— 正在执行的命令要等它自己返回，不会立刻中断。");
+      cleanupTurn(); return;
+    }
     if(document.hidden) return;
     console.error("[chat] 读取响应流失败：", e);
-    const alloc = e instanceof RangeError;     // 浏览器读流时分配内存失败 ≠ 后端断连
+    const alloc = e instanceof RangeError;
     const tag = `${(e && e.name) || "Error"}: ${(e && e.message) || e}`;
     addErrorMsg(alloc
       ? `响应流分配内存失败（${tag}）。通常是连接被中途截断/损坏所致，请重试或刷新页面。`
       : `连接中断（${tag}）。`);
     cleanupTurn();
   }
-  finally{ state.controller=null; setBusy(false); }
+  finally{ setRun(sid,{controller:null}); }
 }
 
-async function consume(res){
+/* 附着到某会话正在跑的那条流（切回来 / 网络重连 / 409 后转订阅都走这里）。
+   非破坏式：后端可以同时服务多个订阅者，且断开不会取消任务。 */
+async function attach(sid, after){
+  if(isRunning(sid) && getRun(sid).streaming) return;   // 已经在读这条流了
+  // 没显式给游标时，用暂存窗格的游标兜底（只补离开期间的新事件，不重放已画的）
+  if(after==null) after = paneAfter(sid);
+  const q = (after!=null) ? ("?after="+after) : "";
+  const ctl=new AbortController();
+  markRunning(sid,{running:true, streaming:true, detached:false, controller:ctl});
+  try{
+    const res=await fetch(`/api/session/${encodeURIComponent(sid)}/stream`+q,
+      {headers:{"Accept":"text/event-stream"}, signal:ctl.signal});
+    if(!res.ok){ markRunning(sid,{running:false, streaming:false}); return; }
+    const ct=res.headers.get("content-type")||"";
+    if(ct.includes("application/json")){
+      // 该轮已结束：退回磁盘渲染（磁盘才是权威，暂存窗格可以丢了）
+      const j=await res.json().catch(()=>({}));
+      markRunning(sid,{running:false, streaming:false});
+      dropPane(sid);
+      if(activeViewId===sid) selectSession(sid, true);
+      return;
+    }
+    await consume(res,sid);
+  }catch(e){
+    if(!(e && e.name==="AbortError")) console.warn("[attach] 流中断：", e);
+  }finally{
+    markRunning(sid,{streaming:false, controller:null});
+  }
+}
+
+async function consume(res,sid){
   const reader=res.body.getReader(); const dec=new TextDecoder();
   let buf="";
   while(true){
@@ -889,18 +1222,17 @@ async function consume(res){
       if(r.done) break;
       value=r.value;
     }catch(e){
-      // 网络中途断开 / 流损坏：先尽力处理已收到的完整事件，再把原始错误抛给 send() 统一呈现
-      if(buf.trim()) handleEventSafe(buf);
+      if(buf.trim()) handleEventSafe(buf,sid);
       throw e;
     }
     buf+=dec.decode(value,{stream:true});
     let i;
-    while((i=buf.indexOf("\n\n"))>=0){ const blk=buf.slice(0,i); buf=buf.slice(i+2); handleEventSafe(blk); }
+    while((i=buf.indexOf("\n\n"))>=0){ const blk=buf.slice(0,i); buf=buf.slice(i+2); handleEventSafe(blk,sid); }
   }
-  if(buf.trim()) handleEventSafe(buf);
+  if(buf.trim()) handleEventSafe(buf,sid);      // 尾包也要带 sid，否则尾部事件会被画到别的会话里
 }
 
-function handleEvent(block){
+function handleEvent(block, sid){
   const lines=block.split("\n");
   let type="message", data="";
   for(const l of lines){
@@ -909,21 +1241,52 @@ function handleEvent(block){
   }
   if(type==="message") return;
   let ev; try{ ev=JSON.parse(data); }catch(e){ return; }
+  // 事件按 sid 归属：不画到别处的窗格里，但仍更新该会话的运行态（左栏/状态条要用）
+  const rt = sid || SID;
+  if(ev.type==="attach"){
+    applyRunSnapshot(rt, ev);
+    return;
+  }
+  if(ev.type==="resync"){
+    // 事件日志已被后端截断（离开太久，最旧的事件被淘汰）：暂存的窗格不再是真相，
+    // 丢掉它并改用快照重建 —— 而不是假装完整、静默地少画一段。
+    dropPane(rt);
+    applyRunSnapshot(rt, ev, true);
+    if(shouldRender(rt)){       // 正在看它 → 立刻按快照重建，别让用户盯着残缺的窗格
+      chatEl.innerHTML=""; curAssist=curFlow=curTextBox=curThinkEl=null;
+      rebuildLiveTurn(rt, ev);
+      setRun(rt,{paneCursor: ev.last_seq, paneRun: ev.run||null});
+    }
+    return;
+  }
+  if(ev.type==="end"){
+    // 只有**正常完成**的轮次磁盘才是完整的（agent 边跑边落盘）。
+    // 取消/出错时尾部内容不在磁盘上，所以那种情况下保留暂存窗格 —— 否则用户切回来
+    // 会看不到刚才那段报错输出，只剩一个干净的旧历史。
+    if((ev.state||"done")==="done") dropPane(rt);
+    markRunning(rt,{running:false, streaming:false, state:ev.state||"done"});
+    if(shouldRender(rt)) renderSessions();
+    refreshRunBar();
+    return;
+  }
+  noteActivity(rt, ev);
+  if(!shouldRender(rt)) return;      // 不在看这个会话 → 只更新状态，不画
+  setRun(rt,{lastSeq:Math.max(getRun(rt).lastSeq||0, ev.seq||0)});
   switch(ev.type){
     case "text": textDelta(ev.delta||""); break;
     case "thinking": thinkDelta(ev.delta||""); break;
     case "tool_start": toolStart(ev); break;
     case "tool_end": toolEnd(ev); break;
-    case "confirm": showConfirm(ev); break;
+    case "confirm": showConfirm(ev, rt); break;
     case "notice": notice(ev.message||""); break;
     case "loop_guard": notice(ev.message||""); break;
-    case "usage": setUsage(ev); break;   // M1a：实时用量
+    case "usage": setUsage(ev); break;
     case "done": finalize(ev); break;
     case "error": addErrorMsg(ev.message||"运行出错"); break;
   }
 }
-function handleEventSafe(block){
-  try{ handleEvent(block); }
+function handleEventSafe(block, sid){
+  try{ handleEvent(block, sid); }
   catch(e){
     // 单帧渲染失败不再中断整个连接（此前会白屏报"连接中断"）
     console.warn("event 处理失败，已跳过：", e && e.message);
@@ -950,13 +1313,19 @@ async function answerConfirm(approve){
 
 /* ---------------- 停止 / 导出 ---------------- */
 async function stopRun(){
-  if(!state.busy) return;
-  try{ if(state.controller) state.controller.abort(); }catch(e){}
+  const sid=activeViewId;                  // 只停**当前会话**，不碰别的会话在跑的轮次
+  if(!isRunning(sid)) return;
+  // 先清 detached：否则下面 abort 触发的 AbortError 会被当成「切走」而静默吞掉
+  setRun(sid,{detached:false, state:"cancelling"});
+  try{ const c=getRun(sid).controller; if(c) c.abort(); }catch(e){}
+  setRun(sid,{controller:null});
   try{
-    await fetch("/api/cancel",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({session:SID})});
+    const j=await (await fetch("/api/cancel",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({session:sid})})).json();
+    // 后端只能协作式取消：正在执行的 Bash 要等它自己超时返回，如实说明
+    if(j && j.cancelled===false) notice("该会话当前没有正在运行的轮次。");
   }catch(e){}
-  $("#stopBtn").style.display="none";
+  refreshRunBar();
 }
 
 function exportChat(){
@@ -994,20 +1363,23 @@ function exportChat(){
 $("#modelSel").addEventListener("change", e=>{ state.model=e.target.value; $("#modelBadge").textContent=state.model; });
 $("#permSel").addEventListener("change", e=>{ state.permission=e.target.value; });
 $("#clearBtn").addEventListener("click", async()=>{
-  if(state.busy) return;
+  // 只挡「当前会话自己在跑」（清空会和它的落盘打架），不挡别的会话在跑
+  if(isRunning(SID)){ notice("本会话正在运行中，等这一轮结束再清空。"); return; }
   chatEl.innerHTML=""; curAssist=curFlow=curTextBox=null;
   $("#usageBadge").textContent="tokens 0";
   await fetch("/api/clear",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session:SID})});
 });
 // 新建会话：换一个全新 id，立刻生效（无需刷新）
+// 注意：新建**永远可用** —— 后台有会话在跑时也必须能开新对话（这正是用户要的）。
 $("#newBtn").addEventListener("click", ()=>{
-  if(state.busy) return;
   const nid=crypto.randomUUID().slice(0,12);
+  stashPane(SID);            // 开新会话前把原窗格存起来（原会话可能还在后台跑）
   setCurrent(nid);
-  curSessionMeta={}; viewingHistory=false;
-  chatEl.innerHTML=""; curAssist=curFlow=curTextBox=null;
+  curSessionMeta={};
+  chatEl.innerHTML=""; curAssist=curFlow=curTextBox=curThinkEl=null;
   $("#usageBadge").textContent="tokens 0";
   renderSessions();
+  syncBusyToView();          // 新会话一定是空闲的 → 按钮回到「发送」态
   $("#input").focus();
 });
 $("#stopBtn").addEventListener("click", stopRun);
@@ -1022,9 +1394,16 @@ document.addEventListener("click", e=>{ if(!e.target.closest("#ctxMenu")) hideCt
 document.addEventListener("contextmenu", e=>{ if(!e.target.closest(".sess")) hideCtxMenu(); });
 window.addEventListener("resize", hideCtxMenu);
 $("#sessionList").addEventListener("scroll", hideCtxMenu);
-function backToCurrent(){ viewingHistory=false; activeViewId=SID; chatEl.innerHTML=""; curAssist=curFlow=curTextBox=null; renderSessions(); }
-// 清空会话时高亮应停在「当前」项；这里同时把 activeViewId 与 SID 对齐
-function setCurrent(id){ SID=id; localStorage.sid=id; sessionStorage.sid=id; activeViewId=id; }
+function backToCurrent(){ viewingHistory=false; setCurrent(SID); chatEl.innerHTML=""; curAssist=curFlow=curTextBox=null; renderSessions(); }
+/* activeViewId 的**唯一写入口**：它一变，「当前查看的会话」就变了，
+   state.busy 镜像必须跟着重算 —— 漏掉这一步会让发送按钮停在上一个会话的形态
+   （看着空闲的会话却显示「停止」，点下去走 stopRun 而不是 send）。 */
+function setCurrent(id){
+  SID=id; localStorage.sid=id; sessionStorage.sid=id;
+  const changed = (activeViewId !== id);
+  activeViewId=id;
+  if(changed) syncBusyToView();
+}
 
 const inputEl=$("#input"), sendBtn=$("#sendBtn");
 inputEl.addEventListener("keydown", e=>{
@@ -1037,13 +1416,15 @@ function onPrimary(){ if(state.busy) stopRun(); else send(); }
 function autosize(){ inputEl.style.height="auto"; inputEl.style.height=Math.min(inputEl.scrollHeight,180)+"px"; }
 function setBusy(b){
   state.busy=b;
-  inputEl.disabled=b;
-  $("#stopBtn").style.display=b ? "" : "none";
+  /* 关键：**不禁用输入框**。这正是用户报的「跑起来对话框就锁死，不能切换到别的对话」。
+     后台在跑的会话必须能一边跑一边继续跟别的会话对话，所以这里只切按钮形态。
+     「本会话在跑时不要再发一条」由 send() 用 isRunning(sid) 单独判（这是 409 的前置检查，
+     是必要的：同一会话并发两条会打架）。 */
+  $("#stopBtn").style.display = b ? "" : "none";
   const run=document.getElementById("sendIconRun"), idle=document.getElementById("sendIconIdle");
   if(run&&idle){ run.style.display=b?"":"none"; idle.style.display=b?"none":""; }
   sendBtn.classList.toggle("running", b);
   sendBtn.title = b ? "强制中断本轮任务" : "发送";
-  document.querySelectorAll("#chips .chip").forEach(c=>c.style.pointerEvents=b?"none":"");
 }
 /* 中断/异常收尾：把流式中的思考与正文落定，并重算折叠 —— 否则被打断的那段
    会停在「还没渲染 + 没折叠」的状态（Bash 的中断路径以前什么都不做）。 */

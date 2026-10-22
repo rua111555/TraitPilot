@@ -19,6 +19,7 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 
 from skill_agent.config import Config
 from skill_agent.skills import SkillRegistry
+from . import runstate
 from .session import WebSession, build_session
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -93,7 +94,11 @@ def _fetch_models() -> list[str]:
 
 @app.get("/api/sessions")
 def api_sessions():
-    """M13：列出历史会话（读 checkpoint 目录）。?archived=1 列出归档会话。"""
+    """M13：列出历史会话（读 checkpoint 目录）。?archived=1 列出归档会话。
+
+    内存里有活跃 Run 的会话附运行摘要（左栏据此显示「运行中」），
+    这样用户不用切进去就知道哪个会话在跑、跑到哪一步了。
+    """
     from skill_agent.config import default_checkpoint_dir
     from skill_agent.session_store import SessionStore
     archived = request.args.get("archived") in ("1", "true", "yes")
@@ -102,6 +107,21 @@ def api_sessions():
         items = store.sessions(archived=archived)
     except Exception:
         items = []
+    with CFG_REF["lock"]:
+        live = dict(_sessions())
+    for it in items:
+        s = live.get(it.get("id"))
+        r = s.last_run() if s else None
+        if r is not None:
+            snap = r.snapshot()
+            it["running"] = snap["running"]
+            it["state"] = snap["state"]
+            if snap["running"]:
+                it["run"] = snap["run"]
+                it["elapsed"] = snap["elapsed"]
+                it["progress"] = snap["progress"]
+            else:
+                it.pop("progress", None)
     return jsonify(items)
 
 
@@ -215,9 +235,13 @@ def api_skills():
 def api_clear():
     data = request.get_json(silent=True) or {}
     sid = data.get("session")
-    if sid and sid in _sessions():
+    s = _sessions().get(sid) if sid else None
+    if s is not None:
+        if s.busy:
+            return jsonify({"ok": False, "error": "会话正在运行中，无法清空"}), 409
         with CFG_REF["lock"]:
-            _sessions()[sid].agent.clear()
+            s.agent.clear()
+        s.run = None
     return jsonify({"ok": True})
 
 
@@ -235,14 +259,22 @@ def api_confirm():
 
 @app.post("/api/cancel")
 def api_cancel():
-    """停止某会话正在运行的轮次（协作式：置 cancel_event 并拒绝所有待确认命令）。"""
+    """停止某会话正在运行的轮次（协作式：置 cancelling + 拒绝所有待确认命令）。
+
+    幂等；**不动订阅者** —— 前端可以留在流上看着这一轮收尾，而不是立刻断线。
+    注意：正在执行的 Bash 无法被强杀（python 不能杀线程），要等它的内层超时返回，
+    所以这之后 state 会先停在 cancelling，前端据此如实显示「正在取消…」。
+    """
     data = request.get_json(silent=True) or {}
     sid = data.get("session")
     s = _sessions().get(sid) if sid else None
     if not s:
         return jsonify({"ok": False, "error": "session not found"}), 404
-    s.cancel()
-    return jsonify({"ok": True})
+    ok = s.cancel(data.get("run"))
+    r = s.last_run()
+    return jsonify({"ok": True, "cancelled": ok,
+                    "run": r.run_id if r else None,
+                    "state": r.state if r else "idle"})
 
 
 @app.post("/api/chat")
@@ -254,48 +286,114 @@ def api_chat():
         return jsonify({"error": "空消息"}), 400
 
     session = _get_or_create(sid)
-    if session.busy:
-        return jsonify({"error": "该会话正在运行中，请稍候"}), 409
-
     session.set_params(model=data.get("model"), permission=data.get("permission"))
-    threading.Thread(target=session.run, args=(message,), daemon=True).start()
-    return Response(_sse_stream(session), mimetype="text/event-stream",
+    # 「判忙 + 注册 Run」在同一把锁内完成 → 两个并发 POST 恰好一个成功
+    run = session.begin_run(message, prefix=_disk_prefix(sid))
+    if run is None:
+        cur = session.attach_run()
+        # 409 不再是死胡同：把当前 run 快照一并返回，前端可直接转为订阅
+        return jsonify({"error": "该会话正在运行中，请稍候",
+                        "run": cur.snapshot() if cur else None}), 409
+
+    threading.Thread(target=session.run_turn, args=(run,), daemon=True).start()
+    return Response(_sse_for(session, run), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache",
                              "X-Accel-Buffering": "no"})
 
 
-def _sse_stream(session: WebSession):
-    """读取会话事件队列，拼为 SSE；客户端断开时取消会话。"""
+@app.get("/api/session/<sid>/run")
+def api_session_run(sid):
+    """一轮运行的进度快照 —— 回答「这个会话到底在不在跑、在跑什么」。
+
+    没有活跃 Run 时返回 running:false（并附最近一轮的收尾信息，若有）。
+    """
+    s = _sessions().get(sid)
+    if s is None:
+        return jsonify({"ok": True, "running": False, "run": None, "session": sid})
+    r = s.last_run()
+    if r is None:
+        return jsonify({"ok": True, "running": False, "run": None, "session": sid})
+    snap = r.snapshot()
+    snap["ok"] = True
+    return jsonify(snap)
+
+
+@app.get("/api/session/<sid>/stream")
+def api_session_stream(sid):
+    """附着到一个正在跑的 Run 上（切回来 / 断线重连的唯一入口）。
+
+    ``after`` 为本轮游标：从该 seq 之后开始回放，再续实时。非破坏式、可多订阅者。
+    """
+    s = _sessions().get(sid)
+    run = s.attach_run() if s else None
+    if run is None:
+        r_last = s.last_run() if s else None
+        if r_last is not None:
+            # 轮次已结束：告知终态，让前端退回读磁盘
+            return jsonify({"ok": True, "running": False, "run": r_last.run_id,
+                            "state": r_last.state, "reason": "finished"})
+        return jsonify({"ok": False, "running": False, "error": "no run"}), 404
+    try:
+        after = int(request.args.get("after") or 0)
+    except ValueError:
+        after = 0
+    return Response(_sse_for(s, run, after=after), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache",
+                             "X-Accel-Buffering": "no"})
+
+
+def _disk_prefix(sid: str) -> int:
+    """本轮开始前该会话磁盘上已完成的消息条数（供前端拼接，避免重复渲染）。"""
+    try:
+        from skill_agent.config import default_checkpoint_dir
+        from skill_agent.session_store import SessionStore
+        store = SessionStore(default_checkpoint_dir())
+        if not store.exists(sid):
+            return 0
+        return int(store.load_view(sid).get("resume_count") or 0)
+    except Exception:
+        return 0
+
+
+def _sse_for(session, run, after: int = 0):
+    """把某个 Run 的事件日志变成 SSE 流。
+
+    关键不变量：**断开只退订**。既不取消 run，也不改任何状态 —— 改造前正是在这里
+    无条件 cancel + 复位 busy，导致「关掉页面 = 任务被掐」与「busy 说谎」。
+    """
     def fmt(ev: dict) -> str:
         etype = ev.get("type", "message")
         return f"event: {etype}\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
 
-    stopped_normally = False
-    # 全局耐心等待：模型思考期（首次输出可能 >8s，opus 尤甚）不设「首个事件必须快」，
-    # 队列空时只发心跳继续等；用总时长上限兜底避免流永挂。
-    MAX_STREAM_WAIT = 3600
-    waited = 0
+    sub = run.subscribe(after=after)
     try:
+        snap = run.snapshot()
+        yield fmt({"type": "attach", **snap})
+        if run.truncated_before > after:
+            yield fmt({"type": "resync", "truncated_before": run.truncated_before,
+                       **snap})
         while True:
-            try:
-                ev = session.event_queue.get(timeout=15)
-            except queue.Empty:
-                waited += 15
-                if waited > MAX_STREAM_WAIT:
+            ev = sub.next_event(timeout=15.0)
+            if ev is None:
+                if run.state in runstate.TERMINAL:
                     break
                 yield ": keepalive\n\n"
                 continue
             if ev.get("type") == "__end__":
-                stopped_normally = True
-                break
+                # 终结帧：只发给「跟到末尾」的订阅者，回放旧日志时不误触发
+                if run.state in runstate.TERMINAL:
+                    yield fmt({"type": "end", "run": run.run_id, "state": run.state})
+                    break
+                continue
             yield fmt(ev)
+            if run.state in runstate.TERMINAL and sub.cursor >= run.last_seq:
+                yield fmt({"type": "end", "run": run.run_id, "state": run.state})
+                break
     except GeneratorExit:
-        stopped_normally = False
+        pass
     finally:
-        # 正常结束不取消；客户端中途断开才取消（回复待确认命令、终止任务）
-        if not stopped_normally:
-            session.cancel()
-        session.busy = False
+        # ← 断开只做这一件事。run 继续跑，busy 仍为真，事件照常记入日志。
+        run.unsubscribe(sub)
 
 
 def create_app(cfg: Config, registry: SkillRegistry) -> Flask:
