@@ -77,7 +77,7 @@ skills/
 1. **参数解析** — 解析 `--samples`、`--prefix`、`--threads`、`--db`、`--resume`
 2. **会话管理** — 创建运行目录，管理 `.done` / `.pid` 锁文件
 3. **用户交互** — 展示参数、脚本 → 等待用户审批 → 执行
-4. **后台执行** — `nohup` + `run_in_background` 双层保护
+4. **后台执行** — `nohup` + **重定向** + `Bash(background: true)` 三层保护
 5. **状态跟踪** — 监测 `.done` 标记，自动推进下一阶段
 6. **恢复连接** — 用户说「推进 WGS」时检查各阶段状态
 7. **数据库更新** — 记录 `pipeline_runs` 和 `sample_steps`

@@ -10,7 +10,7 @@ import json
 import time
 from pathlib import Path
 
-from .client import AnthropicClient
+from .client import AnthropicClient, APIError
 from .config import Config
 from .skills import SkillRegistry
 from .stops import StopAction, classify, make_truncation_result, text_of
@@ -20,6 +20,22 @@ from .tokens import messages_tokens
 MAX_TURNS = 60
 COMPACT_MIN_MESSAGES = 40
 COMPACT_MAX_CHARS = 600_000
+# 真实上下文用量达到该比例即压缩（优先于字符/条数判据）。
+#
+# 中转的上下文上限实测 286,720 token（只以 400 错误形式暴露，不在 /v1/models 里）。
+# 定 0.70 而非贴着上限：压缩本身要一次额外请求（摘要式还要多一次 summarize），
+# 且压缩后仍需留足空间给这一轮余下的工具往返。按 286,720 算 ≈ 200k token。
+# 字符判据（COMPACT_MAX_CHARS）保留为**兜底**：真实用量要等第一次响应回来才知道，
+# 会话开头或客户端拿不到 usage 时它仍然生效。
+COMPACT_AT_CONTEXT_RATIO = 0.70
+# 无法从配置读到上下文上限时的兜底值。实测中转为 286,720 token。
+CONTEXT_LIMIT_FALLBACK = 286_720
+# 弹性轮次：到达 max_turns 后若上下文仍有余量，自动延长几段（每段 = max_turns）。
+# 默认 3 段 → 默认上限从 60 提到最坏 240 轮。设 0 可恢复「到点即停」的旧行为。
+# 为什么仍要有界：无进展循环由 loopguard 负责，这里只解决「正常任务被轮次切死」。
+MAX_TURN_EXTENSIONS = 3
+# 压力路径下按字节从尾部保留的窗口上限（≈ 上限 70% 的一半，给摘要与工具往返留余量）
+COMPACT_KEEP_BYTES = 200_000
 COMPACT_KEEP_RECENT = 12        # M12：摘要式压缩时原样保留的最近消息条数
 MAX_RESULT_CHARS = 100_000
 
@@ -143,7 +159,32 @@ class Agent:
         self._guard_halted = False
         if self.loopguard is not None:
             self.loopguard.reset()
-        for step in range(budget["max_turns"]):
+        # 用 while True + 顶部判上限，而不是 for range(max_turns)：轮次上限可以被
+        # **延长**（见下面的弹性续跑），for range 的边界在进入时就固定了，改不动。
+        # 也把步数递增放在顶部，这样体内所有 `continue` 都不必各自维护计数。
+        step = 0
+        while True:
+            if step >= budget["next_cap"]:
+                # 轮次用尽：**先看上下文还有没有余量**再决定停不停。
+                #
+                # 用户诉求（逐字）：「我不想太固定最大轮次，而是每次快达到上下文上限的
+                # 时候，进行上下文的压缩，然后继续这个对话框」。真正的约束应该是
+                # **上下文**而不是轮次计数：上下文还有余量时，再给一段轮次继续跑。
+                # 延长次数**有界**（max_extensions），所以最坏情况仍是有限轮次 ——
+                # 既满足「别太固定」，又不会真的跑飞（无进展循环另有 loopguard 管）。
+                if budget["extensions"] < budget["max_extensions"]:
+                    budget["extensions"] += 1
+                    budget["next_cap"] += budget["per_extension"]
+                    self._notify(
+                        "notice",
+                        f"已达轮次上限 {step}，上下文仍有余量 → 自动延长轮次预算"
+                        f"（第 {budget['extensions']}/{budget['max_extensions']} 次延长，"
+                        f"本次上限 {budget['next_cap']} 轮）")
+                else:
+                    extra = (f"；已自动延长 {budget['extensions']} 次"
+                             if budget["extensions"] else "")
+                    return f"（达到最大工具轮次 {budget['next_cap']}，已停止{extra}）"
+            step += 1
             if self.cancel_event is not None and self.cancel_event.is_set():
                 return "（任务已取消）"
             # M1b：发请求前的预算熔断（绝不在工具执行中途硬切）
@@ -160,10 +201,28 @@ class Agent:
                 system += "\n\n（注：较早的对话内容已因长度被压缩为前情摘要，请基于当前可见内容继续。）"
 
             t0 = time.monotonic()
-            blocks, stop_reason, out_tokens = self.client.create(
-                system=system, tools=tools, messages=self.history,
-                stream=self.cfg.stream, on_delta=on_delta, on_thinking=on_thinking,
-            )
+            try:
+                blocks, stop_reason, out_tokens = self.client.create(
+                    system=system, tools=tools, messages=self.history,
+                    stream=self.cfg.stream, on_delta=on_delta, on_thinking=on_thinking,
+                )
+            except APIError as e:
+                # 上下文溢出是 400 → client 判为**不可重试**，会直接终止整轮。
+                # 但这里恰好是最该继续、而不是放弃的地方：历史是本地可裁的，
+                # 裁掉旧内容再发一次就能继续（用户诉求「继续这个对话框」）。
+                # 只在真正识别出「上下文超长」时才走这条路，其余 400 照旧抛出 ——
+                # 不能把参数错误之类的真错误也吞成「再试一次」。
+                if not _is_context_overflow(e):
+                    raise
+                if not self._force_compact_for_retry():
+                    raise                     # 裁不动（内容不可再分）→ 如实报错
+                self._notify("notice",
+                             "上下文超出模型上限，已压缩较早内容后自动重试。")
+                t0 = time.monotonic()
+                blocks, stop_reason, out_tokens = self.client.create(
+                    system=system, tools=tools, messages=self.history,
+                    stream=self.cfg.stream, on_delta=on_delta, on_thinking=on_thinking,
+                )
             self._record_usage(out_tokens, time.monotonic() - t0)
             # 去伪：忽略空的 thinking 块
             blocks = [b for b in blocks if b.get("type") != "empty"]
@@ -221,13 +280,19 @@ class Agent:
             if decision.truncated and decision.user_message:
                 text = (text + "\n\n" + decision.user_message).strip()
             return text or "（模型未返回文本内容）"
-        return "（达到最大工具轮次，已停止）"
 
     # ---------------- 预算（M1b） ----------------
     def _init_budget(self) -> dict:
         cfg = self.cfg
+        per_turn = int(getattr(cfg, "max_turns", None) or MAX_TURNS)
         return {
-            "max_turns": int(getattr(cfg, "max_turns", None) or MAX_TURNS),
+            "max_turns": per_turn,
+            # 弹性轮次：next_cap 是当前允许的累计上限，每次延长加一段 per_extension。
+            "next_cap": per_turn,
+            "per_extension": per_turn,
+            "extensions": 0,
+            "max_extensions": max(0, _as_int(getattr(cfg, "max_turn_extensions", None),
+                                             MAX_TURN_EXTENSIONS)),
             "max_output_tokens": getattr(cfg, "max_output_tokens", None) or 0,
             "max_seconds": getattr(cfg, "max_seconds", None) or 0,
             "warn_ratio": float(getattr(cfg, "warn_ratio", 0.8) or 0.8),
@@ -422,19 +487,115 @@ class Agent:
             return
         budget_hit = sum(_msg_bytes(m) for m in h) > COMPACT_MAX_CHARS
         over_msgs = len(h) > COMPACT_MIN_MESSAGES
+        # 真实用量判据（首选）：上一次请求的 input token 已达上限的
+        # COMPACT_AT_CONTEXT_RATIO。取真实值而非字符估算 —— 估算在同一条会话上
+        # 低估 1.55 倍、在合成 prompt 上又高估 1.45 倍，方向不稳定。
+        ctx_hit = self._context_pressure()
         # M12：可选摘要式压缩（默认关；未注入 summarize/compressor 时等价于旧行为）
-        if (over_msgs or budget_hit) and self.summary_compressor is not None \
+        if (over_msgs or budget_hit or ctx_hit) and self.summary_compressor is not None \
                 and self.summarize is not None:
             if self._summary_compact():
                 return
-        if over_msgs or budget_hit:
-            cut = self._safe_cut(len(h) - COMPACT_MIN_MESSAGES) if over_msgs else 0
+        if over_msgs or budget_hit or ctx_hit:
+            cut = self._safe_cut(len(h) - COMPACT_MIN_MESSAGES) if over_msgs else -1
+            if cut < 0 and (budget_hit or ctx_hit):
+                # 条数没超但**上下文压力/字节压力**到了：不能干等 —— 按**字节预算**
+                # 从尾部往前留一段，而不是按条数。生信会话常见「条数少、单条极大」
+                # （一条 VCF 或日志输出几十万字符），此时 len(h) 远小于
+                # COMPACT_MIN_MESSAGES，任何按条数算的裁点都是 0，压缩形同不存在 ——
+                # 而恰恰是这类会话最容易撞上下文上限（实测：12 条、用量已到阈值，
+                # 按条数裁不动）。
+                cut = self._cut_by_bytes()
             if budget_hit and cut > 0:
-                # 还不够就多裁一段
-                cut = self._safe_cut(cut)
+                # 还不够就多裁一段（向后找不到合法边界就维持原切点，别用 -1 覆盖掉）
+                cut = max(cut, self._safe_cut(cut))
             if cut > 0:
                 self.history = h[cut:]
                 self._compacted = True
+                # 关键：丢弃分支也必须落锚点，否则压缩只活在内存里 ——
+                # 磁盘上旧消息仍逐条留着，resume 会**原样读回压缩前的历史**，
+                # 压缩被静默撤销（实测：内存 42 条 / resume 回 102 条）。
+                self._persist_prefix(self.history)
+
+    def _cut_by_bytes(self, keep_bytes: int = COMPACT_KEEP_BYTES) -> int:
+        """按**字节预算**从尾部往前留一段，返回合法切点（0 = 不该裁）。
+
+        与 ``_safe_cut`` 的分工：``_safe_cut`` 只保证「切点合法」（落在 user 且前一条
+        assistant 不带 tool_use），不管切在哪里；本方法决定**切在哪**，用于
+        「条数没超但上下文压力已到」的路径。
+
+        为什么按字节而不是按条数：生信会话常见「条数少、单条极大」（一条 VCF 或
+        日志几十万字符）。按条数留 KEEP_RECENT 条会算出 len(h)-12 ≤ 0 → 裁不动，
+        而这类会话恰恰最容易撞上下文上限。
+
+        找不到合法切点时返回 0（不裁）——宁可这一轮不动，也不制造不合法的历史边界。
+        **绝不返回 len(h)**：那会让 ``self.history = h[cut:]`` 把历史整段清空
+        （消息本身不可再切分时，只能保留它，不能连它一起丢）。
+        """
+        n = len(self.history)
+        total = 0
+        idx = n
+        for i in range(n - 1, -1, -1):
+            total += _msg_bytes(self.history[i])
+            if total > keep_bytes:
+                idx = i + 1
+                break
+            idx = i
+        # 单条消息本身就超过预算 → 上面的循环会给出 idx=n（保留 0 条）。
+        # 必须退到 n-1：那一条虽然大，也总比清空历史强（清了就等于丢失本轮全部上下文）。
+        idx = min(idx, n - 1)
+        if idx <= 0:
+            return 0                       # 整段都在预算内 → 无需裁
+        cut = self._safe_cut(idx)
+        if cut < 0:
+            # 预算线之后（含末尾）没有合法边界：向前兜底，保留稍多一点。
+            # 不能返回 0 就了事 —— 那正是「条数少、单条极大」会话裁不动的原因。
+            cut = self._cut_before(idx)
+        if cut <= 0:
+            return 0
+        return cut
+
+    def _force_compact_for_retry(self) -> bool:
+        """上下文溢出后的**强制**压缩（比常规压缩更狠）。成功返回 True。
+
+        与 ``_maybe_compact`` 的区别：这里已经撞了 400，没有「再等等」的余地 ——
+        必须真正腾出空间，否则重试必然再撞一次。
+        因此依次加深：按字节预算裁 → 仍不够就直接裁到最近 KEEP_RECENT 条。
+        """
+        h = self.history
+        if len(h) <= 2:
+            return False                  # 已无可裁的余量
+        before = len(h)
+        cut = self._cut_by_bytes(COMPACT_KEEP_BYTES // 2)
+        if cut <= 0:
+            cut = self._cut_before(len(h) - COMPACT_KEEP_RECENT)
+        if cut <= 0:
+            # 最后一档：只要还存在合法边界就按它裁（哪怕只剩很少）
+            cut = self._safe_cut(len(h) - 2)
+            if cut < 0:
+                cut = self._cut_before(len(h) - 2)
+        if cut <= 0:
+            return False
+        self.history = h[cut:]
+        self._compacted = True
+        self._persist_prefix(self.history)
+        return len(self.history) < before
+
+    def _context_pressure(self) -> bool:
+        """上一次请求的真实上下文用量是否已达压缩阈值。
+
+        没有可用用量时返回 False（回退到字符/条数判据）——绝不因为「量不到」
+        就误判为「已满」，那会在会话开头就把历史裁掉。
+        """
+        client = getattr(self, "client", None)
+        used = int(getattr(client, "last_input_tokens", 0) or 0)
+        if used <= 0:
+            return False
+        limit = _as_int(getattr(self.cfg, "context_limit", None),
+                        CONTEXT_LIMIT_FALLBACK)
+        if limit <= 0:
+            return False
+        return used >= limit * COMPACT_AT_CONTEXT_RATIO
 
     def _summary_compact(self) -> bool:
         """摘要式压缩：保留最近 K 条，把更早区间压成一条结构化摘要。成功返回 True。"""
@@ -462,17 +623,27 @@ class Agent:
                 self.history = recent
                 self._compacted = True
                 self._prev_summary = summary.strip()
-                self._persist_prefix(recent[0])
+                self._persist_prefix(recent)
                 self._remember_phase_facts(summary)
                 return True
         return False   # 任何不满足 → 回退旧逻辑
 
-    def _persist_prefix(self, message: dict) -> None:
-        """把压缩后的边界写进持久化日志（供 resume 时不重复压缩）。"""
+    def _persist_prefix(self, messages) -> None:
+        """把压缩后的**整个保留窗口**写成一条 ``_prefix`` 锚点（供 resume 时不重复压缩）。
+
+        参数是**列表**（整个窗口），不是单条：``_prefix`` 在读侧是覆盖点
+        （``raw = [...]``），其之前落盘的行全部作废。保留窗口里的消息恰恰是在
+        锚点之前逐条落盘的，只传边界那一条会把窗口其余部分一起丢掉
+        （详见 ``SessionStore.append_prefix``）。传单条时自动包成单元素列表，
+        兼容老调用方。
+        """
         if self.store is None or not self.session_id:
             return
+        msgs = messages if isinstance(messages, list) else [messages]
+        if not msgs:
+            return
         try:
-            self.store.append(self.session_id, {"_prefix": True, "message": message})
+            self.store.append_prefix(self.session_id, msgs)
         except Exception:
             pass
 
@@ -497,9 +668,15 @@ class Agent:
                     self.memory.remember(m.strip(), kind=kind, source="summary")
 
     def _safe_cut(self, start: int) -> int:
-        """start 起向后找到第一个「合法消息边界」：role=user，且前一条 assistant 无 tool_use。"""
+        """start 起向后找第一个「合法消息边界」：role=user，且前一条 assistant 无 tool_use。
+
+        **找不到合法边界时返回 -1**（而不是 start）。返回 start 会让调用方执行
+        ``h[start:]``，而 h[start] 此时并不是 user —— 等于留下一个「以 assistant
+        开头」的畸形历史，Messages API 会直接 400。返回 -1 时调用方的 ``cut > 0``
+        判定自然不成立 → 这一轮不裁（宁可不动，也不制造坏边界）。
+        """
         h = self.history
-        i = max(0, start)
+        i = max(0, int(start))
         while i < len(h):
             m = h[i]
             prev = h[i - 1] if i > 0 else None
@@ -507,7 +684,23 @@ class Agent:
                 if prev is None or not _has_tool_use(prev):
                     return i
             i += 1
-        return start
+        return -1
+
+    def _cut_before(self, idx: int) -> int:
+        """在 idx 及之前找**最大**的合法切点；找不到返回 -1（向前兜底）。
+
+        与 ``_safe_cut``（向后找）方向相反，用于「预算线之后没有合法边界」的情形：
+        向后找不到就只能清空或留一条 assistant 开头的畸形历史，此时向前退一格
+        保留稍多一点，远好于把上下文丢光。
+        """
+        h = self.history
+        i = min(int(idx), len(h) - 1)
+        while i >= 1:
+            m = h[i]
+            if m.get("role") == "user" and not _has_tool_use(h[i - 1]):
+                return i
+            i -= 1
+        return -1
 
 
 # M7：同轮可安全并行的只读工具（无副作用、无共享状态）
@@ -530,8 +723,46 @@ def _has_tool_use(msg: dict) -> bool:
         b.get("type") == "tool_use" for b in content if isinstance(b, dict))
 
 
+# 上下文溢出的错误特征。判据刻意收窄：必须是 400（不是语法错误就是参数错误）
+# **且**命中明确的超长措辞。宁可不识别（照旧报错），也不能把别的 400 误吞成
+# 「压缩后再试」——那会把真正的参数错误伪装成「重试也没用」。
+_OVERFLOW_PATTERNS = (
+    "maximum context length",
+    "max_model_len",
+    "max_total_tokens",
+    "context length",
+    "context_length_exceeded",
+    "too many tokens",
+    "prompt is too long",
+    "reduce the length",
+)
+
+
+def _is_context_overflow(err: Exception) -> bool:
+    """这是不是「上下文超长」这一类错误（可压缩后重试）。"""
+    status = getattr(err, "status", None)
+    if status is not None and int(status) != 400:
+        return False
+    text = str(err).lower()
+    return any(p.lower() in text for p in _OVERFLOW_PATTERNS)
+
+
 def _msg_bytes(m: dict) -> int:
     try:
         return len(json.dumps(m, ensure_ascii=False))
     except Exception:
         return 0
+
+
+def _as_int(value, fallback: int) -> int:
+    """把配置值转成 int；``None``/非法值才用 fallback，**0 是有效值**。
+
+    不能写成 ``int(v or fallback)``：那样 0 会被当成「没设」而回落到默认值，
+    于是「显式关闭」配置项根本关不掉（实测：max_turn_extensions=0 仍延长了 3 次）。
+    """
+    if value is None:
+        return fallback
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback

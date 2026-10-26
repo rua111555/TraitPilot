@@ -242,6 +242,11 @@ class Config:
     todo: bool = False
     # #14 prompt caching（默认关；给 system/工具定义打 cache_control）
     prompt_cache: bool = False
+    # 上下文上限（token）。留空则用 agent.CONTEXT_LIMIT_FALLBACK（实测中转 286,720）。
+    # 该值只用于**决定何时压缩上下文**，不参与请求参数。
+    context_limit: int | None = None
+    # 弹性轮次：到达 max_turns 后上下文仍有余量时，自动延长几段（0 = 关，到点即停）
+    max_turn_extensions: int | None = None
     # #12 模型路由/降级（默认空 = 不切换后备模型）
     fallback_models: list | None = None
     # #11 检索（Search/RepoMap，FTS5，默认关）
@@ -320,6 +325,8 @@ class Config:
             max_turns=_env_int("SKILL_AGENT_MAX_TURNS", max_turns),
             max_output_tokens=_env_int("SKILL_AGENT_MAX_OUTPUT_TOKENS"),
             max_seconds=_env_int("SKILL_AGENT_MAX_SECONDS"),
+            context_limit=_env_int("SKILL_AGENT_CONTEXT_LIMIT"),
+            max_turn_extensions=_env_int("SKILL_AGENT_MAX_TURN_EXTENSIONS"),
             loop_guard=_env_bool("SKILL_AGENT_LOOP_GUARD"),
             plugin_dirs=_env_list("SKILL_AGENT_PLUGIN_DIRS"),
             hooks_enabled=_env_bool("SKILL_AGENT_HOOKS"),
@@ -352,6 +359,8 @@ class Config:
                 ("SKILL_AGENT_MAX_TURNS", "max_turns"),
                 ("SKILL_AGENT_MAX_OUTPUT_TOKENS", "max_output_tokens"),
                 ("SKILL_AGENT_MAX_SECONDS", "max_seconds"),
+                ("SKILL_AGENT_CONTEXT_LIMIT", "context_limit"),
+                ("SKILL_AGENT_MAX_TURN_EXTENSIONS", "max_turn_extensions"),
                 ("SKILL_AGENT_LOOP_GUARD", "loop_guard"),
                 ("SKILL_AGENT_PLUGIN_DIRS", "plugin_dirs"),
                 ("SKILL_AGENT_HOOKS", "hooks_enabled"),

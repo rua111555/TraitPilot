@@ -60,6 +60,35 @@ class SessionStore:
             return
         self.append(sid, {"_meta": True, **(meta or {})})
 
+    def append_prefix(self, sid: str, messages: list[dict]) -> None:
+        """把「压缩后的整个保留窗口」写成一条 ``_prefix`` 锚点（M12）。
+
+        必须是**整窗**而不是单条边界：``_read_raw`` 读到 ``_prefix`` 时执行
+        ``raw = [...]`` —— 锚点**之前**追加过的行全部作废。而保留窗口里的消息是在
+        锚点写入之前就逐条落盘的，只写边界那一条会把窗口的其余部分一起丢掉
+        （实测：摘要式压缩后内存 14 条、resume 只回来 3 条）。
+
+        为什么不是「重写日志文件」：append-only + fsync 是并发安全的根基
+        （见模块 docstring），重写会与并发 append 相互撕裂。锚点覆盖法既保留
+        append-only，又让磁盘视图在读取时收敛到压缩后的窗口。
+        """
+        if not self.enabled or not self._valid(sid) or not messages:
+            return
+        p = self.root / f"{sid}.jsonl"
+        try:
+            line = json.dumps({"_prefix": True, "messages": list(messages)},
+                              ensure_ascii=False)
+        except (TypeError, ValueError):
+            return
+        with self._lock:
+            try:
+                with open(p, "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+                    f.flush()
+                    os.fsync(f.fileno())
+            except OSError:
+                pass
+
     # ---------------- 读 ----------------
     def load(self, sid: str) -> dict:
         """续跑视图：返回 {messages, meta, discarded}。messages 已做恢复校验。
@@ -139,10 +168,25 @@ class SessionStore:
                         raw[-1]["content"] = list(raw[-1].get("content") or []) + \
                             list(obj.get("content") or [])
                 elif isinstance(obj, dict) and obj.get("_prefix"):
-                    # M12：压缩产生的边界前缀 → 作为「本轮起点」覆盖之前消息
-                    prefix = obj.get("message")
-                    if isinstance(prefix, dict) and prefix.get("role"):
-                        raw = [prefix]
+                    # M12：压缩产生的边界前缀 → 作为「本轮起点」覆盖之前消息。
+                    #
+                    # ⚠️ 这是**覆盖点**（`raw = ...`），不是追加锚点：它让「旧消息仍在
+                    # 文件里、但读的时候被丢掉」成立，于是压缩不必改写（重写日志会
+                    # 破坏 append-only 的并发安全与 fsync 语义）。
+                    #
+                    # 两种形态：
+                    #   messages=[...]  压缩后的**整个保留窗口**（现用）。必须整窗写入：
+                    #                   单条形态只把边界那一条当起点，而保留窗口的其余
+                    #                   消息是**在锚点之前**追加的 → 一并被覆盖丢弃
+                    #                   （实测摘要式压缩后内存 14 条、resume 只回 3 条）。
+                    #   message={...}   单条边界（旧形态，仅为读旧日志保留）。
+                    pm = obj.get("messages")
+                    if isinstance(pm, list) and pm:
+                        raw = list(pm)
+                    else:
+                        prefix = obj.get("message")
+                        if isinstance(prefix, dict) and prefix.get("role"):
+                            raw = [prefix]
                 elif isinstance(obj, dict) and obj.get("role"):
                     raw.append(obj)
         except OSError:

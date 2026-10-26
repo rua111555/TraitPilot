@@ -330,6 +330,7 @@
     <div class="mh">⚠️ 需要你批准执行命令</div>
     <div class="mb">
       <div class="why" id="why">该命令触发权限确认</div>
+      <div class="why" id="confirmFrom"></div>
       <pre id="cmdText"></pre>
     </div>
     <div class="mf">
@@ -1294,37 +1295,75 @@ function handleEventSafe(block, sid){
 }
 
 /* ---------------- 确认 ---------------- */
-function showConfirm(ev){
-  state.pendingConfirm=ev;
+function showConfirm(ev, sid){
+  /* sid = **发问方**会话（不一定是当前查看的会话）。
+     必须记下来：切走之后用户的作答要发回给发问方，而不是发给他正在看的那个 ——
+     否则 A 会话的确认会被当成对 B 的作答（本文件曾用全局 SID，就是这个错）。 */
+  const owner = sid || ev.session || activeViewId;
+  state.pendingConfirm=Object.assign({}, ev, {session:owner});
   $("#cmdText").textContent=ev.command||"";
   const why = ev.reason==="ask-all" ? "权限模式为「每条命令询问」" : "⚠️ 该命令可能危险，需要批准";
   $("#why").textContent = why;
+  // 若当前查看的不是发问方，显式标出来源，避免用户以为在给当前会话作答
+  const tag = $("#confirmFrom");
+  if(tag) tag.textContent = (owner===activeViewId) ? "" : ("来自会话 " + owner);
   $("#overlay").classList.add("show");
+}
+function hideConfirm(){
+  $("#overlay").classList.remove("show");
+  state.pendingConfirm=null;
+  const tag=$("#confirmFrom"); if(tag) tag.textContent="";
+}
+/* 切会话时把确认框的**归属**同步过来：
+   发问方就是新会话 → 重新弹出；否则收起（答案不能落到错误的会话上）。
+   注意沿用 pendingConfirm 里已有的 uid，不重新构造事件。 */
+function syncConfirmToView(){
+  const ev = state.pendingConfirm;
+  if(ev && ev.session === activeViewId){
+    $("#cmdText").textContent=ev.command||"";
+    const tag=$("#confirmFrom"); if(tag) tag.textContent="";
+    $("#overlay").classList.add("show");
+  }else{
+    $("#overlay").classList.remove("show");
+  }
 }
 $("#approveBtn").addEventListener("click", async()=>{ await answerConfirm(true); });
 $("#rejectBtn").addEventListener("click", async()=>{ await answerConfirm(false); });
 async function answerConfirm(approve){
-  const ev=state.pendingConfirm; state.pendingConfirm=null;
-  $("#overlay").classList.remove("show");
+  const ev=state.pendingConfirm;
+  const owner=(ev && ev.session) || activeViewId;   // 发问方，不是「正在看的」
+  hideConfirm();
   if(!ev) return;
   await fetch("/api/confirm",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({session:SID,uid:ev.uid,approve})});
+    body:JSON.stringify({session:owner,uid:ev.uid,approve})});
 }
 
 /* ---------------- 停止 / 导出 ---------------- */
 async function stopRun(){
   const sid=activeViewId;                  // 只停**当前会话**，不碰别的会话在跑的轮次
-  if(!isRunning(sid)) return;
-  // 先清 detached：否则下面 abort 触发的 AbortError 会被当成「切走」而静默吞掉
-  setRun(sid,{detached:false, state:"cancelling"});
-  try{ const c=getRun(sid).controller; if(c) c.abort(); }catch(e){}
-  setRun(sid,{controller:null});
+  // ⚠️ 不要在这里 `if(!isRunning(sid)) return;`：本地 runs 表只是**镜像**，
+  //    可能与后端不一致（如刷新后、或事件流漏了一段）。那样会在「后端其实在跑」
+  //    时直接返回 —— 用户按了按钮，却**一点反馈都没有**（本文件曾如此）。
+  //    改为总是问后端一次，由后端的事实回答「到底有没有在跑」。
+  const wasRunning = isRunning(sid);
+  if(wasRunning){
+    // 先清 detached：否则下面 abort 触发的 AbortError 会被当成「切走」而静默吞掉
+    setRun(sid,{detached:false, state:"cancelling"});
+    try{ const c=getRun(sid).controller; if(c) c.abort(); }catch(e){}
+    setRun(sid,{controller:null});
+  }
   try{
     const j=await (await fetch("/api/cancel",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({session:sid})})).json();
     // 后端只能协作式取消：正在执行的 Bash 要等它自己超时返回，如实说明
-    if(j && j.cancelled===false) notice("该会话当前没有正在运行的轮次。");
-  }catch(e){}
+    if(j && j.cancelled===false){
+      notice(wasRunning
+        ? "已请求中断，但后端未记录到运行中的轮次（可能刚刚已结束）。"
+        : "该会话当前没有正在运行的轮次。");
+    }
+  }catch(e){
+    notice("中断请求失败：" + (e && e.message ? e.message : e));
+  }
   refreshRunBar();
 }
 
@@ -1402,7 +1441,14 @@ function setCurrent(id){
   SID=id; localStorage.sid=id; sessionStorage.sid=id;
   const changed = (activeViewId !== id);
   activeViewId=id;
-  if(changed) syncBusyToView();
+  if(changed){
+    syncBusyToView();
+    /* 确认框的**归属**随视图同步：发问方是新会话才显示，否则收起。
+       在 setCurrent 里做（而不是 selectSession 的某条分支）是因为这里是**唯一**的
+       视图写入口 —— 否则漏掉某条 return 路径，就会留下「A 的确认框挂在 B 上」
+       的状态，用户一按就把答案发给 B（曾如此）。 */
+    if(typeof syncConfirmToView==="function") syncConfirmToView();
+  }
 }
 
 const inputEl=$("#input"), sendBtn=$("#sendBtn");

@@ -45,6 +45,18 @@ class AnthropicClient:
         # #12：过载重试耗尽后按列表切换后备模型（默认空 = 不切换）
         self.fallback_models = list(fallback_models or [])
         self.max_attempts = int(max_attempts)
+        # 最近一次请求**真实**的上下文用量（输入 token 总数）。0 = 尚未量到。
+        #
+        # 为什么要这个：决定「何时压缩上下文」只能靠真实用量，本地按字符估算不可靠
+        # （实测同一条会话：真实 221,323 vs 估算 142,908，估**低** 1.55 倍；而合成
+        # 大 prompt 上又估**高** 1.45 倍 —— 方向都不稳定，不能用来定阈值）。
+        #
+        # 为什么取 message_delta 而非 message_start 的 usage：两者实测相差 46%，
+        # message_delta 才是这一次请求实际发出去的全文用量。``_note_usage`` 先被
+        # message_start 调用、再被 message_delta 覆盖，所以最终留下的是后者。
+        #
+        # 用属性而非返回值：``create`` 已有 8 处调用点，改 arity 会波及无谓的地方。
+        self.last_input_tokens = 0
 
     # ---------------- 主入口 ----------------
     def create(
@@ -115,6 +127,25 @@ class AnthropicClient:
             tools[-1] = {**tools[-1], "cache_control": {"type": "ephemeral"}}
             payload["tools"] = tools
 
+    def _note_usage(self, usage: dict | None) -> None:
+        """记下本次请求的真实上下文用量（输入 token 总数）。
+
+        三个输入桶**互不重叠**，真实上下文长度是它们的和（实测中转返回：
+        ``{"input_tokens":34,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}``）：
+          在 prompt caching 打开时，命中缓存的前缀只计入 ``cache_read_input_tokens``，
+          ``input_tokens`` 会**变小**。只看 ``input_tokens`` 会把上下文用量算低，
+          压缩就永远不触发 —— 于是对话照样撞上限。
+        """
+        if not isinstance(usage, dict):
+            return
+        total = 0
+        for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"):
+            v = usage.get(k)
+            if isinstance(v, int) and v > 0:
+                total += v
+        if total > 0:
+            self.last_input_tokens = total
+
     def _attempt(self, payload: dict, stream: bool, on_delta, on_thinking=None):
         """对单个模型做退避重试（连接类异常 + 429/529/5xx 均重试）。"""
         for attempt in range(self.max_attempts):
@@ -178,6 +209,7 @@ class AnthropicClient:
                 raise APIError(ev.get("error", {}).get("message", "stream error"))
             if t == "message_start":
                 last_type = "message"
+                self._note_usage(ev.get("message", {}).get("usage"))
                 if self.verbose:
                     print(f"[client] model={ev.get('message', {}).get('model', '')}", file=__import__("sys").stderr)
             elif t == "content_block_start":
@@ -218,7 +250,10 @@ class AnthropicClient:
             elif t == "message_delta":
                 dr = ev.get("delta", {})
                 stop_reason = dr.get("stop_reason", "") or stop_reason
-                usage_out = ev.get("usage", {}).get("output_tokens") or usage_out
+                usage = ev.get("usage", {}) or {}
+                usage_out = usage.get("output_tokens") or usage_out
+                # 后写覆盖前写：message_delta 的用量反映本次请求实际发出的全文
+                self._note_usage(usage)
             elif t == "message_stop":
                 break
         resp.close()
@@ -239,6 +274,7 @@ class AnthropicClient:
         blocks = data.get("content", [])
         stop_reason = data.get("stop_reason", "")
         usage_out = (data.get("usage") or {}).get("output_tokens", 0)
+        self._note_usage(data.get("usage"))
         # 流式被禁用时的模型名
         if self.verbose:
             print(f"[client] model={data.get('model', '')}", file=__import__("sys").stderr)

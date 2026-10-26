@@ -78,16 +78,22 @@ allowed-tools:
 ### 1. 后台运行（SESSION-SAFE）
 
 ```bash
-# Bash(run_in_background: true) — Harness 跟踪，对话框不阻塞
-# nohup ... & — 终端退出后进程继续运行
-nohup bash "${SCRIPT_PATH}" > /dev/null 2>&1 &
+# Bash(background: true) — Harness 跟踪，本轮工具调用立即返回，对话框不阻塞
+# nohup ... & + 重定向 — 终端退出后进程继续运行，父进程不会等管道
+nohup bash "${SCRIPT_PATH}" > "${RUN_DIR}/nohup.out" 2>&1 &
 ```
+
+> ⚠️ 参数名是 **`background`**（不是 `run_in_background`，后者会被忽略）；
+> 且 `nohup ... &` **必须重定向** stdout/stderr，否则子进程持有输出管道、
+> 父进程要等子进程退出才返回 —— 这一轮会被卡住直到命令结束。
 
 ### 2. 监测（.done 标记）
 
 - 每阶段脚本末尾 `date > "${RUN_DIR}/.done/{STAGE}.done"`
-- GWAS 各阶段通常分钟级，**无需定时 cron 轮询**；前台跑完或浅度等待即可
-- 长任务（rMVP 大群体、HaplotypeCall 类似物）超过 ~10 分钟 → 用 `CronCreate` 每 30 分钟查一次 `.done`
+- GWAS 各阶段通常分钟级，**无需定时轮询**；前台跑完或浅度等待即可
+- 长任务（rMVP 大群体、HaplotypeCall 类似物）超过 ~10 分钟 → 用
+  **`TaskOutput(log_path=...)`** 查看进度；**不要用 `sleep` 在工具调用里轮询**
+  （会把这一轮占住，对话框不解放）。不存在 `CronCreate` 工具。
 
 ### 2.5 自动推进
 

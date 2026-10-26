@@ -54,16 +54,20 @@ allowed-tools:
 ### 1. 缺失率检查（查看数据集缺失率）
 
 ```bash
-nohup plink --file cohort --missing &
+nohup plink --file cohort --missing > plink_missing.log 2>&1 &
 # 产出 plink.lmiss（位点级）/ plink.imiss（个体级）
 ```
 
 ### 2. 最小等位基因频率检查
 
 ```bash
-nohup plink --file cohort --freq --out MAF_check &
+nohup plink --file cohort --freq --out MAF_check > MAF_check.log 2>&1 &
 # 产出 MAF_check.frq；用 R 画 MAF 分布直方图确认阈值
 ```
+
+> ⚠️ `nohup ... &` 必须带**重定向**（`> xxx.log 2>&1`）。只写 `&` 时子进程仍持有
+> 输出管道，父进程要等它退出才返回 —— 这一步就会把整轮卡住。
+> 配 `Bash(background: true)` 使用（参数名是 `background`，不是 `run_in_background`）。
 
 ### 3. Hardy-Weinberg 检查（可选）
 

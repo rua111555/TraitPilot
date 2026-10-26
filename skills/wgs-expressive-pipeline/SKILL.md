@@ -3,7 +3,7 @@ name: wgs-expressive-pipeline
 description: >
   Run a WGS germline variant calling pipeline with full LLM autonomy and traceability,
   driven by modular sub-skills. The orchestration layer handles monitoring (.done/.pid),
-  database queries, background execution (nohup + run_in_background), and auto-advancement.
+  database queries, background execution (nohup + background), and auto-advancement.
   Each analysis stage delegates to a dedicated sub-skill for implementation details.
   When user mentions WGS, 全基因组, 测序, 变异检测, variant calling, 跑管线 — match this skill.
 disable-model-invocation: false
@@ -73,10 +73,15 @@ allowed-tools:
 
 每阶段用**两层保护**启动：
 ```bash
-# Bash(run_in_background: true) — Harness 跟踪，对话框不阻塞
-# nohup ... & — 终端退出后进程继续运行
-nohup conda run -n Agent bash "${SCRIPT_PATH}" &
+# Bash(background: true) — Harness 跟踪，本轮工具调用立即返回，对话框不阻塞
+# nohup ... & + 重定向 — 终端退出后进程继续运行，且父进程不会等在管道上
+nohup conda run -n Agent bash "${SCRIPT_PATH}" > "${RUN_DIR}/nohup.out" 2>&1 &
 ```
+
+> ⚠️ 两个**必须**写对的地方（写错会导致这一轮卡住到命令结束）：
+> - 参数名是 **`background`**，不是 `run_in_background`（后者会被忽略）
+> - 必须把 stdout/stderr **重定向**走（`> ... 2>&1`）。只写 `nohup ... &` 而不重定向时，
+>   子进程仍持有父进程的输出管道，父进程要等到子进程退出才返回 —— 等于没有后台化。
 
 ### 2. 监测机制（.done + .pid 双重确认）
 
@@ -89,11 +94,12 @@ nohup conda run -n Agent bash "${SCRIPT_PATH}" &
 **关键规则：后台进程完成后，编排层必须主动检查进度并推进，不能被动等待用户询问。**
 
 方式：
-1. 脚本启动后，调用 **CronCreate** 定时检查 `.done` 标记
-2. 每次触发检查 `.done` 文件是否存在
+1. 脚本启动后，用 **`TaskOutput(log_path=...)`**（或 Read/Bash 读日志）查看进度；
+   **不要在工具调用里 `sleep` 轮询** —— 那会把这一轮一直占住，对话框就不会解放。
+2. 每次检查 `.done` 文件是否存在
 3. 汇报保持**极简**（一行：`第 X/N 样本 | Y 个 BAM | 无报错`），不加分析过程
 4. 存在 → 立即进入下一阶段（生成脚本 → 交用户审批）
-5. 不存在 → 继续等待
+5. 不存在 → **结束本轮**，如实告知「还在跑，下次问我时我再查」
 
 **检查间隔策略：**
 - 大样本量（>50 样本）管线运行时，间隔不可过密
