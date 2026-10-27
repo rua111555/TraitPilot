@@ -673,6 +673,7 @@ F7 是同一逻辑推到证据链上：**复核工具的可信度必须自己也
 **回归基线（第五批）**：`550 passed`（较第四批 516 增 34：`test_stage_verify.py` +12、`test_stage_gate_template.py` +7、其余为各条判据的配套用例）；
 `verify_fix_probe.py` **64/64**（较第四批 46 增 18：F 段 6 + 其余）；`stage_verify_probe.py` FAILED 0；`skill_doc_consistency_probe.py` FAILED 0。
 （**补记后的现基线见 §11.7 末尾：`575 passed`。**）
+（**第六批（v0.3.1）后为 `577 passed`，见 §11.8 —— 本行是 11.6 当时的记录，不改。**）
 
 **区分度验证（这一批的硬要求，全部在真副本里跑）**：
 - Stage 0.5 的 8 个变异体（对账永远通过 / 配对永远通过 / 零 read 降级 warn / 缺 JSON 退回 warn / 末行不补算 / merge 降级 warn / gzip 永远通过 / per_mate_fields 降级 warn）→ **8/8 被捕获**，且每个都由**指名的那条**测试杀掉
@@ -742,6 +743,7 @@ hard 判据 42 种，其中从未见过 FAIL 的 4 种：
 这才是 V4（"Stage 2 读 `prev["read_totals"]` 而无处写过该键"）真正要防的。
 
 **回归基线（第五批补记）**：`575 passed`（较 v0.2.0 树里的 516 **增 59**）。
+（⚠️ 这是**第五批当时**的值；第六批后为 `577 passed`，见 §11.8。）
 逐文件实测（`--collect-only`，两边同一套命令）：
 
 | 文件 | v0.2.0 | 现在 | 增 |
@@ -773,6 +775,46 @@ hard 判据 42 种，其中从未见过 FAIL 的 4 种：
 两次的自救办法是同一条：**别靠记忆，去做一个能自动发现遗漏的测量**——
 11.5 的产出是 `test_defect_class_guards.py`（按失效模式扫全部文档），
 这一次的产出是"判据覆盖面打桩"。**台账的完整性也必须被测量，而不是被声明。**
+
+### 11.8 第六批（2026-10-28，v0.3.0 提交后自查）：**修复动作自己把"怎么跑"配方弄失效了**
+
+**发现经过**：v0.3.0 提交并推送后，回头核对"文档里逐字给出的命令现在还能不能跑"，
+顺手复刻了 `docs/test-matrix.md` 第 1 步那条配方（**不清空 PATH**，如实测环境）：
+
+```
+cd /home/chenyuxi/skill/agent && /home/chenyuxi/anaconda3/bin/python -m pytest tests/ -q
+→ ERROR tests/test_stage_verify.py - RuntimeError: ...（退出码 2）
+```
+
+**这不是文档写错，而是我的修复把文档改过期了**：VERIFY-25 把
+`tests/test_stage_verify.py` 从"缺工具静默 skip（rc=0）"改成"缺工具收集期报错（rc=2）"，
+方向完全正确 —— 但那条配方**没有 `export PATH`**，于是从"勉强算绿"变成"照着敲就报错"。
+本机默认 PATH（含登录 shell）上 `samtools`/`bcftools`/`bgzip`/`tabix` **四个都没有**，实测确认。
+
+**处置**：
+- 修 `docs/test-matrix.md` 第 1 步配方（补 `export PATH`，并说明它不是可选项、
+  给出 `SKILL_AGENT_ALLOW_SKIP_WGS_TOOLS=1` 这条显式跳过出口）。
+- 新增失效模式防线 `_pred_pytest_recipe_missing_tool_env` + 参数化用例
+  `test_run_recipes_declare_where_the_wgs_tools_come_from`（扫 `docs/test-matrix.md`
+  与 `docs/test-evidence.md` 的 ```bash 围栏）。**只扫面向读者的"怎么跑"文档**，
+  不扫 dated 事件报告 —— 那些是"某次运行发生过什么"的记录（内含"期望 196 passed"
+  这类当时值），改它们等于篡改记录。
+
+**双向实测**：
+- 照抄修好后的配方（干净 shell，`env -i`）→ **577 passed**；
+- 同一条去掉 `export PATH` → 收集期 `RuntimeError`、退出码 2（即护栏要防的形态）；
+- **变异验证**：把 `docs/test-matrix.md` 那条配方回退成旧文本 → 护栏**变红并指名该块**；
+  复原 → 155 passed。
+- 护栏自身判别力：负控 2 条（真实旧文本 + 点名 WGS 文件的配方）、
+  正控 3 条（显式跳过声明 / 点名单个非 WGS 文件 / pytest 只在注释里）。
+  其中"点名单个非 WGS 文件"这条正控是刻意留的 —— 过宽的正则会把它误判成缺口，
+  从而把一整类合法配方全拦下，防线只能被关掉。
+- 第一版把 3 条正控错放进负控槽位，被 `test_guards_actually_discriminate` 当场抓住
+  （报"漏报"）—— **判别力自检这次抓的是我自己的手误**，正是它存在的理由。
+
+> 形态归属：这是 11.5 那条失效模式的**第七次换宿主** —— 不是"文档本身写错了"，
+> 而是**一处修复改变了另一处的有效性，而两边没有任何机制把它们连起来**。
+> 这一批的产出就是那根连起来的线。
 
 
 ### 11.2 复核方另发现的能力边界（不改变判定，登记备查）

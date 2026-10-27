@@ -12,6 +12,72 @@
 
 ---
 
+## [0.3.1] — 2026-10-28
+
+**主题：v0.3.0 的修复动作**自己**把「怎么跑」的配方弄失效了 —— 补齐并加一道
+能自动发现这类脱节的防线。**
+
+> 为什么是 0.3.1 而不是并进 0.3.0：0.3.0 已提交、打 tag、推送到远端，
+> 改动已对外可见，不该改写已发布的记录。且按本文件「版本号约定」，
+> 这一版是**文档纠错 + 测试补充、不改变对外契约** → `PATCH`。
+
+### 修复：仓库自己的「怎么跑」配方不自足
+
+v0.3.0 把 `tests/test_stage_verify.py` 从「缺工具静默 skip（rc=0）」改成
+「缺工具收集期报错（rc=2）」——**方向正确**，但 `docs/test-matrix.md` 第 1 步
+那条配方没有 `export PATH`，于是当场从"勉强算绿"变成**照着敲就报错**：
+
+```
+cd /home/chenyuxi/skill/agent && /home/chenyuxi/anaconda3/bin/python -m pytest tests/ -q
+→ ERROR tests/test_stage_verify.py - RuntimeError: ...（退出码 2）
+```
+
+不是配方的文字写错了，而是**一处修复改变了另一处的有效性，而两边没有任何机制
+把它们连起来**（本项目的 11.5 号失效模式的第七次换宿主 —— 前六次见
+`docs/test-evidence.md` §11.5/§11.6/§11.7）。本机默认 PATH（含登录 shell）上
+`samtools`/`bcftools`/`bgzip`/`tabix` **四个都没有**，实测确认。
+
+- 修 `docs/test-matrix.md` 第 1 步：补 `export PATH`，并写明它**不是可选项**、
+  给出 `SKILL_AGENT_ALLOW_SKIP_WGS_TOOLS=1` 这条显式跳过出口（会在
+  warnings summary 里留告警，不无声跳过）。
+- 新增失效模式防线 `_pred_pytest_recipe_missing_tool_env` + 参数化用例
+  `test_run_recipes_declare_where_the_wgs_tools_come_from`：扫
+  `docs/test-matrix.md` / `docs/test-evidence.md` 的 ```bash 围栏，**跑整目录
+  （`tests/`）或点名 WGS 证据文件的配方必须说清工具从哪来**。
+  点名单个**非 WGS** 文件不在射程内 —— 它不加载那个文件，本就不需要工具环境。
+
+**只扫面向读者的「怎么跑」文档，不扫 dated 事件报告**
+（`test-fix-report` / `session-concurrency-fix` / `rename-to-traitpilot` /
+`harness-gap-analysis`）：那些是"某次运行发生过什么"的记录，其中的期望值
+（如"期望 196 passed"）本就属于当时，**改它们等于篡改记录**。
+这条界限是刻意的，已写进代码注释 —— 否则下一个维护者会以为那是漏判。
+
+### 测试与证据
+
+- `pytest tests/ -q` → **577 passed**（较 0.3.0 的 575 增 2：两条参数化配方护栏）
+- `tools/concurrency/verify_fix_probe.py` → **64/64**
+- `tools/concurrency/stage_verify_probe.py` → **FAILED 0**
+- `tools/concurrency/skill_doc_consistency_probe.py` → **FAILED 0**
+- 用例清单 `docs/test-matrix.md` 新增 **VERIFY-27**；逐条实测证据 `docs/test-evidence.md` §11.8
+
+**双向 + 变异实测**（详见 §11.8）：
+- 照抄修好后的配方（干净 shell，`env -i`）→ **577 passed**；
+  同一条去掉 `export PATH` → 收集期 `RuntimeError`、退出码 2。
+- **变异验证**：把 `docs/test-matrix.md` 那条配方回退成旧文本 → 护栏**变红并指名该块**；
+  复原 → 全绿。
+- 护栏判别力：负控 2 条、正控 3 条（显式跳过声明 / 点名单个非 WGS 文件 /
+  pytest 只在注释里）。其中"点名单个非 WGS 文件"这条正控是刻意留的 ——
+  过宽的正则会把它误判成缺口，从而把一整类合法配方全拦下，防线只能被关掉。
+- 本轮写第一版时把 3 条正控错放进负控槽位，被 `test_guards_actually_discriminate`
+  当场抓住（报"漏报"）—— **判别力自检这次抓的是我自己的手误**，正是它存在的理由。
+
+> **这一版的教训**：前三次（11.5/11.6/11.7）都在修"修复没铺开"和"台账记漏了"，
+> 这一次是同一个根因的第三种表现 —— **修复改变了别处文档的有效性**。
+> 共同的自救办法仍是同一条：**别靠记忆，做一个能自动发现脱节的测量。**
+> 补记见 `docs/test-evidence.md` §11.8。
+
+---
+
 ## [0.3.0] — 2026-10-28
 
 **主题：把门禁的"假绿"逐个拆掉 —— 判据读派生数据、判据只跑过 PASS、判据根本没被测试触碰，

@@ -64,6 +64,70 @@ def _bash_fences(text):
     return out
 
 
+# ============ 失效模式：面向读者的「怎么跑」配方不自足（2026-10-28 新增） ============
+# 与上面几条的区别：那几条扫 **skill 文档**（LLM 照抄去生成阶段脚本），
+# 这一条扫**仓库自己的运行配方**（人照抄去跑回归）。缺陷形态同源 ——
+# 「权威模板自足」：配方缺了必不可少的一步，照抄即错。
+#
+# 本次的触发点：v0.3.0 把 `tests/test_stage_verify.py` 从「缺工具就静默 skip」
+# 改成「缺工具就在收集期报错」后，`docs/test-matrix.md` 第 1 步那条配方
+# （`python -m pytest tests/ -q`，没有 `export PATH=...`）当场变成跑不通 ——
+# WGS 门禁用例需要真实 samtools/bcftools/bgzip/tabix，而本机默认 PATH 上四个都没有。
+#
+# ⚠️ 这里**只扫面向读者的「怎么跑」文档**，不扫 dated 的事件报告
+# （test-fix-report / session-concurrency-fix / rename-to-traitpilot / harness-gap-analysis）：
+# 那些是"某次运行发生过什么"的记录，其中的期望值（如"期望 196 passed"）本就属于当时，
+# 改它们等于篡改记录。测的也不含"输出多少次通过"，只测**工具从哪来有没有说**。
+RUN_RECIPE_DOCS = ["docs/test-matrix.md", "docs/test-evidence.md"]
+
+
+def _pred_pytest_recipe_missing_tool_env(block):
+    """该 bash 块会**加载 WGS 门禁用例**（跑整个 `tests/` 目录或点名该文件），
+    却没说 samtools/bcftools/bgzip/tabix 从哪来 → True（不自足）。
+
+    只认「整目录」目标（`tests` / `tests/`）与点名的 `test_stage_verify`。
+    点名单个**非 WGS** 文件（`pytest tests/test_stops.py`）不在射程内 ——
+    它不加载那个文件，自然不需要工具环境。这条界限是刻意的，不是漏判。
+    """
+    if re.search(r'\bPATH=', block) or "SKILL_AGENT_ALLOW_SKIP_WGS_TOOLS" in block:
+        return False  # 已声明工具来源（或显式声明本次跳过）
+    for line in block.splitlines():
+        code = line.split("#", 1)[0]  # 去掉行尾注释，避免注释里的 pytest 误命中
+        if "pytest" not in code:
+            continue
+        if "test_stage_verify" in code:
+            return True
+        # `tests` / `tests/` 作为**独立词**出现（后面紧跟空白或行尾）才算整目录；
+        # `tests/test_stops.py` 的 `tests/` 后面跟的是文件名，不算 —— 否则
+        # 每条点名单文件的配方都会被误伤。
+        if re.search(r'(?:^|\s)tests/?\s*(?=$|\s)', code):
+            return True
+    return False
+
+
+@pytest.mark.parametrize("rel", RUN_RECIPE_DOCS)
+def test_run_recipes_declare_where_the_wgs_tools_come_from(rel):
+    """「怎么跑」配方必须自足：跑整套测试就得说清工具从哪来。
+
+    **为什么这条重要而不只是洁癖**：配方是给人逐字照抄的。缺 `export PATH`
+    时它**跑不通**（v0.3.0 起收集期报错、退出码 2）—— 这是"响亮地失败"，
+    比静默跳过好得多，但仍是缺陷：读者拿到一条照着敲就报错的命令。
+    真正要防的回归是有人把 `export PATH` 又删掉。
+    """
+    path = os.path.join(REPO, rel)
+    assert os.path.isfile(path), f"配方文档不见了：{rel}（护栏在扫空集）"
+    blocks = _bash_fences(open(path, encoding="utf-8").read())
+    recipes = [b for b in blocks if "pytest" in b]
+    assert recipes, (
+        f"{rel} 里一条 pytest 配方都没扫到 —— 围栏标记或文档结构变了，"
+        f"本护栏正在空转（这正是它要防的「纸面具备」）")
+    offenders = [b for b in recipes if _pred_pytest_recipe_missing_tool_env(b)]
+    assert not offenders, (
+        f"{rel} 有 {len(offenders)} 条整目录 pytest 配方没说工具从哪来，"
+        f"照抄会因缺 samtools/bcftools/bgzip/tabix 在收集期报错（VERIFY-25）：\n"
+        + "\n---\n".join(b.strip() for b in offenders))
+
+
 def test_doc_discovery_is_not_empty():
     """前提自检：自动发现若扫不到文件，下面每条防线都会空转"全绿"。"""
     assert len(DOCS) >= 10, f"只发现 {len(DOCS)} 份文档，路径规则变了？{sorted(DOCS)[:5]}"
@@ -295,6 +359,34 @@ def test_guards_actually_discriminate():
         (_pred_hardcoded_conda_path,
          "Use conda absolute paths for all tools.",
          '⚠ 旧版本这里写的是「Use conda absolute paths for all tools」—— 与硬规则 #5.1 冲突'),
+        # ---- 「怎么跑」配方自足性（2026-10-28） ----
+        # 坏样本 1：本次真实发生过的那条（docs/test-matrix.md 第 1 步的旧文本）
+        (_pred_pytest_recipe_missing_tool_env,
+         "cd /home/chenyuxi/skill/agent && /home/chenyuxi/anaconda3/bin/python -m pytest tests/ -q",
+         "export PATH=/home/chenyuxi/anaconda3/envs/Agent/bin:$PATH\n"
+         "/home/chenyuxi/anaconda3/bin/python -m pytest tests/ -q"),
+        # 坏样本 2：点名 WGS 证据文件、同样缺工具来源
+        (_pred_pytest_recipe_missing_tool_env,
+         "/home/chenyuxi/anaconda3/bin/python -m pytest tests/test_stage_verify.py -q",
+         "PATH=/tmp/nobin:/usr/bin:/bin /home/chenyuxi/anaconda3/bin/python "
+         "-m pytest tests/test_stage_verify.py -q"),
+        # 好样本：显式声明"本次不跑 WGS 侧"（VERIFY-25 的正规出口），不得误伤。
+        # 注意 `SKILL_AGENT_ALLOW_SKIP_WGS_TOOLS` 与 `PATH=` 是**两条**合法出口 ——
+        # 只认 PATH= 的话，正规的跳过声明会被当成缺口拦下。
+        (_pred_pytest_recipe_missing_tool_env,
+         "/home/chenyuxi/anaconda3/bin/python -m pytest tests/ -q",
+         "SKILL_AGENT_ALLOW_SKIP_WGS_TOOLS=1 /home/chenyuxi/anaconda3/bin/python "
+         "-m pytest tests/ -q"),
+        # 好样本：点名单个**非 WGS** 文件 —— 不加载那个文件，本就不需要工具环境。
+        # 这一条刻意留着：过宽的正则会把它当成缺口，于是把一整类合法配方全拦下。
+        (_pred_pytest_recipe_missing_tool_env,
+         "cd /home/chenyuxi/skill/agent && /home/chenyuxi/anaconda3/bin/python -m pytest tests/ -q",
+         "cd /home/chenyuxi/skill/agent && /home/chenyuxi/anaconda3/bin/python "
+         "-m pytest tests/test_stops.py tests/test_budget_loop.py -q"),
+        # 好样本：pytest 只出现在注释里，不是在跑（行尾与整行两种都覆盖）
+        (_pred_pytest_recipe_missing_tool_env,
+         "/home/chenyuxi/anaconda3/bin/python -m pytest tests/ -q   # 全量",
+         "grep -rn 'pytest' docs/    # 看哪些配方提到 pytest"),
     ]
     # 块级谓词单列（签名不同）
     cases_ok = [

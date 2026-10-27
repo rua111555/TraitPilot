@@ -121,7 +121,7 @@ cd ~/TraitPilot && python3 run.py list    # 自动探测到仓库根
 
 ```bash
 python3 run.py --version        # 或 python3 -m skill_agent --version
-# TraitPilot 0.3.0
+# TraitPilot 0.3.1
 ```
 
 **版本号的唯一载体是仓库根的 [`VERSION`](../VERSION) 文件** —— `skill_agent.__version__`
