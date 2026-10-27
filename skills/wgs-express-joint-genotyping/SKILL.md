@@ -53,8 +53,14 @@ GATK="$(resolve_tool gatk)"
 
 ```bash
 # 构建 -V 参数列表
+# ⚠️ 展开式 ${sample_names[@]+"${sample_names[@]}"} 不可省（实测 rc=1）：数组为空或
+#    **未声明**时（如本脚本声明的是 `samples` 而非 `sample_names`），bash 4.2 +
+#    `set -u` 下 `"${sample_names[@]}"` 直接 `unbound variable` 退出，
+#    这一段的失败发生在收尾门禁**之前**，磁盘上既无 .done 也无 .failed。
+#    `+` 形式对"空/未声明"展开为 0 个词 —— 于是下面能正常走到样本校验（SAMPLES_CSV
+#    那段会拦住真正空名单的情况），而不会在数组名不一致时无声消失。
 GVCF_INPUTS=""
-for sample in "${sample_names[@]}"; do
+for sample in ${sample_names[@]+"${sample_names[@]}"}; do
     GVCF="${RUN_DIR}/out/${sample}.g.vcf.gz"
     GVCF_INPUTS+=" -V ${GVCF}"
 done
@@ -131,10 +137,11 @@ GATK GenotypeGVCFs（⚠ 4.3.x **没有** `genotypecaller` 子命令，工具名
 
 ```bash
 # 统一 PBRUN() docker wrapper（由 wgs-express-params-propose 在脚本头部展开，见其「PBRUN wrapper」）
-# PBRUN <宿主GPU索引> <pbrun 子命令> ... ；容器内只暴露 1 张卡 → pbrun 用 --num-gpus 1
+# PBRUN <宿主GPU索引> <pbrun 子命令> ...
+# ⚠️ 注意：本子命令**不接受** `--num-gpus`（见下方说明）。
 ```
 
-### genotypegvcf 标准用法（单 GVCF 转 VCF，绑 1 卡）
+### genotypegvcf 标准用法（单 GVCF 转 VCF）
 
 ```bash
 GPU_IDX=0   # 群组级任务通常只取 1 张卡
@@ -143,9 +150,23 @@ PBRUN "${GPU_IDX}" genotypegvcf \
     --ref "${REF_FASTA}" \
     --in-gvcf "${COMBINED_GVCF}" \
     --out-vcf "${JOINT_VCF}" \
-    --num-threads "${per_gpu_cpus}" \
-    --num-gpus 1
+    --num-threads "${per_gpu_cpus}"
 ```
+
+> ⚠️ **不要给 `genotypegvcf` 加 `--num-gpus 1`**（实测 clara-parabricks 4.3.2-1）：
+> 该子命令是唯一**不接受**这个参数的 —— `pbrun genotypegvcf --num-gpus 1 ...`
+> 当场 `rc=2`、`pbrun: error: unrecognized arguments: --num-gpus 1`、`out/` 零产物；
+> 把它删掉后同样输入 `rc=0` 并正常产出 VCF + `.tbi`。这不是全局约定问题：
+> 同容器里 `pbrun {markdup,bqsr,applybqsr,haplotypecaller,fq2bam} -h` 的 Run Options
+> **每一个都有** `--num-gpus`（默认 1），只有 `genotypegvcf` 没有 —— 别按兄弟工具类推。
+> 后果分两种，都比"报错停下"更难发现：
+>   · 若按本 skill 清单要求做了失败累计（`PBRUN ... || FAILED=...`）→ 脚本继续走到
+>     门禁，报 `[FAIL] joint.exists`、写 `.failed`（至少留痕）
+>   · 若照抄上面模板（裸调用）→ `set -euo pipefail` 下**当场死在 pbrun 这一行**，
+>     磁盘上 `.done`/`.failed` **都不存在**，编排层四态判定归为"已中断"、
+>     引用户去查一个不存在的进程
+> 另外该子命令**确实不需要 GPU**：容器不带 `--gpus` 时仍 `rc=0` 正常产出，
+> 与"绑 1 卡"的旧注释相反。
 
 - `--in-gvcf` 为合并后 GVCF（`{prefix}.combined.g.vcf.gz`）。**合并（CombineGVCFs）本身
   轻量，可保持 GATK CPU 执行**（非瓶颈），仅联合分型交给 GPU
@@ -163,6 +184,17 @@ PBRUN "${GPU_IDX}" genotypegvcf \
 ## 收尾：结果校验门禁（**必须先过校验才写 `.done`**）
 
 ```bash
+# ─── 日志函数（本块自足：用了就必须定义，别指望别处）───
+# ⚠️ 本段不可省。本块调用了 log_error（以及日志类的其它函数），但**早期版本全文档
+#    都没有定义** —— 六个阶段 skill 里只有 align-sort / fastp-qc 定义了它们。
+#    LLM 照抄本块生成的脚本，首次调用处当场 `log_error: command not found`（rc=127）。
+#    要命的是这些调用**全在失败分支里**：本该"写 .failed 并打印原因"的路径反过来
+#    崩在写标记之前，磁盘上 .done/.failed 都不存在，编排层四态判定归为"已中断"、
+#    引用户去查一个不存在的进程 —— 真实原因只是这段函数没定义。
+#    与 align-sort / fastp-qc 的写法保持一致。
+log_info()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO]  $*"; }
+log_done()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [DONE]  $*"; }
+log_error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $*"; }
 # ─── 定位校验器（⚠ 不要写 `conda run -n Agent python`）───
 # 本脚本已由 `conda run -n Agent bash` 启动，该进程 PATH 中**没有 conda 可执行文件**
 # （只有 <conda>/envs/Agent/bin 与系统目录），嵌套调用会以 127 失败：
@@ -209,6 +241,18 @@ if [ -z "${SAMPLES_CSV}" ]; then
     } > "${RUN_DIR}/.failed/04_joint_genotyping.failed"
     exit 1
 fi
+
+# ─── cohort 级输出前缀（本阶段独有：校验器靠它定位 combined/joint VCF）───
+# ⚠️ 早期版本这里直接写 `${OUTPUT_PREFIX}`，而**全仓库没有任何一处给它赋值**
+#    （实测 `grep -rn 'OUTPUT_PREFIX=' .` 零命中）—— 脚本头部是 `set -euo pipefail`，
+#    变量展开当场 abort：rc=1、`OUTPUT_PREFIX: unbound variable`，磁盘上既无 .done
+#    也无 .failed，收尾门禁一次都没跑起来。畸形配置与健康配置**同样死法**
+#    （死在展开阶段，与数据无关），故不需要真实数据就能撞上。
+#    现在从 run.params.json 的 `output_prefix` 读回（与 verifier_path / sample_names
+#    同一范式：Stage 0 解析落盘、阶段侧读回）；读不到则**退化为空串** ——
+#    校验器的 `--prefix` 是可选参数，它会自己登记一条 hard 的 prefix 判据，
+#    把"拿不到前缀就无法定位输出 VCF"如实报出来，而不是让脚本先崩掉。
+OUTPUT_PREFIX="$(python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("output_prefix",""))' "${RUN_DIR}/run.params.json" 2>/dev/null || true)"
 
 # 先删掉本阶段的旧报告：跑完后它只要存在，就必然是本轮的产物。
 rm -f "${RUN_DIR}/.verify/04_joint_genotyping.json"

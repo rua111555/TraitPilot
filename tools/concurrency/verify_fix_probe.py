@@ -14,17 +14,30 @@
 
 用以防"修了代码但判据是装饰性的"—— 这是本项目"纸面具备"缺陷的同形风险。
 """
+import gzip
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
 
-REPO = "/home/chenyuxi/skill/agent"
+# ⚠️ 不要写死绝对路径：本探针常被**复制到别处**做变异测试（把被测代码改坏，
+#    确认判据会红）。写死本仓路径时，副本里的探针会去测**原仓**的未变异代码，
+#    于是"变异没被捕获"看起来像判据无区分度，实则是根本没测到变异体
+#    （实测踩到：在副本里做变异，探针全绿）。改为按本文件位置回溯到仓库根。
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 VERIFIER = os.path.join(REPO, "skills/wgs-expressive-pipeline/scripts/stage_verify.py")
 PY = sys.executable
 ENV = dict(os.environ)
 ENV["PATH"] = "/home/chenyuxi/anaconda3/envs/Agent/bin:" + ENV.get("PATH", "")
+
+# 本机 plink 不在默认 PATH 上（实测装在 LDBlockShow 的 biosoft 目录里）。
+# 探针里凡是要用真 plink 做**端到端**取证的地方都通过它定位 —— 没有就跳过该项
+# 并在输出里说明（不静默当作通过）。
+PLINK = (shutil.which("plink") or shutil.which("plink",
+         path="/data1/yangqinghua/biosoft/LDBlockShow/bin:/usr/local/bin:/usr/bin"))
 
 results = []
 
@@ -252,13 +265,20 @@ with open(raw, "w") as f:
 sh(["gzip", "-f", raw])
 full = raw + ".gz"
 data = open(full, "rb").read()
+# ⚠️ 以下 fastp.json 一律带 read1/read2_after_filtering —— 真 fastp 1.1.0 在
+#    PE 模式下**总是**写这两个顶层键（实测：常规过滤/非对称过滤/接头二聚体+
+#    polyG+correction/--unpaired 分流 四种配置都写了）。早期本探针造的 JSON
+#    只有 summary、没有 per-mate 字段，于是**掩盖**了一条对账判据从未生效的事实：
+#    校验器当时压根不读这两个键。夹具必须与真实产物同形，否则探针测的是夹具。
 for s in ("s1",):
     p = os.path.join(d9, "out", f"{s}.clean_1.fq.gz")
     open(p, "wb").write(data[:len(data) // 3])       # 截断
     p2 = os.path.join(d9, "out", f"{s}.clean_2.fq.gz")
     open(p2, "wb").write(data[:len(data) // 3])
     json.dump({"summary": {"after_filtering": {"total_reads": 900000},
-                           "before_filtering": {"total_reads": 950000}}},
+                           "before_filtering": {"total_reads": 950000}},
+               "read1_after_filtering": {"total_reads": 450000},
+               "read2_after_filtering": {"total_reads": 450000}},
               open(os.path.join(d9, "out", f"{s}.fastp.json"), "w"))
 rc9, out9 = verify("00_fastp_qc", d9, samples="s1")
 record("stage0.5 truncated gz -> blocked", rc9 == 1,
@@ -269,11 +289,74 @@ os.makedirs(os.path.join(d10, "out"), exist_ok=True)
 for s in ("s1",):
     open(os.path.join(d10, "out", f"{s}.clean_1.fq.gz"), "wb").write(data)
     open(os.path.join(d10, "out", f"{s}.clean_2.fq.gz"), "wb").write(data)
-    json.dump({"summary": {"after_filtering": {"total_reads": 20000},
-                           "before_filtering": {"total_reads": 20000}}},
+    json.dump({"summary": {"after_filtering": {"total_reads": 40000},
+                           "before_filtering": {"total_reads": 40000}},
+               "read1_after_filtering": {"total_reads": 20000},
+               "read2_after_filtering": {"total_reads": 20000}},
               open(os.path.join(d10, "out", f"{s}.fastp.json"), "w"))
 rc10, _ = verify("00_fastp_qc", d10, samples="s1")
 record("stage0.5 intact gz -> pass", rc10 == 0, f"rc={rc10}（期望 0）")
+
+# ─── F2：JSON 声称的读数与实际 FASTQ 不符 / R1R2 不配对（第二轮审计 major）───
+# 这三条在旧实现下**全部放行**：read 数只从 JSON 读、从不打开 FASTQ。
+def _mk_fastp_case(n1, n2, jr1, jr2, expect, label):
+    d = tempfile.mkdtemp()
+    os.makedirs(os.path.join(d, "out"), exist_ok=True)
+    for tag, n in (("clean_1", n1), ("clean_2", n2)):
+        with gzip.open(os.path.join(d, "out", f"s1.{tag}.fq.gz"), "wt") as f:
+            for i in range(n):
+                f.write(f"@r{i}\nACGTACGTAC\n+\nIIIIIIIIII\n")
+    json.dump({"summary": {"after_filtering": {"total_reads": jr1 + jr2},
+                           "before_filtering": {"total_reads": jr1 + jr2}},
+               "read1_after_filtering": {"total_reads": jr1},
+               "read2_after_filtering": {"total_reads": jr2}},
+              open(os.path.join(d, "out", "s1.fastp.json"), "w"))
+    rc, out = verify("00_fastp_qc", d, samples="s1")
+    record(label, rc == expect, f"rc={rc}（期望 {expect}）")
+
+
+_mk_fastp_case(10, 10, 450000, 450000, 1,
+               "stage0.5 10 条 read 配 90 万条的 JSON -> 拦")
+_mk_fastp_case(1000, 500, 1000, 500, 1,
+               "stage0.5 R1/R2 条数不配对 -> 拦")
+_mk_fastp_case(1000, 1000, 500, 500, 1,
+               "stage0.5 陈旧 JSON（少数一半）-> 拦")
+# 合法空流：gzip -t 也返回 0，但 read 数为 0 必须拦
+d_empty = tempfile.mkdtemp()
+os.makedirs(os.path.join(d_empty, "out"), exist_ok=True)
+for tag in ("clean_1", "clean_2"):
+    gzip.open(os.path.join(d_empty, "out", f"s1.{tag}.fq.gz"), "wt").close()
+json.dump({"summary": {"after_filtering": {"total_reads": 100000},
+                       "before_filtering": {"total_reads": 100000}},
+           "read1_after_filtering": {"total_reads": 50000},
+           "read2_after_filtering": {"total_reads": 50000}},
+          open(os.path.join(d_empty, "out", "s1.fastp.json"), "w"))
+rc_e, out_e = verify("00_fastp_qc", d_empty, samples="s1")
+record("stage0.5 零 read 的合法 gzip 空流 -> 拦", rc_e == 1, f"rc={rc_e}（期望 1）")
+# 缺 JSON：早期只 warn 且 rc=0 放行 —— 那就没有东西能对账 FASTQ 读数了
+d_nojson = tempfile.mkdtemp()
+os.makedirs(os.path.join(d_nojson, "out"), exist_ok=True)
+for tag in ("clean_1", "clean_2"):
+    with gzip.open(os.path.join(d_nojson, "out", f"s1.{tag}.fq.gz"), "wt") as f:
+        for i in range(100):
+            f.write(f"@r{i}\nACGTACGTAC\n+\nIIIIIIIIII\n")
+rc_nj, out_nj = verify("00_fastp_qc", d_nojson, samples="s1")
+record("stage0.5 缺 fastp.json -> 拦（旧实现只 warn）", rc_nj == 1,
+       f"rc={rc_nj}（期望 1）")
+# --merge：per-mate 字段消失、merged_and_filtered 出现（真 fastp 实测形态）
+d_merge = tempfile.mkdtemp()
+os.makedirs(os.path.join(d_merge, "out"), exist_ok=True)
+for tag in ("clean_1", "clean_2"):
+    with gzip.open(os.path.join(d_merge, "out", f"s1.{tag}.fq.gz"), "wt") as f:
+        for i in range(500):
+            f.write(f"@r{i}\nACGTACGTAC\n+\nIIIIIIIIII\n")
+json.dump({"summary": {"after_filtering": {"total_reads": 500},
+                       "before_filtering": {"total_reads": 2000}},
+           "merged_and_filtered": {"total_reads": 500}},
+          open(os.path.join(d_merge, "out", "s1.fastp.json"), "w"))
+rc_mg, out_mg = verify("00_fastp_qc", d_merge, samples="s1")
+record("stage0.5 --merge 模式 -> 拦（下游无环节消费 merged 文件）", rc_mg == 1,
+       f"rc={rc_mg}（期望 1）；{'有' if 'merge_mode' in out_mg else '无'} merge_mode 判据")
 
 print()
 print("=" * 74)
@@ -604,17 +687,158 @@ _rows = [{"Taxa": s, "状态": "ok", PCOL_P: float(v)} for s, v in
 d25 = tempfile.mkdtemp()
 fam_p = os.path.join(d25, "cohort.fam")
 open(fam_p, "w").write("F1 s1 0 0 0 -9\nF1 s2 0 0 0 -9\nF1 s3 0 0 0 -9\n")  # 缺 s4
-pred, order, not_in_fam = PE.build_gwas_exports(_rows, PCOL_P, fam_p)
-record("P fam 缺样本时两导出仍同集合", sorted(order) == sorted(pred),
-       f"PLINK={sorted(order)} GAPIT={sorted(pred)}"
+ex = PE.build_gwas_exports(_rows, PCOL_P, fam_p)
+record("P fam 缺样本时两导出仍同集合", sorted(ex.order) == sorted(ex.pred),
+       f"PLINK={sorted(ex.order)} GAPIT={sorted(ex.pred)}"
        f"（旧实现 PLINK 3 个 / GAPIT 4 个）")
-record("P 有预测值的样本没被 fam 静默丢掉", set(order) == {"s1", "s2", "s3", "s4"},
-       f"实际 {sorted(order)}；not_in_fam={not_in_fam}")
+record("P 有预测值的样本没被 fam 静默丢掉", set(ex.order) == {"s1", "s2", "s3", "s4"},
+       f"实际 {sorted(ex.order)}；not_in_fam={ex.not_in_fam}")
 # fam 是**排序基准**不是过滤器：fam 序生效
 open(fam_p, "w").write("F1 s3 0 0 0 -9\nF1 s1 0 0 0 -9\nF1 s2 0 0 0 -9\nF1 s4 0 0 0 -9\n")
-pred, order, _ = PE.build_gwas_exports(_rows, PCOL_P, fam_p)
-record("P fam 行序生效（不是字典序）", order == ["s3", "s1", "s2", "s4"],
-       f"order={order}")
+ex = PE.build_gwas_exports(_rows, PCOL_P, fam_p)
+record("P fam 行序生效（不是字典序）", ex.order == ["s3", "s1", "s2", "s4"],
+       f"order={ex.order}")
+
+# ---- 第二轮审计 critical：FID 必须取自 fam（PLINK 按 (FID, IID) 配对）----
+# 实测（真 plink）：fam 写 `farmA et3`、表型文件写 `et3 et3 3.3757` 时 plink 报
+# 「0 phenotype values present after --pheno」+「Note: No phenotypes present.」，
+# **退出码 0 且不产出结果文件**；写成 `farmA et3 3.3757` 后同样退出码 0，但
+# 「3 phenotype values present」并产出 .qassoc —— 两次退出码一模一样。
+d26 = tempfile.mkdtemp()
+fam_fid = os.path.join(d26, "cohort.fam")
+open(fam_fid, "w").write("farmA et1 0 0 0 -9\nfarmA et2 0 0 0 -9\nfarmB et3 0 0 0 -9\n")
+_rows_fid = [{"Taxa": s, "状态": "ok", PCOL_P: float(v)}
+             for s, v in (("et1", 3.1), ("et2", 3.3), ("et3", 3.5))]
+ex_fid = PE.build_gwas_exports(_rows_fid, PCOL_P, fam_fid)
+record("P FID 取自 fam（不是硬编码的 IID）",
+       ex_fid.plink_rows == [("farmA", "et1"), ("farmA", "et2"), ("farmB", "et3")],
+       f"plink_rows={ex_fid.plink_rows}（旧实现全是 (iid, iid)）")
+record("P fid_source 标明取自 fam", ex_fid.fid_source == "fam", f"={ex_fid.fid_source}")
+# ---- 真 plink 端到端：FID 写对 → 匹配上；写成 IID → 静默丢光且 rc=0 ----
+# 这段是**取证**而非推理：证明"FID 硬编码成 IID"确实会让 plink 静默吞掉整个队列。
+# bed/bim 现场构造（不依赖仓库里可能不存在的 fixture），见 mk_mini_bfile()。
+def mk_mini_bfile(prefix, fam_lines, n_var=4):
+    """写一个 plink 能读的最小 .bed/.bim/.fam（bed 是公开格式，手写合法字节）。
+
+    .bed 头 3 字节魔数 ``6c 1b 01``；随后每个变异按 2 bit/个体 编码基因型，
+    每个个体在小端下占 2 bit（00=hom ref, 01=缺失, 10=het, 11=hom alt）。
+    4 个个体恰好占 1 字节，故 n_var 个变异 = 魔数 + n_var 字节。
+    """
+    with open(prefix + ".fam", "w") as f:
+        f.writelines(fam_lines)
+    with open(prefix + ".bim", "w") as f:
+        for i in range(1, n_var + 1):
+            f.write(f"1\trs{i}\t0\t{i * 1000}\tG\tA\n")
+    with open(prefix + ".bed", "wb") as f:
+        f.write(b"\x6c\x1b\x01" + b"\x32" * n_var)   # 全 10=het，保证有变异可关联
+
+
+def plink_pheno_probe(fid_mode):
+    """跑真 plink --assoc，返回 (rc, 日志文本, 是否产出 .qassoc)。"""
+    dd = tempfile.mkdtemp()
+    bed = os.path.join(dd, "g")
+    mk_mini_bfile(bed, ["farmA et1 0 0 1 -9\n", "farmA et2 0 0 1 -9\n",
+                        "farmB et3 0 0 1 -9\n"])
+    ph = os.path.join(dd, "p.txt")
+    with open(ph, "w") as f:
+        for fid, iid in ex_fid.plink_rows:
+            # fid_mode="iid" 复现**旧实现**写出的形态（FID 硬编码成 IID）
+            f.write(f"{(fid if fid_mode == 'fam' else iid)} {iid} "
+                    f"{ex_fid.pred[iid]}\n")
+    out = os.path.join(dd, "r")
+    p = subprocess.run([PLINK, "--bfile", bed, "--pheno", ph, "--assoc",
+                        "--out", out], capture_output=True, text=True)
+    log = open(out + ".log", encoding="utf-8", errors="replace").read() \
+        if os.path.isfile(out + ".log") else ""
+    return p.returncode, log, os.path.isfile(out + ".qassoc")
+
+
+if PLINK:
+    rc_a, log_a, has_a = plink_pheno_probe("fam")
+    rc_b, log_b, has_b = plink_pheno_probe("iid")
+    m_a = re.search(r"(\d+) phenotype values present", log_a)
+    m_b = re.search(r"(\d+) phenotype values present", log_b)
+    if not m_a or not m_b:
+        record("P 真 plink：FID 取自 fam → 表型被匹配上", False,
+               f"plink 日志里没有 'phenotype values present'（rc={rc_a}/{rc_b}）"
+               f"—— 环境异常，非被测项；日志尾部: {log_a[-200:]!r}")
+    else:
+        record("P 真 plink：FID 取自 fam → 表型被匹配上", int(m_a.group(1)) == 3,
+               f"present={m_a.group(1)}（期望 3）；产物 .qassoc={has_a}；rc={rc_a}")
+        record("P 真 plink：FID 写成 IID → 静默丢光（对照，证明上一条有区分度）",
+               int(m_b.group(1)) == 0 and not has_b,
+               f"present={m_b.group(1)}（期望 0）；产物 .qassoc={has_b}（期望 False）；"
+               f"rc={rc_b}（**两次退出码都为 0** —— 退出码区分不出这两种运行）")
+else:
+    record("P 真 plink：FID 取自 fam → 表型被匹配上", False,
+           "找不到 plink（PATH 与本机 biosoft 目录都没有）—— 该项未能取证")
+
+# ---- 第二轮审计：fam 含重复 IID 不得崩溃（旧实现裸 AssertionError，产不出文件）----
+d27 = tempfile.mkdtemp()
+fam_dup = os.path.join(d27, "cohort.fam")
+# 跨场次合并 fam：同一个体号在两个 FID 下各出现一次
+open(fam_dup, "w").write("farmA et1 0 0 0 -9\nfarmB et1 0 0 0 -9\nfarmA et2 0 0 0 -9\n")
+_rows_dup = [{"Taxa": s, "状态": "ok", PCOL_P: float(v)}
+             for s, v in (("et1", 3.1), ("et2", 3.3))]
+try:
+    ex_dup = PE.build_gwas_exports(_rows_dup, PCOL_P, fam_dup)
+    ok_dup, why_dup = True, f"plink_rows={ex_dup.plink_rows} dup={ex_dup.dup_fid_iids}"
+except AssertionError as e:
+    ok_dup, why_dup, ex_dup = False, f"AssertionError: {e}", None
+record("P fam 含重复 IID 不崩（成对去重，两条都写）", ok_dup and ex_dup is not None and
+       ex_dup.plink_rows == [("farmA", "et1"), ("farmB", "et1"), ("farmA", "et2")],
+       why_dup)
+record("P 重复 IID 被记进 dup_fid_iids 供调用方警告",
+       ok_dup and ex_dup.dup_fid_iids == ["et1"],
+       f"dup_fid_iids={ex_dup.dup_fid_iids if ex_dup else None}（期望 ['et1']）")
+
+# ---- 第二轮审计：无 fam 时 FID=IID 是**假定**，必须能被看见 ----
+ex_nofam = PE.build_gwas_exports(_rows_fid, PCOL_P, None)
+record("P 无 fam → 明说 FID=IID 是假定（而非看起来像正常导出）",
+       ex_nofam.fid_source == "assumed-iid" and
+       ex_nofam.plink_rows == [("et1", "et1"), ("et2", "et2"), ("et3", "et3")],
+       f"fid_source={ex_nofam.fid_source}；plink_rows={ex_nofam.plink_rows}")
+
+# ---- 第二轮审计：门禁拦截后不得留下上一轮的 GWAS 产物 ----
+# 早期实现只 `sys.exit(1)` 而**不动磁盘**：上一轮跑成功留下的那两个文件原地不动，
+# 下游（gwas-gemma 直接 `--pheno` 吃它们）照样读得到旧值、rc=0，而同目录的
+# `*_verify.json` 写着 blocked=true、明细 CSV 是新的 —— rc=1 与磁盘内容互相矛盾。
+# 这里调**真函数**（不是重打一遍逻辑），行为与结构两侧都验。
+d28 = tempfile.mkdtemp()
+_stale_dir = os.path.join(d28, "IMF")
+os.makedirs(_stale_dir)
+_plink_stale = os.path.join(_stale_dir, "imf_phenotype_gwas_plink.txt")
+_gapit_stale = os.path.join(_stale_dir, "imf_phenotype_gwas_gapit.csv")
+for _p in (_plink_stale, _gapit_stale):
+    open(_p, "w").write("et1 et1 99.0\n")      # 上一轮的旧值
+_removed, _failed = PE.remove_stale_gwas_exports([_plink_stale, _gapit_stale])
+record("P 门禁 abort 时删除上一轮的 GWAS 产物（调真函数）",
+       sorted(_removed) == ["imf_phenotype_gwas_gapit.csv",
+                            "imf_phenotype_gwas_plink.txt"] and not _failed,
+       f"removed={_removed}；failed={_failed}（旧实现两个都留在原地）")
+record("P 陈旧产物真的从磁盘上消失了（不是只打印了一行）",
+       not os.path.exists(_plink_stale) and not os.path.exists(_gapit_stale),
+       f"plink 还在={os.path.exists(_plink_stale)}，"
+       f"gapit 还在={os.path.exists(_gapit_stale)}")
+# 阴性对照：不存在的文件不该报"删掉了"（避免把"本来就没有"说成"清理过"）
+_removed2, _failed2 = PE.remove_stale_gwas_exports(
+    [os.path.join(_stale_dir, "never_existed.txt")])
+record("P 不存在的产物不谎报为'已删除'", _removed2 == [] and _failed2 == [],
+       f"removed={_removed2}；failed={_failed2}")
+# 结构判据：删除必须发生在 sys.exit 之前（否则根本执行不到）
+_pe_path = os.path.join(REPO, "skills/phenotype-extract/scripts/phenotype_extract.py")
+_pe_src = open(_pe_path, encoding="utf-8").read()
+_i = _pe_src.find("if report.blocked:")
+_j = _pe_src.find("sys.exit(1)", _i)
+_block = _pe_src[_i:_j] if (_i >= 0 and _j > _i) else ""
+record("P 删除调用在 abort 分支内、且早于 sys.exit(1)",
+       "remove_stale_gwas_exports(" in _block,
+       f"abort 段找到={bool(_block)}；含删除调用="
+       f"{'remove_stale_gwas_exports(' in _block}")
+record("P 删不掉时明说'下游仍可能读到它'（不静默通过）",
+       "陈旧产物删不掉" in _block and "下游仍可能读到它" in _block,
+       "abort 段未说明删除失败时下游仍有风险"
+       if "陈旧产物删不掉" not in _block else "ok")
 
 print()
 print("=" * 74)

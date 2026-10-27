@@ -139,7 +139,7 @@ if GPU_VRAM_GB < 32:
 | 比对+排序+去重 | `pbrun fq2bam --num-cpu N --num-gpus 1` | 一步完成，替代 bwa+samtools+MarkDuplicates |
 | BQSR | `pbrun bqsr --num-gpus 1` / `pbrun applybqsr --num-gpus 1` | 替代 BaseRecalibrator/ApplyBQSR |
 | 变异检测 | `pbrun haplotypecaller --gvcf --num-gpus 1` | GPU PairHMM，替代 GATK HC |
-| 联合分型 | `pbrun genotypegvcf --num-gpus 1` | 4.3.x 命名（**无** `genotypecaller`），替代 GenotypeGVCFs |
+| 联合分型 | `pbrun genotypegvcf`（**无** `--num-gpus` 参数） | 4.3.x 命名（**无** `genotypecaller`），替代 GenotypeGVCFs。⚠ 实测该子命令是唯一不接受 `--num-gpus` 的，加了即 `rc=2`、零产物 |
 | 过滤 | 无 | 恒用 GATK SelectVariants+VariantFiltration（CPU） |
 
 ### 各阶段线程分配参考（CPU/GATK 回退路径）

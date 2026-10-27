@@ -36,7 +36,12 @@ import subprocess
 import sys
 import tempfile
 
-ROOT = "/home/chenyuxi/skill/agent"
+# ⚠️ 不要写死绝对路径：本探针常被**复制到别处**做变异测试（把被测代码改坏，
+#    确认判据会红）。写死本仓路径时，副本里的探针会去测**原仓**的未变异代码，
+#    于是"变异没被捕获"看起来像判据无区分度，实则是根本没测到变异体
+#    （实测踩到：在 /home/chenyuxi/mut2 副本里做变异，探针全绿）。
+#    改为按本文件位置回溯：tools/concurrency/<file> → 仓库根。
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SKILLS = os.path.join(ROOT, "skills")
 PIPE = os.path.join(SKILLS, "wgs-expressive-pipeline")
 VERIFIER = os.path.join(PIPE, "scripts", "stage_verify.py")
@@ -107,14 +112,66 @@ ok("G10a-2 注册的阶段名覆盖全部 6 个阶段",
    f"注册={sorted(registered)}；缺={sorted(set(STAGE_SKILLS.values()) - registered)}")
 ok("G10a-3 有 main() 与退出码约定（0=通过/1=拦截）",
    "def main(" in src and "return 1 if rep.blocked else 0" in src)
+def _missing_tool_scenario():
+    """真跑一次"缺工具"的场景，返回 (rc, missing_tools, 有无 hard 未过项)。
+
+    ⚠️ 为什么要真跑（第二轮审计，实测确认）：G10a-4 早期是**纯文本**断言
+    （`"def need_tool" in src` 加两个"某字符串不在源码里"）。那种写法的病是：
+      · 后两个 `not in src` 在 `rep.skip` 被删后**恒为真**（鉴别的对象已不存在）
+      · 前半句只问"函数定义在不在"—— 把 `need_tool` 的实现改成 fail-open
+        （`self.add(..., "warn", True)`，即"缺工具=跳过"，**正是本条要防的那个漏洞**），
+        断言**依旧全绿**。实测确认过这一点。
+    判据必须落在行为上：这里用 `PATH` 只留一个空目录起子进程，于是 samtools/bcftools
+    都探测不到，再看校验器是拦还是放。
+
+    ⚠️ **必须先把产物造齐**，否则走的是另一条分支：产物不存在时 `have()` 先判
+    "文件缺失"就返回了，`need_tool` 根本到不了 —— 那样 rc 照样是 1，
+    但拦下来的理由是"文件缺失"而不是"缺工具"，本条就变成了"因为别的原因通过"
+    （实测踩到过：第一版没有造 fixture，missing_tools 为空、断言反而看不出问题）。
+    故这里造齐 FASTQ 与 JSON，让缺工具成为**唯一**的失败原因。
+    """
+    d = tempfile.mkdtemp()
+    out = os.path.join(d, "out")
+    os.makedirs(out, exist_ok=True)
+    import gzip as _gz
+    for tag in ("clean_1", "clean_2"):
+        with _gz.open(os.path.join(out, f"s1.{tag}.fq.gz"), "wt") as f:
+            for i in range(100):
+                f.write(f"@r{i}\nACGTACGTAC\n+\nIIIIIIIIII\n")
+    json.dump({"summary": {"after_filtering": {"total_reads": 200},
+                           "before_filtering": {"total_reads": 200}},
+               "read1_after_filtering": {"total_reads": 100},
+               "read2_after_filtering": {"total_reads": 100}},
+              open(os.path.join(out, "s1.fastp.json"), "w"))
+    env = dict(os.environ, PATH=tempfile.mkdtemp())      # 空 PATH：所有工具都找不到
+    p = subprocess.run([sys.executable, VERIFIER, "--stage", "00_fastp_qc",
+                        "--run-dir", d, "--samples", "s1"],
+                       capture_output=True, text=True, env=env)
+    rep = {}
+    vf = os.path.join(d, ".verify", "00_fastp_qc.json")
+    if os.path.isfile(vf):
+        rep = json.load(open(vf))
+    hard_open = [c for c in rep.get("checks", [])
+                 if c.get("level") == "hard" and not c.get("passed")
+                 and not c.get("skipped")]
+    return p.returncode, set(rep.get("missing_tools") or []), hard_open
+
+
+_rc_mt, _mt, _hard = _missing_tool_scenario()
 ok("G10a-4 [缺陷确认] 工具缺失是 fail-closed（不判「跳过=通过」）",
    # 实测漏洞：bcftools 不在 PATH 时，内容是乱码的 VCF 会判**通过**
    # （检查标为 SKIP，而 SKIP 不阻止放行）。这等于说任何没装工具的机器上
    # 整个门禁静默失效，而报告上一切正常 —— 正是要防的"静默错误"本身。
-   "def need_tool" in src
-   and 'rep.skip(f"{label}.variants"' not in src
-   and 'rep.skip(f"{label}.quickcheck"' not in src,
-   "缺工具必须登记为硬性失败并单列 missing_tools（区分环境问题 vs 数据问题）")
+   #
+   # ⚠️ 断言的**关键项是 rc**，不是"有没有 hard 未过项"。实测教训：
+   #    把 `need_tool` 改成 fail-open（`self.add(..., "warn", True)` —— 正是本条
+   #    要防的那个漏洞）后，本场景里 **rc 从 1 变成 0**（门禁静默放行），
+   #    而 `missing_tools` 里**照样**列着 gzip、hard 未过项也照样有别的来源
+   #    （产物判据）。故只查 missing_tools 或"有无 hard 项"都会漏掉这个变异；
+   #    必须查 rc —— 它才是"会不会被拦下"这个问题的答案。
+   _rc_mt == 1 and "gzip" in _mt and _hard,
+   f"空 PATH（产物造齐）下：rc={_rc_mt}（**期望 1** —— 0 即门禁静默放行）；"
+   f"missing_tools={sorted(_mt)}（期望含 gzip）；hard 未过项 {len(_hard)} 条")
 ok("G10a-5 [缺陷确认] reads 守恒链真的接通（read_totals 有写有读）",
    # 实测漏洞：Stage 2 读 prev["read_totals"]，但没有任何地方写过这个键 ——
    # 守恒检查永远静默跳过（声称存在、从不生效）。

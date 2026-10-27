@@ -175,6 +175,17 @@ Final outputs:
 ## 收尾：结果校验门禁（**必须先过校验才写 `.done`**）
 
 ```bash
+# ─── 日志函数（本块自足：用了就必须定义，别指望别处）───
+# ⚠️ 本段不可省。本块调用了 log_error（以及日志类的其它函数），但**早期版本全文档
+#    都没有定义** —— 六个阶段 skill 里只有 align-sort / fastp-qc 定义了它们。
+#    LLM 照抄本块生成的脚本，首次调用处当场 `log_error: command not found`（rc=127）。
+#    要命的是这些调用**全在失败分支里**：本该"写 .failed 并打印原因"的路径反过来
+#    崩在写标记之前，磁盘上 .done/.failed 都不存在，编排层四态判定归为"已中断"、
+#    引用户去查一个不存在的进程 —— 真实原因只是这段函数没定义。
+#    与 align-sort / fastp-qc 的写法保持一致。
+log_info()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO]  $*"; }
+log_done()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [DONE]  $*"; }
+log_error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $*"; }
 # ─── 定位校验器（⚠ 不要写 `conda run -n Agent python`）───
 # 本脚本已由 `conda run -n Agent bash` 启动，该进程 PATH 中**没有 conda 可执行文件**
 # （只有 <conda>/envs/Agent/bin 与系统目录），嵌套调用会以 127 失败：
@@ -217,6 +228,18 @@ if [ -z "${SAMPLES_CSV}" ]; then
     } > "${RUN_DIR}/.failed/05_filtering.failed"
     exit 1
 fi
+
+# ─── cohort 级输出前缀（本阶段独有：下游要按前缀找过滤后的 VCF）───
+# ⚠️ 早期版本这里直接写 `${OUTPUT_PREFIX}`，而**全仓库没有任何一处给它赋值**
+#    （实测 `grep -rn 'OUTPUT_PREFIX=' .` 零命中）—— 脚本头部是 `set -euo pipefail`，
+#    变量展开当场 abort：rc=1、`OUTPUT_PREFIX: unbound variable`，磁盘上既无 .done
+#    也无 .failed，收尾门禁一次都没跑起来。畸形配置与健康配置**同样死法**（死在
+#    展开阶段，与数据无关），故不需要真实数据就能撞上。
+#    现在从 run.params.json 的 `output_prefix` 读回（与 verifier_path / sample_names
+#    同一范式：Stage 0 解析落盘、阶段侧读回）；读不到则**退化为空串**——
+#    校验器的 `--prefix` 是可选参数，它会自己登记一条 hard 的 prefix 判据，
+#    把"拿不到前缀就无法定位输出 VCF"如实报出来，而不是让脚本先崩掉。
+OUTPUT_PREFIX="$(python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("output_prefix",""))' "${RUN_DIR}/run.params.json" 2>/dev/null || true)"
 
 # 先删掉本阶段的旧报告：跑完后它只要存在，就必然是本轮的产物。
 rm -f "${RUN_DIR}/.verify/05_filtering.json"

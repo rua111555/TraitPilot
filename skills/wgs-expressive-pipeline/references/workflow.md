@@ -145,7 +145,7 @@ done
 
 | 阶段 | `--stage` | 核心**硬性**判据（不过即不写 `.done`） |
 |------|-----------|-----------------------------------|
-| 0.5 fastp | `00_fastp_qc` | 清洗后 FASTQ 非空**且 gzip 流完整**（截断的 .gz 也能"存在且非空"）；`fastp.json` 可解析；`after_filtering.total_reads > 0` |
+| 0.5 fastp | `00_fastp_qc` | 清洗后 FASTQ 非空**且 gzip 流完整**（截断的 .gz 也能"存在且非空"）；**read 数直接数 FASTQ 本体**（不采信 JSON）且 > 0；R1/R2 条数**配对守恒**；`fastp.json` 可解析；**JSON 的 per-mate 读数与 FASTQ 实测逐端一致**（防陈旧/混轮次产物） |
 | 1 align | `01_bwa_sort` | **reads 数 > 0**（`quickcheck` 对空 BAM 放行）；**`mapped_ratio`：`mapped` = 0（全 unmapped）即拦**（参考基因组选错/物种不符）；`@RG` 存在且 `SM` 与样本号一致；`.bai` 存在；样本齐 |
 | 2 markdup/bqsr | `02_markdup_bqsr` | **每样本都有 BQSR BAM**（Stage 3 输入契约）；Stage 1 有产出的样本不得消失 |
 | 3 HC | `03_haplotypecaller` | **头部含 `##ALT=<ID=NON_REF`**（漏 `-ERC GVCF` 的典型症状）；GVCF 内部样本名 == 文件名 |

@@ -137,6 +137,17 @@ wait
 ## 收尾：结果校验门禁（**必须先过校验才写 `.done`**）
 
 ```bash
+# ─── 日志函数（本块自足：用了就必须定义，别指望别处）───
+# ⚠️ 本段不可省。本块调用了 log_error（以及日志类的其它函数），但**早期版本全文档
+#    都没有定义** —— 六个阶段 skill 里只有 align-sort / fastp-qc 定义了它们。
+#    LLM 照抄本块生成的脚本，首次调用处当场 `log_error: command not found`（rc=127）。
+#    要命的是这些调用**全在失败分支里**：本该"写 .failed 并打印原因"的路径反过来
+#    崩在写标记之前，磁盘上 .done/.failed 都不存在，编排层四态判定归为"已中断"、
+#    引用户去查一个不存在的进程 —— 真实原因只是这段函数没定义。
+#    与 align-sort / fastp-qc 的写法保持一致。
+log_info()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO]  $*"; }
+log_done()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [DONE]  $*"; }
+log_error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $*"; }
 # ─── 定位校验器（⚠ 不要写 `conda run -n Agent python`）───
 # 本脚本已由 `conda run -n Agent bash` 启动，该进程 PATH 中**没有 conda 可执行文件**
 # （只有 <conda>/envs/Agent/bin 与系统目录），嵌套调用会以 127 失败：
@@ -267,7 +278,13 @@ rm -f "${RUN_DIR}/.failed/02_markdup_bqsr.failed"   # 清掉上一轮的陈旧�
 GPU_IDX=$(( i % GPU_COUNT ))
 
 # 1) 标记重复（对应 GATK MarkDuplicates）
+# ⚠️ `--ref` 是**必需项**（不是可选优化）：实测 `pbrun markdup` 不给它时当场
+#    `rc=2`、`pbrun: error: the following arguments are required: --ref`、零产物。
+#    GATK 的 MarkDuplicates 里 -R 也是必需的，但两边的报错时机不同 —— 这里在
+#    argparse 阶段就拒绝，所以脚本在 `set -e` 下会**死在 markdup 这一行**，
+#    磁盘上 .done/.failed 都不存在（编排层误判"已中断"）。
 PBRUN "${GPU_IDX}" markdup \
+    --ref "${REF_FASTA}" \
     --in-bam "${INPUT_BAM}" \
     --out-bam "${MARKDUP_BAM}" \
     --out-duplicate-metrics "${MARKDUP_METRICS}" \
@@ -301,8 +318,10 @@ PBRUN "${GPU_IDX}" applybqsr \
   Stage 3 直接消费
 - **Stage 1 用 fq2bam 时 4.3.x 已默认做 MarkDuplicates**：本阶段跳过 markdup，仅跑 bqsr+applybqsr
   （resume 存在性检查已涵盖）
-- `pbrun bqsr` 支持 `--out-bam` 时，可 bqsr+apply 一步完成（省一次 I/O）；参数名用
-  `pbrun <tool> --help` 确认
+- ⚠️ **`pbrun bqsr` 没有 `--out-bam`**（实测 4.3.2-1 的 `pbrun bqsr -h`：只有 `--out-recal-file`，
+  没有 `--out-bam`）。故**不存在**"一步完成 bqsr+apply"的写法 —— bqsr 只产出校正表，
+  必须再跑一次 `applybqsr`（即上面模板的 2)+3) 两步）。
+  （早期本节写着"支持 `--out-bam` 时可一步完成"，是把 `applybqsr` 的参数记到了 `bqsr` 头上。）
 - 均单 GPU 任务，并行度 `parallel_samples = min(N, gpus_to_use)`
 
 ## 数据库更新

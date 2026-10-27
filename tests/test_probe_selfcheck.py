@@ -130,3 +130,52 @@ def test_probe_still_reports_both_sections_c_and_d():
     assert found_c and found_d, (
         f"C 段存在={found_c}，D 段存在={found_d} —— 两段是被审计确认过的真实缺陷判据，"
         f"不得为了让本文件变绿而删除")
+
+
+# ========== 第二轮审计 finding #11：证据链不得在缺工具时静默跳过 ==========
+def test_wgs_gate_tests_fail_loudly_without_tools():
+    """`test_stage_verify.py` 在缺 samtools/bcftools 时**必须失败**，不得静默 skip。
+
+    实测过的形态（第二轮审计 finding #11）：整文件 `skipif(not (SAMTOOLS and
+    BCFTOOLS))`，于是没有工具的机器上
+        pytest tests/test_stage_verify.py -q  →  **71 skipped**，退出码 **0**
+    —— "WGS 门禁的整套判据从未运行"在 CI 眼里与"全部通过"完全一样。这是本套
+    测试自己要防的"静默失效"搬到了测试层：**一条判据跑没跑，与它过没过得分开看**，
+    而退出码把它们合并了。
+
+    本测试是**静态**的（不依赖当前机器装没装工具，否则它在有工具的机器上恒真、
+    等于没测）：检查该文件确实把"缺工具"变成了非 skip 的结果，且显式跳过通路
+    必须**带警告**。
+    """
+    p = os.path.join(REPO, "tests", "test_stage_verify.py")
+    src = open(p, encoding="utf-8").read()
+    assert "SKILL_AGENT_ALLOW_SKIP_WGS_TOOLS" in src, (
+        "缺工具时的处置不再可显式声明 —— 检查是否被改回无条件 skipif")
+    assert "raise RuntimeError(" in src, (
+        "缺工具时不再以**收集期报错**终止 —— 那会把"
+        "『门禁判据从未运行』重新变成 rc=0 的静默跳过")
+    # 四个工具都要覆盖：只判 samtools/bcftools 时，bgzip/tabix 缺失会让
+    # combined GVCF / GVCF 身份 / INDEL 下限这 6 条用例**单独静默跳过**，
+    # 而模块级守卫照样绿 —— 缺口从大门挪到了侧门。
+    assert "_HAVE_TOOLS = all(" in src, (
+        "工具齐备性判定不再是四合一的 all(...) —— bgzip/tabix 缺口会重新静默")
+    # 显式跳过通路必须出声：只 skip 不 warn 就等于换了个名字的静默跳过
+    assert "warnings.warn(" in src, (
+        "显式跳过时没有告警 —— 静默 skip 正是本条要防的形态")
+
+
+def test_no_bare_skipif_on_the_wgs_gate_evidence_file():
+    """不许再出现"整文件级"的 `pytestmark = pytest.mark.skipif(...)`。
+
+    与上一条的分工：上一条查"修复还在不在"，本条查"缺陷有没有换个写法回来"。
+    这条判据按**形态**扫（整文件 pytestmark 的 skipif），不是按某一行字面量。
+    """
+    p = os.path.join(REPO, "tests", "test_stage_verify.py")
+    src = open(p, encoding="utf-8").read()
+    # 逐行找：模块级（顶格）的 pytestmark 赋值且用 skipif
+    offenders = [
+        (i, l) for i, l in enumerate(src.splitlines(), 1)
+        if l.startswith("pytestmark") and "skipif" in l
+    ]
+    assert not offenders, (
+        f"整文件级 skipif 回来了（缺工具时会静默跳过整套 WGS 门禁证据）：{offenders}")

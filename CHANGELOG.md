@@ -12,6 +12,112 @@
 
 ---
 
+## [0.3.0] — 2026-10-28
+
+**主题：把门禁的"假绿"逐个拆掉 —— 判据读派生数据、判据只跑过 PASS、判据根本没被测试触碰，
+三种形态在同一个版本里各修一遍。**
+
+> 为什么是 0.3.0 而不是 0.2.1：本版**新加了 4 条 hard 判据**
+> （`body_readable` / `genotypes` / `quickcheck` 的失败分支 / `index_drift`），
+> 它们能**拦下以前放行的产物** —— 对使用者是可观察的行为变化，不只是一批修修补补。
+> 另有一处语义收紧：表型侧 `fail_rate` 在缺 `状态` 列时由**假 PASS** 改为**明说未判定**。
+
+### 修复：判据读**派生数据**而非本体（两个方向都错）
+
+- **BAM 的 reads 数不再采信索引**（`read_count` 曾整条读 `samtools idxstats`）：
+  - **陈旧/外来索引 → 放过坏数据**：200 reads 的健康 BAM 覆写成 0 reads 而索引未重建，
+    idxstats 照旧值作答 → `[PASS] read_count: mapped=200`、rc=0。
+    而 samtools 的 `older than` 警告**只在索引明确更旧时**出现（实测同秒覆写、
+    `cp -p` 保留 mtime、外来索引**全都不警告**），故不能靠 stderr 判。
+  - **索引漏计 → 拦下好数据**：Parabricks `pbrun applybqsr` 的 `.bai` 在中小输入上
+    **系统性漏计**（真容器实测 10/200/300 reads → 索引报 0；1000→971；53296→53215），
+    而 GPU 就绪时 parabricks 是文档规定的**默认后端** → 健康 BQSR BAM 被判"空 BAM"硬拦。
+  - 修法：**本体计数为准**（`samtools view -c`，顺带就是"中段损坏"的判据），
+    索引只作旁证。代价是健康路径多读一遍 BAM —— 刻意取舍，「放过坏数据」与
+    「拦下好数据」都比"慢一点"贵得多，且下游 HaplotypeCaller 本就要全量读它。
+  - 新增 `{label}.index_drift`(warn)：索引与本体分歧时**报出来**（漏计索引该被当坏产物
+    暴露），但判 warn 不判 hard —— BAM 完好、下游可用，只需重建索引。
+- **VCF 索引判据从"文件在不在"改为"真的用一次"**：原 `ok = have(vcf+".tbi") or have(vcf+".csi")`
+  只判存在且非空，而文案却写"下游无法按区读取" —— 声称保证按区可读性，实际只保证文件在。
+  实测四种坏索引全部 `[PASS]` rc=0：外来 `.tbi`（按区读 0 行、全量 3000 行）、纯文本 `.tbi`
+  （rc=255）、截断的真 `.tbi`、**陈旧索引**（按区读 0 行、rc=0、stderr 全空）。
+  下游 GATK `-L`、`bcftools -r`、`tabix` 会**静默**拿到空结果。
+  修法：取全量扫描已知存在的首条记录坐标做一次按区读取，要求 rc=0 且 ≥1 行；
+  拿不到坐标时登记"**未做可用性探测**"而非假装判过。
+- **表型侧 `fail_rate` 的假 PASS**：缺 `状态` 列时 `n_fail` 取 0、`rate` 取 0.0，
+  判据以 **hard 级 `[PASS] fail_rate: 0/3 个样本失败（0.0%）`** 出现在报告里 ——
+  它**什么也没断言**，而读报告的人只看到一个绿色的"失败率 0%"。
+  触发路径不是边角：`{trait}_phenotype_gwas_gapit.csv` 就是 `Taxa,<trait>` 两列、没有状态列，
+  而它正是下游 GWAS 实际消费的文件之一。改为与 `value_range` 一致的处置：**明说未判定**。
+
+### 修复：判据**根本没被测试触碰**（新增覆盖面测量手段）
+
+审计证明"某判据没被测试覆盖"的办法是**强制它永远判 FAIL，看有没有人发现**。
+本版把它反过来做成**可自动测量的指标**：给 `Report.add` 打桩记录
+`(源码行号, level, passed)`，跑完整套测试后统计**哪些 hard 判据从未登记过 `passed=False`**。
+
+修复前的结果：**hard 判据 42 种，4 种从未见过 FAIL** ——
+`body_readable`（中段损坏的 BAM）/ `genotypes`（全 `./.` 或头部缺 `FORMAT/GT`）/
+`quickcheck`（缺 BGZF EOF 块）/ `read_totals_recorded`（无失败分支，设计使然）。
+这比"判据名有没有被提到"严一层：判据**跑了**，只是只在健康数据上跑过 ——
+于是它接错参数、判反条件、把真值写成常量 `True`，整套回归**一个红灯都不会有**。
+
+补 9 条阴性对照后 **4 → 1**。每条都先**自证 fixture 的前提**再断言：
+如"中段损坏"必须先证 `quickcheck rc=0 且 view -c rc≠0`，否则测的不是那一层
+（否则会"因错误的原因通过"）。9 个变异体逐一验证，**9/9 被捕获且都由指名的那条测试杀掉**。
+
+新增的两条互补判据实测分工（都补了测试）：
+| 损坏形态 | `quickcheck` | `view -c` | 拦截者 |
+|---|---|---|---|
+| 中段损坏（长度/头/EOF 不变） | rc=0（看不见） | rc=1 | `body_readable` |
+| 缺 BGZF EOF 块 | **rc=16** | rc=0（照读） | `quickcheck` |
+
+单靠任何一条都抓不全 —— 这正是"两条判据各司其职"的实测证据。
+
+### 修复：WGS 门禁用例**静默跳过**（退出码与"全部通过"无法区分）
+
+`tests/test_stage_verify.py` 原为整文件 `pytestmark = pytest.mark.skipif(...)`。
+实测（造只含 python/bash 的 PATH）：`453 passed, 49 skipped`、**退出码 0** ——
+在没装 samtools/bcftools 的机器或 CI 上，"整套门禁判据从未运行"看起来与"全部通过"完全一样。
+
+- 改为模块级守卫 `raise RuntimeError`（**缺工具是失败、不是跳过**），消息含四个工具的
+  探测结果与当前 PATH、两条可操作修法；确要跳过须**显式**设 `SKILL_AGENT_ALLOW_SKIP_WGS_TOOLS=1`。
+- **四个工具都要判**：只判 samtools/bcftools 时，`bgzip`/`tabix` 缺失会让 **6 条**用例
+  （combined GVCF / GVCF 身份 / INDEL 下限）**单独静默跳过**，而模块级守卫照样绿 ——
+  缺口从大门挪到了侧门。
+- 显式跳过路径**也要出声**：用 `warnings.warn` 而**不是** `print(..., file=sys.stderr)`。
+  实测不带 `-s` 时 pytest **捕获**收集期 stderr（print 完全不出现），
+  而 warnings summary 在默认输出里**必定**打印。
+- 立场与产品侧一致：`stage_verify.py` 自己的 `need_tool()` 是 fail-closed 的
+  （缺工具登记为 hard 失败），证据侧缺工具也必须拦。
+
+### 文档：把"门禁管到哪"说清楚
+
+`skills/phenotype-extract/SKILL.md` 原写"同一个门禁也可事后对**任意明细 CSV** 跑，
+供 GWAS 入口复用"，而下游真正消费的两个 `_gwas_*` 产物**跑不了**：
+plink.txt 无表头（`[err] 列 'IMF' 不在 CSV 中` rc=1，即"根本无法复核"而非"值不合格"）；
+gapit.csv 无 `状态` 列（`value_range`/`fail_rate` 失去前提）。现收紧为"**明细 CSV**"，
+并新增警告块说明两个导出**本身不过门禁**（是投影、不是被校验对象）。
+
+### 测试与证据
+
+- `pytest tests/ -q` → **575 passed**（较 v0.2.0 的 516 增 59）
+- `tools/concurrency/verify_fix_probe.py` → **64/64**
+- `tools/concurrency/stage_verify_probe.py` → **FAILED 0**
+- `tools/concurrency/skill_doc_consistency_probe.py` → **FAILED 0**
+- 用例清单 `docs/test-matrix.md`（新增 VERIFY-25 静默跳过 / VERIFY-26 覆盖面测量）；
+  逐条实测证据 `docs/test-evidence.md` §11.7
+
+> **这一版的教训值得单独记**：§11.6 的台账声称"33 条审计发现逐条处置"，
+> 复核时发现**只覆盖 24 条** —— 记账时按"我记得改过哪些"写，漏掉的正是
+> 改动分散在多轮、部分落在更早批次里的那些。更糟的是其中一条被标成"已由上一批覆盖"，
+> 而**重新测量后那个判断是错的**。补救办法不是"下次仔细点"，而是**做一个能自动发现遗漏的
+> 测量**：正如 v0.2.0 用 `test_defect_class_guards.py` 按失效模式扫全部文档、
+> 本版用打桩测判据覆盖面 —— **台账的完整性也必须被测量，而不是被声明。**
+> 补记见 `docs/test-evidence.md` §11.7。
+
+---
+
 ## [0.2.0] — 2026-10-27
 
 **主题：阶段结果校验门禁 —— 让"中途坏掉"在当步就被拦下，而不是传到下游很久以后才暴露。**

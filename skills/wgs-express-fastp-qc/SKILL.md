@@ -116,7 +116,17 @@ log_done()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [DONE]  $*"; }
 ### 工具路径（运行时探测，勿写死本机路径）
 
 ```bash
-FASTQ_DIR="${FASTQ_DIR:-$(sk_geno_dir)/fastq}"   # 优先用 run.params.json 的 fastq_dir；否则 GENO_DIR/fastq
+# ⚠️ 不要写 `FASTQ_DIR="${FASTQ_DIR:-$(sk_geno_dir)/fastq}"`（实测 rc=127）：
+#    `sk_geno_dir` 是 `skills/_shared/env.sh` 里的 shell **函数**，而本 SKILL.md 并
+#    没有一处让你去 source 它（对比 align-sort 明确写了「可 source skills/_shared/env.sh」）。
+#    照抄该行时命令替换失败 —— 而 `VAR="$(cmd)"` 在 `set -euo pipefail` 下是**赋值**
+#    语句，命令替换失败会**当场退出整个脚本**（不是走后面的兜底），于是脚本停在
+#    工具探测段，比收尾门禁早了几百行，磁盘上同样既无 .done 也无 .failed。
+#    更坏的是它把「函数不可用」伪装成「回退到默认目录」的语义，排查时最容易被
+#    误读成环境变量问题。
+#    这里直接把 GENO_DIR 的默认值展开写出来（与 sk_geno_dir 的定义等价），
+#    不依赖任何外部函数：
+FASTQ_DIR="${FASTQ_DIR:-${GENO_DIR:-$HOME/genomics_data}/fastq}"   # 优先用 run.params.json 的 fastq_dir
 OUT_DIR="${RUN_DIR}/out"
 
 FASTP="$(command -v fastp || { echo "✗ 找不到 fastp —— 请激活 conda 环境 Agent" >&2; exit 1; })"
@@ -143,8 +153,19 @@ for i in "${!sample_numbers[@]}"; do
     JSON="${OUT_DIR}/${name}.fastp.json"
 
     # resume 检查
-    if [ -f "${O1}" ] && [ -f "${O2}" ]; then
-        log_info "Clean FASTQ exists, skipping sample ${name}: ${O1}"
+    # ⚠️ **必须把 JSON 也算进去**，不能只看两个 clean FASTQ（实测 rc 陷阱）：
+    #    fastp 的 JSON/HTML 是在**跑完之后**才写的，而 clean FASTQ 是**边跑边写**的。
+    #    实测 `kill -9` 掉一个正在跑的 fastp：`clean_1/2.fq.gz` 已落盘（2 MB 的半截
+    #    内容）、`fastp.json` 与 `.html` **都不存在**。此时若 resume 只看 O1/O2，
+    #    就会跳过该样本；而收尾门禁要求 JSON（`report[s].` 那几条判据要拿它与
+    #    FASTQ 实际读数对账）→ **重跑仍跳过、门禁仍失败**，死循环，
+    #    用户看到的提示却是"重跑本阶段即可"。
+    #    把 JSON 纳入 resume 条件后：缺 JSON ⇒ 该样本重跑 fastp，
+    #    clean FASTQ 被完整覆盖重写 —— 正是我们想要的（半截文件本来就该丢弃）。
+    #    一般原则：**resume 判存在性的产物集，必须是门禁要求集的超集** ——
+    #    否则"产物残缺 + 重跑"会卡死在"跳过 → 门禁不过 → 再跳过"之间。
+    if [ -f "${O1}" ] && [ -f "${O2}" ] && [ -f "${JSON}" ]; then
+        log_info "Clean FASTQ + report exist, skipping sample ${name}: ${O1}"
         continue
     fi
 
@@ -242,9 +263,23 @@ log_done "Stage 0.5 (fastp QC) complete (校验通过)"
 > `.failed`。编排层的四态判定**优先读 `.failed`**，于是把这个已修好并通过的阶段报成
 > "校验未通过"，用户被误导去查一个不存在的问题。
 
-> 校验器查每样本的 `.clean_1/2.fq.gz` 是否存在非空、`fastp.json` 可解析且
-> `after_filtering.total_reads > 0`，并把保留率过低（<80%）作为**告警**报出 ——
+> 校验器对每样本判：`.clean_1/2.fq.gz` 存在非空、**gzip 流完整**、**read 数 > 0**、
+> **R1/R2 条数相等**，且 `fastp.json` 可解析、其 `read1/read2_after_filtering` 与
+> **实际数出的**条数逐端一致。保留率过低（<80%）作为**告警**报出 ——
 > 过滤过猛会丢真实信号，但那是可调参的问题，不该拦下整条管线。
+>
+> ⚠️ **read 数是数 FASTQ 本体得到的，不是从 JSON 读的**。JSON 只是 fastp
+> "打算"写多少条：脚本在写盘中途被杀（`kill -9`/磁盘满/NFS 抖动）时，
+> 截断的 `.fq.gz` 配一份完好的 JSON，**只读 JSON 的判据会全绿放行**。
+> 实测三种形态在旧实现下全部 rc=0：10 条 read 的文件配 90 万条的 JSON、
+> R1/R2 条数严重不等、0 条 read 的合法 gzip 空流（`gzip -t` 对它也返回 0）。
+> 对账用的 `read1_after_filtering` / `read2_after_filtering` 是 fastp 的顶层键，
+> 实测（1.1.0，四种配置）与两个 clean 文件的**实际条数完全相等**。
+>
+> ⚠️ **`--merge` 会被拦**：合并模式下 per-mate 键消失、多出 `merged_and_filtered`，
+> 而合并后的 read 写进 `--merged_out` —— 本管线 Stage 1 的输入契约是 PE 的两份
+> clean FASTQ，**没有任何环节消费那个文件**：部分合并时这些 read 会在 Stage 1
+> 静默丢失。WGS 管线不要用 `--merge`。
 
 ## JSON 报告摘要
 

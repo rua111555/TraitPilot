@@ -33,12 +33,68 @@ sys.path.insert(0, SV_PATH)
 
 import stage_verify as SV  # noqa: E402
 
+# 构造 fixture 需要的四个真实工具。**四个都算**，不能只判前两个：
+# bgzip/tabix 也曾是 6 条用例各自的 skipif（同样静默），而它们覆盖的正是
+# combined GVCF / GVCF 样本身份 / INDEL 位点下限 —— 一样是证据链的一部分。
+# 现已合并到本模块级守卫，逐用例的 skipif 全部删除（否则缺口换个地方又回来）。
 SAMTOOLS = shutil.which("samtools")
 BCFTOOLS = shutil.which("bcftools")
+BGZIP = shutil.which("bgzip")
+TABIX = shutil.which("tabix")
 
-pytestmark = pytest.mark.skipif(
-    not (SAMTOOLS and BCFTOOLS),
-    reason="需要真实 samtools/bcftools 构造 fixture（缺工具时 skip，不伪报通过）")
+# 工具缺失时**整体 fail 而不是静默 skip**（第二轮审计 finding #11，实测确认）。
+#
+# 实测过的形态：某台机器上 PATH 里没有 samtools/bcftools 时，
+#     pytest tests/test_stage_verify.py -q  →  **71 skipped**，退出码 **0**。
+# 于是"WGS 门禁的整套判据从未运行"这件事，在 CI/批处理里看起来与"全部通过"
+# 完全一样 —— 正是本套测试要防的"静默失效"，只是换到了测试层。
+# `skipif` 的语义（"环境不具备，这条与本环境无关"）在这里是**错的**：
+# 这些用例是门禁的唯一证据链，缺工具意味着证据不存在，而不是无关。
+#
+# ⚠️ 为什么用**收集期报错**而不是"改断言让它失败"：
+#    · 断言型失败需要每条用例各自判环境，71 条会各报一次同样的错，噪音淹没真信号；
+#    · 收集期报错只报一次、消息里给出**确切的修法**，且不会被 `-k` 过滤掉
+#      （`-k` 挑走的用例连断言都不会跑到，那样缺口又回来了）。
+#    · 关键：**默认必须是失败**。加一个"缺工具就跳过"的开关会让缺口重新变成
+#      默认静默 —— 那是把本缺陷原样搬回来。故这里的开关方向相反：
+#      要跳过必须**显式**声明 `SKILL_AGENT_ALLOW_SKIP_WGS_TOOLS=1`，
+#      并且跳过时会在 pytest 的 warnings summary 里留一条告警（不会无声无息）。
+_HAVE_TOOLS = all((SAMTOOLS, BCFTOOLS, BGZIP, TABIX))
+_ALLOW_SKIP = os.environ.get("SKILL_AGENT_ALLOW_SKIP_WGS_TOOLS") == "1"
+
+if not _HAVE_TOOLS and not _ALLOW_SKIP:
+    raise RuntimeError(
+        "本文件是 WGS 阶段门禁的**唯一**证据链，而它需要真实 "
+        "samtools 与 bcftools：\n"
+        f"    samtools = {SAMTOOLS!r}\n"
+        f"    bcftools = {BCFTOOLS!r}\n"
+        f"    bgzip    = {BGZIP!r}\n"
+        f"    tabix    = {TABIX!r}\n"
+        f"当前 PATH = {os.environ.get('PATH', '')!r}\n"
+        "缺工具时**不是 skip、是失败** —— 跳过会让“整套门禁判据从未运行”"
+        "在退出码上与“全部通过”无法区分（实测：71 skipped / rc=0）。\n"
+        "修法（任选）：\n"
+        "  1) 激活工具环境（本机）：\n"
+        "       PATH=/home/chenyuxi/anaconda3/envs/Agent/bin:$PATH \\\n"
+        "         /home/chenyuxi/anaconda3/bin/python -m pytest tests/ -q\n"
+        "  2) 确知本次不跑 WGS 侧（如只测 UI）时，**显式**声明跳过：\n"
+        "       SKILL_AGENT_ALLOW_SKIP_WGS_TOOLS=1 python -m pytest tests/ -q\n"
+        "     （会在 warnings summary 里留一条告警，不会无声跳过）")
+
+if not _HAVE_TOOLS and _ALLOW_SKIP:
+    # 显式声明了要跳过：仍然**出声**。静默的 skip 正是本条要防的东西。
+    # ⚠️ 用 `warnings.warn` 而不是 `print(..., file=sys.stderr)`：实测 pytest
+    #    默认会**捕获**收集期的 stderr（不带 `-s` 就看不到），而 warnings summary
+    #    在默认输出里**必定**打印。实测确认过这一点（`-q` 下 print 消失、
+    #    warnings.warn 仍出现在 summary 里）。
+    import warnings
+    warnings.warn(
+        "SKILL_AGENT_ALLOW_SKIP_WGS_TOOLS=1 —— 本文件全部 WGS 门禁用例被跳过，"
+        "整套门禁判据**本次未经验证**。仅在你确知本次无需验证它时使用。",
+        stacklevel=1)
+    pytestmark = pytest.mark.skip(
+        reason="显式设置 SKILL_AGENT_ALLOW_SKIP_WGS_TOOLS=1（缺 samtools/bcftools）")
+
 
 
 # ============================ fixture 构造 ============================
@@ -47,6 +103,11 @@ REF = ("ACGT" * 2000)          # 8000bp 参考，重复但有 60bp 窗口内足�
 
 def _sh(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, check=True, **kw)
+
+
+def _sh_rc(cmd):
+    """只取退出码，不因非 0 抛异常（造"应当失败"的 fixture 时要用）。"""
+    return subprocess.run(cmd, capture_output=True).returncode
 
 
 def make_bam(path, *, reads=20, sample="sample1", sorted_=True,
@@ -572,6 +633,209 @@ def test_min_variants_malformed_does_not_break_other_stages(tmp_path):
     assert "min_variants_declared" not in [c["name"] for c in rep["checks"]], rep
 
 
+# ============================ Stage 0.5：fastp 产物 ============================
+# 为什么这一组必须存在（第二轮审计 major，全部对真实 fastp 1.1.0 实测）：
+# 早期实现**只从 fastp.json 读一个数**、从不打开 clean FASTQ，于是这些全放行：
+#   · 10 条 read 的文件配声称 90 万条的 JSON（rc=0）
+#   · R1/R2 严重不配对（rc=0）
+#   · 0 条 read 的合法 gzip 空流（`gzip -t` 对它也返回 0，rc=0）
+# 而 BWA 消费的是 FASTQ，JSON 只是 fastp **打算**写多少条。
+import gzip as _gzip
+
+
+def _mk_fastp(tmp_path, n1, n2, jr1, jr2, trust=None, *, json_present=True,
+              merged=None, tag="s1"):
+    """造一套 fastp 产物：两个 clean FASTQ + 一份 JSON（形态同真 fastp）。
+
+    真 fastp 1.1.0 在 PE 模式下**总是**写顶层 `read1/read2_after_filtering`
+    （实测四种配置皆然），故夹具也写上 —— 否则测的是夹具而不是真实产物。
+    `trust` 传 "raw" 可强制写成旧式 JSON（缺 per-mate 字段）以测 fail-closed 分支。
+    """
+    out = tmp_path / "out"
+    out.mkdir(exist_ok=True)
+    for name, n in (("clean_1", n1), ("clean_2", n2)):
+        with _gzip.open(str(out / f"{tag}.{name}.fq.gz"), "wt") as f:
+            for i in range(n):
+                f.write(f"@r{i}\nACGTACGTAC\n+\nIIIIIIIIII\n")
+    if not json_present:
+        return
+    r = {"summary": {"after_filtering": {"total_reads": jr1 + jr2},
+                     "before_filtering": {"total_reads": jr1 + jr2}}}
+    if merged is not None:
+        r["merged_and_filtered"] = {"total_reads": merged}
+    else:
+        r["read1_after_filtering"] = {"total_reads": jr1}
+        r["read2_after_filtering"] = {"total_reads": jr2}
+    (out / f"{tag}.fastp.json").write_text(json.dumps(r))
+
+
+def test_stage05_healthy_fastp_products_pass(tmp_path):
+    """阳性对照：JSON 与 FASTQ 一致 → 通过（证明下面不是"永远拦"）。"""
+    _mk_fastp(tmp_path, 1000, 1000, 1000, 1000)
+    rc, rep = run_verifier(tmp_path, "00_fastp_qc", samples="s1")
+    assert rc == 0, f"健康 fastp 产物被拦：{names(rep, 'hard')}"
+
+
+def test_stage05_read_counts_come_from_fastq_not_json(tmp_path):
+    """★核心阴性对照：JSON 声称的读数与 FASTQ 实际不符 → 必须拦。
+
+    这是审计的原始攻击形态：10 条 read 的文件 + 声称 90 万条的 JSON。
+    旧实现读 JSON 就放行（rc=0），而 Stage 1 会拿这 10 条去比对 ——
+    下游"变异数异常少"，届时已无法追溯。
+    """
+    _mk_fastp(tmp_path, 10, 10, 450000, 450000)
+    rc, rep = run_verifier(tmp_path, "00_fastp_qc", samples="s1")
+    assert rc == 1, "JSON 说 45 万、实际只有 10 条，却放行了"
+    bad = names(rep, "hard")
+    assert "report[s1].matches_clean_1" in bad, bad
+
+
+def test_stage05_unpaired_mates_are_caught(tmp_path):
+    """R1/R2 条数不等 → 拦。两份产物不属于同一次运行的同一对。"""
+    _mk_fastp(tmp_path, 1000, 500, 1000, 500)
+    rc, rep = run_verifier(tmp_path, "00_fastp_qc", samples="s1")
+    assert rc == 1
+    assert "clean[s1].paired" in names(rep, "hard"), names(rep, "hard")
+
+
+def test_stage05_zero_read_valid_gzip_is_caught(tmp_path):
+    """★合法 gzip 空流（0 条 read）→ 拦。`gzip -t` 对它返回 0，完整性判据抓不到。
+
+    ⚠️ JSON 这里刻意写成**非零**（50000）—— 否则 `report[s1].reads`（另一条 hard 判据）
+    会把本场景拦下，测试就会"因为别的原因通过"，从而测不出 FASTQ 计数判据是否还在。
+    实测踩到过：把本判据降级成 warn，测试依然全绿（被 JSON 侧那条掩盖）。
+    故断言必须**指名** clean[..].reads 这一条。
+    """
+    _mk_fastp(tmp_path, 0, 0, 50000, 50000)
+    rc, rep = run_verifier(tmp_path, "00_fastp_qc", samples="s1")
+    assert rc == 1
+    bad = names(rep, "hard")
+    assert "clean[s1].clean_1.fq.gz.reads" in bad, (
+        f"0 条 read 未被**计数判据**拦下（只有 JSON 侧那条在起作用）：{bad}")
+
+
+def test_stage05_stale_json_is_caught(tmp_path):
+    """陈旧 JSON（旧轮次的报告配新 FASTQ）→ 拦。检查两个方向都能发现。"""
+    _mk_fastp(tmp_path, 1000, 1000, 500, 500)
+    rc, rep = run_verifier(tmp_path, "00_fastp_qc", samples="s1")
+    assert rc == 1
+    assert "report[s1].matches_clean_2" in names(rep, "hard")
+
+
+def test_stage05_missing_json_is_hard_not_warn(tmp_path):
+    """缺 JSON 必须是 hard：它是唯一能与 FASTQ 读数对账的独立来源。
+
+    旧实现只登记 warn、rc=0 放行 —— 等于"截断/混轮次"的产物在无人对账时通过。
+    """
+    _mk_fastp(tmp_path, 100, 100, 0, 0, json_present=False)
+    rc, rep = run_verifier(tmp_path, "00_fastp_qc", samples="s1")
+    assert rc == 1, "缺 JSON 却放行 —— 没有东西能对账 FASTQ 读数"
+    assert "report[s1]" in names(rep, "hard")
+
+
+def test_stage05_merge_mode_is_caught(tmp_path):
+    """`--merge` 的产物形态（per-mate 字段消失、多出 merged_and_filtered）→ 拦。
+
+    本管线 Stage 1 的输入契约是 PE 的两份 clean FASTQ，merged 文件没有任何环节消费：
+    部分合并时这些 read 在 Stage 1 静默丢失。此形态由**真 fastp --merge** 实测确认。
+    """
+    _mk_fastp(tmp_path, 500, 500, 0, 0, merged=500)
+    rc, rep = run_verifier(tmp_path, "00_fastp_qc", samples="s1")
+    assert rc == 1
+    assert "report[s1].merge_mode" in names(rep, "hard"), names(rep, "hard")
+
+
+def test_stage05_unknown_json_shape_fails_closed(tmp_path):
+    """JSON 没有可对账字段（非预期形态）→ fail-closed，不静默放行。
+
+    按本模块原则「无法验证 ≠ 验证通过」：只告警会让这条判据在任何不写 per-mate
+    字段的 fastp 上从未生效，而报告上一切正常 —— 即"纸面具备"。
+    文案还须点明**重跑不会改变它**，否则用户会陷入空转。
+    """
+    _mk_fastp(tmp_path, 100, 100, 0, 0, trust="raw")
+    out = tmp_path / "out"
+    (out / "s1.fastp.json").write_text(json.dumps(
+        {"summary": {"after_filtering": {"total_reads": 200},
+                     "before_filtering": {"total_reads": 200}}}))
+    rc, rep = run_verifier(tmp_path, "00_fastp_qc", samples="s1")
+    assert rc == 1
+    det = [c["detail"] for c in rep["checks"]
+           if c["name"] == "report[s1].per_mate_fields"]
+    assert det, f"没有登记 per_mate_fields 判据：{names(rep, 'hard')}"
+    assert "重跑" in det[0], f"文案没说清重跑无用（用户会空转）：{det[0]!r}"
+
+
+def test_stage05_truncated_gzip_still_caught(tmp_path):
+    """回归防线：合并成"解压即计数"后，gzip 完整性判据不得退化。"""
+    out = tmp_path / "out"
+    out.mkdir()
+    raw = tmp_path / "big.fq"
+    with open(raw, "w") as f:
+        for i in range(20000):
+            f.write(f"@r{i}\nACGTACGTAC\n+\nIIIIIIIIII\n")
+    _sh(["gzip", "-f", str(raw)])
+    data = open(str(raw) + ".gz", "rb").read()
+    for name in ("clean_1", "clean_2"):
+        (out / f"s1.{name}.fq.gz").write_bytes(data[:len(data) // 3])
+    (out / "s1.fastp.json").write_text(json.dumps(
+        {"summary": {"after_filtering": {"total_reads": 40000},
+                     "before_filtering": {"total_reads": 40000}},
+         "read1_after_filtering": {"total_reads": 20000},
+         "read2_after_filtering": {"total_reads": 20000}}))
+    rc, rep = run_verifier(tmp_path, "00_fastp_qc", samples="s1")
+    assert rc == 1
+    assert any("gzip_ok" in n for n in names(rep, "hard")), names(rep, "hard")
+
+
+def test_stage05_fastq_without_trailing_newline_is_not_blocked(tmp_path):
+    """★假阳性防线：末行无换行的合法 FASTQ 不得被当成"截断"拦下。
+
+    行数是数换行符得的，故这类文件会少数一行（4n 行 → 4n-1 个换行）。
+    若照 `行数 % 4` 判就会误拦健康数据 —— 必须用「末行是否为不完整记录」区分。
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    rec = "@r{i}\nACGTACGTAC\n+\nIIIIIIIIII\n"
+    for name in ("clean_1", "clean_2"):
+        with _gzip.open(str(out / f"s1.{name}.fq.gz"), "wt") as f:
+            f.write("".join(rec.format(i=i) for i in range(100)).rstrip("\n"))
+    (out / "s1.fastp.json").write_text(json.dumps(
+        {"summary": {"after_filtering": {"total_reads": 200},
+                     "before_filtering": {"total_reads": 200}},
+         "read1_after_filtering": {"total_reads": 100},
+         "read2_after_filtering": {"total_reads": 100}}))
+    rc, rep = run_verifier(tmp_path, "00_fastp_qc", samples="s1")
+    assert rc == 0, f"末行无换行的合法 FASTQ 被误拦：{names(rep, 'hard')}"
+
+
+def test_stage05_truncated_record_is_caught(tmp_path):
+    """与上一条配对：真被截断的记录（行数不是 4 的倍数）→ 必须拦。"""
+    out = tmp_path / "out"
+    out.mkdir()
+    recs = "".join(f"@r{i}\nACGTACGTAC\n+\nIIIIIIIIII\n" for i in range(100))
+    for name in ("clean_1", "clean_2"):
+        with _gzip.open(str(out / f"s1.{name}.fq.gz"), "wt") as f:
+            f.write(recs + "@rX\nACGT")          # 半截记录（末行不完整）
+    (out / "s1.fastp.json").write_text(json.dumps(
+        {"summary": {"after_filtering": {"total_reads": 200},
+                     "before_filtering": {"total_reads": 200}},
+         "read1_after_filtering": {"total_reads": 100},
+         "read2_after_filtering": {"total_reads": 100}}))
+    rc, rep = run_verifier(tmp_path, "00_fastp_qc", samples="s1")
+    assert rc == 1
+    assert any("fastq_shape" in n for n in names(rep, "hard")), names(rep, "hard")
+
+
+def test_stage05_missing_gzip_is_environment_not_data(monkeypatch, tmp_path):
+    """缺 gzip → 报**环境**问题（need_tool），不是"数据损坏"。"""
+    _mk_fastp(tmp_path, 100, 100, 100, 100)
+    monkeypatch.setattr(SV, "tool",
+                        lambda n: None if n == "gzip" else shutil.which(n))
+    rc, rep = run_verifier(tmp_path, "00_fastp_qc", samples="s1")
+    assert rc == 1
+    assert "gzip" in rep["missing_tools"], rep.get("missing_tools")
+
+
 # ============================ Stage 2：reads 守恒链 ============================
 def test_stage1_records_read_totals_for_next_stage(tmp_path):
     """★Stage 1 必须把 reads 数**真的写进**报告，供 Stage 2 比较。
@@ -977,7 +1241,6 @@ def _mk_vcf(path, samples, n=20, gvcf=True):
     return str(path)
 
 
-@pytest.mark.skipif(not shutil.which("bgzip"), reason="需要 bgzip/tabix")
 def test_stage4_missing_combined_gvcf_is_caught(tmp_path):
     """★核心阴性对照：只有最终 VCF、没有 combined.g.vcf.gz → 必须拦。"""
     out = tmp_path / "out"
@@ -988,7 +1251,6 @@ def test_stage4_missing_combined_gvcf_is_caught(tmp_path):
     assert "combined.exists" in names(rep, "hard"), names(rep, "hard")
 
 
-@pytest.mark.skipif(not shutil.which("bgzip"), reason="需要 bgzip/tabix")
 def test_stage4_empty_combined_gvcf_distinguished_from_missing(tmp_path):
     """0 字节的 combined 与"完全没生成"要说清楚是两回事。"""
     out = tmp_path / "out"
@@ -1001,7 +1263,6 @@ def test_stage4_empty_combined_gvcf_distinguished_from_missing(tmp_path):
     assert "存在但为空" in det, f"没区分「为空」与「缺失」：{det!r}"
 
 
-@pytest.mark.skipif(not shutil.which("bgzip"), reason="需要 bgzip/tabix")
 def test_stage4_genomicsdb_workspace_is_exempt_not_blocked(tmp_path):
     """GenomicsDBImport 路径下 combined 合法缺席 → 降级 warn，不得拦健康数据。"""
     out = tmp_path / "out"
@@ -1014,7 +1275,6 @@ def test_stage4_genomicsdb_workspace_is_exempt_not_blocked(tmp_path):
     assert cs["level"] == "warn" and "未做" in cs["detail"], cs
 
 
-@pytest.mark.skipif(not shutil.which("bgzip"), reason="需要 bgzip/tabix")
 def test_stage4_combined_present_healthy_passes(tmp_path):
     """阳性：combined 与 joint VCF 都在 → 通过（证明上面不是"永远拦"）。"""
     out = tmp_path / "out"
@@ -1023,3 +1283,522 @@ def test_stage4_combined_present_healthy_passes(tmp_path):
     _mk_vcf(out / "co.vcf.gz", ["S1"], gvcf=False)
     rc, rep = run_verifier(tmp_path, "04_joint_genotyping", samples="S1", prefix="co")
     assert rc == 0, f"健康数据被拦：{names(rep, 'hard')}"
+
+
+# ========== 第二轮审计 finding #12：11 条 hard 判据此前无任何测试触达 ==========
+# 怎么发现这 11 条的：给 `Report.add` 打桩，跑**整个** tests/ 目录，记录每轮真正
+# 登记过的判据名，再与源码里声明的 hard 判据对照（不是 grep 猜的）。
+# 结果：源码声明 44 条 hard，测试只触达 33 条。
+#
+# 为什么这些缺口危险：本项目反复出现的形态是**判据存在、但从不生效**（"纸面具备"）。
+# 一条没有任何用例触达的 hard 判据，删掉它、或者把它降级成 warn，**没有任何测试会红**
+# —— 它和"从未实现"在证据链上是同一件事。
+#
+# 每条都配了**阳性对照**（健康数据必须放行），否则"永远拦"的实现也能过。
+# 而且断言必须**指名**判据：这些场景大多会同时触发别的判据（实测每条都打印了
+# 全部 hard 未过项才敢这么写）——只断言 `rc == 1` 的测试会"因为错误的原因通过"。
+def _hard_names(rep):
+    return [c["name"] for c in rep["checks"]
+            if c["level"] == "hard" and not c["passed"] and not c.get("skipped")]
+
+
+def test_uncovered_readable_garbage_vcf_is_caught(tmp_path):
+    """`{label}.readable`：VCF 存在且非空，但**根本不是 VCF**。
+
+    与 `{label}.exists`（判文件在不在）是两条不同的判据：这个文件在、也有字节，
+    只是 bcftools 读不了（实测 rc=255 `unknown file type`）。缺了这条，一个被
+    截断/覆写成垃圾的 VCF 会以"文件存在"通过存在性检查。
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "co.vcf.gz").write_text("not a vcf at all\n")
+    rc, rep = run_verifier(tmp_path, "04_joint_genotyping", samples="S1", prefix="co")
+    assert rc == 1
+    assert "joint.readable" in _hard_names(rep), _hard_names(rep)
+
+
+def test_uncovered_prefix_missing_is_caught(tmp_path):
+    """`prefix`：cohort 级阶段（4/5）不给 `--prefix` → 无法定位任何输出。
+
+    必须拦而不是"跳过"：定位不到输出时循环零次，报告会变成"✅ 全部检查通过"，
+    而**一条判据都没跑**（同 `samples_given` 的空转形态）。
+    """
+    (tmp_path / "out").mkdir()
+    for stage in ("04_joint_genotyping", "05_filtering"):
+        rc, rep = run_verifier(tmp_path, stage, samples="S1")
+        assert rc == 1, f"{stage}: 不给 --prefix 却放行"
+        assert "prefix" in _hard_names(rep), (stage, _hard_names(rep))
+
+
+def test_uncovered_empty_sample_list_is_caught(tmp_path):
+    """`samples_given`：`--samples` 为空 → 样本守恒判据从未运行，不能判通过。
+
+    触发路径很现实：bash 4.2 + `set -u` 下 `"${sample_names[*]}"` 对空数组报
+    unbound variable，最"稳妥"的绕法就是传空串。而空 RUN_DIR 也能拿 rc=0。
+    """
+    (tmp_path / "out").mkdir()
+    rc, rep = run_verifier(tmp_path, "01_bwa_sort", samples="")
+    assert rc == 1
+    assert "samples_given" in _hard_names(rep), _hard_names(rep)
+
+
+def test_uncovered_stage2_no_output_at_all_is_caught(tmp_path):
+    """`bqsr_output`：Stage 2 一个 BAM 都没产出 → 该阶段实际没完成。
+
+    与 `bqsr.coverage` 的分工：coverage 管"部分样本缺"，本条管"全军覆没"。
+    早期实现对 markdup/bqsr 两组共用一个 `if not got: continue`，导致
+    "只有 markdup BAM、没有 BQSR BAM"时整个 stage 2 也算通过。
+    """
+    (tmp_path / "out").mkdir()
+    rc, rep = run_verifier(tmp_path, "02_markdup_bqsr", samples="s1")
+    assert rc == 1
+    assert "bqsr_output" in _hard_names(rep), _hard_names(rep)
+
+
+def test_uncovered_bqsr_coverage_partial_is_caught(tmp_path):
+    """`bqsr.coverage`：2 个样本只有 1 个有 BQSR BAM —— Stage 3 输入契约要求全有。
+
+    阳性侧由既有用例覆盖（Stage 2 全套产物 → rc=0），这里专测"丢了一部分"。
+    本条**不能**只在 `got` 内部遍历：没产出的样本根本不进 got，整份丢失永远发现不了。
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    make_bam(str(out / "s1.sorted.markdup.BQSR.bam"), sample="s1")
+    rc, rep = run_verifier(tmp_path, "02_markdup_bqsr", samples="s1,s2")
+    assert rc == 1
+    assert "bqsr.coverage" in _hard_names(rep), _hard_names(rep)
+
+
+def test_uncovered_reads_conservation_lost_is_caught(tmp_path):
+    """★`reads_conservation_lost`：样本在 Stage 1 有产出、Stage 2 整份没了。
+
+    守恒检查必须**双向**：数值异常（`reads_conservation`，warn）与整份丢失
+    （本条，**hard**）是两件事。早期只做前者，因为循环写的是
+    `for s, t in totals.items()` —— 丢掉的样本不进 totals，于是"样本在中间被丢掉"
+    （本次改动最重的防守对象）在 Stage 2 完全放行。
+
+    ⚠️ 断言必须评到 `reads_conservation_lost` **本条**：该场景下
+    `reads_conservation`（warn）**不会**未过（存活样本的数值是相符的），
+    所以只断言 rc==1 会漏掉"hard 那条被删、靠别的判据拉成 1"的变异。
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    make_bam(str(out / "s1.sorted.markdup.BQSR.bam"), sample="s1")
+    prev = tmp_path / "prev.json"
+    prev.write_text(json.dumps({"read_totals": {"s1": 20, "s2": 20}}))
+    rc, rep = run_verifier(tmp_path, "02_markdup_bqsr", samples="s1",
+                           prev_reads_file=str(prev))
+    assert rc == 1
+    assert "reads_conservation_lost" in _hard_names(rep), _hard_names(rep)
+
+
+def test_uncovered_gvcf_identity_mismatch_is_caught(tmp_path):
+    """`gvcf[{s}].identity`：文件名是 s1、内部 #CHROM 声明的却是别的样本。
+
+    与 `{label}.samples` 是两条：samples 判"队列名单对不对"，identity 判
+    "文件名与内容是不是同一个样本"。后者给的是**可读归因** —— "样本串了"而不是
+    "少了一个样本"，排查方向完全不同（查 resume 是否跳过了上一轮残留的 GVCF，
+    或拷贝/改名错配）。
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    _mk_vcf(out / "s1.g.vcf.gz", ["WRONGSAMPLE"], gvcf=True)
+    rc, rep = run_verifier(tmp_path, "03_haplotypecaller", samples="s1")
+    assert rc == 1
+    got = _hard_names(rep)
+    assert "gvcf[s1].identity" in got, got
+    # 归因文案要真的指向"串样本"，而不是复述文件缺失
+    det = " ".join(c["detail"] for c in rep["checks"]
+                   if c["name"] == "gvcf[s1].identity")
+    assert "样本串了" in det, det
+
+
+def test_uncovered_report_persisted_failure_is_caught(tmp_path):
+    """`report_persisted`：校验报告写不出去 → 必须拦。
+
+    报告不只是给人看的：`.verify/<stage>.json` 是**下一阶段 reads 守恒比较的输入**
+    （`--prev-reads-file`）。写不出去时下游的守恒检查会静默失效 —— 正是本机制的
+    头号失效形态。故缺了机制的一环即不放行。
+
+    构造：把 `.verify/` 置为不可写（chmod 500）。⚠️ 此时报告本身也读不回来，
+    所以断言走 stdout 的渲染文本，而不是 `.verify/*.json`。
+    """
+    import io
+    from contextlib import redirect_stdout
+
+    out = tmp_path / "out"
+    out.mkdir()
+    vdir = tmp_path / ".verify"
+    vdir.mkdir()
+    make_bam(str(out / "s1.sorted.bam"), sample="s1")
+    os.chmod(vdir, 0o500)
+    argv, old = ["stage_verify.py", "--stage", "01_bwa_sort",
+                 "--run-dir", str(tmp_path), "--samples", "s1"], sys.argv
+    sys.argv = argv
+    buf = io.StringIO()
+    try:
+        with redirect_stdout(buf):
+            rc = SV.main()
+    finally:
+        sys.argv = old
+        os.chmod(vdir, 0o700)          # 让 pytest 的 tmp 清理能删掉它
+    assert rc == 1, "报告写不出去却放行 —— 下一阶段的守恒检查会静默失效"
+    assert "report_persisted" in buf.getvalue(), buf.getvalue()[-800:]
+
+
+def test_uncovered_single_end_fastp_shape_is_caught(tmp_path):
+    """`report[{s}].single_end`：fastp 以 **SE 模式**跑出来的 JSON 形态。
+
+    本管线 Stage 1 的输入契约是 PE 的两份 clean FASTQ。SE 形态（只有
+    `read1_after_filtering`）意味着 fastp 只产出了一端的清洗结果，下游 BWA
+    的 `-I`（或配对读取）会直接失败或只比对一半。
+    真 fastp 的 SE 形态实测：只有顶层 `read1_after_filtering`，无 read2 键。
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    with _gzip.open(str(out / "s1.clean_1.fq.gz"), "wt") as f:
+        for i in range(100):
+            f.write("@r\nACGT\n+\nIIII\n")
+    (out / "s1.fastp.json").write_text(json.dumps(
+        {"summary": {"after_filtering": {"total_reads": 100}},
+         "read1_after_filtering": {"total_reads": 100}}))
+    rc, rep = run_verifier(tmp_path, "00_fastp_qc", samples="s1")
+    assert rc == 1
+    assert "report[s1].single_end" in _hard_names(rep), _hard_names(rep)
+
+
+def test_uncovered_malformed_indel_floor_blocks(tmp_path):
+    """`indel.min_variants_declared`：`min_variants_indel` 写了但不是正整数。
+
+    fail-closed 原则的 INDEL 侧站点：写这个键即表示**要开**该判定，却无法生效
+    → 判失败而非静默降级。与 SNP 侧的 `min_variants_declared` 同一条原则。
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    _mk_vcf(out / "co.snp.filter.vcf.gz", ["S1"], gvcf=False)
+    _mk_vcf(out / "co.indel.filter.vcf.gz", ["S1"], gvcf=False)
+    (tmp_path / "run.params.json").write_text(json.dumps({"min_variants_indel": "1M"}))
+    rc, rep = run_verifier(tmp_path, "05_filtering", samples="S1", prefix="co")
+    assert rc == 1
+    assert "indel.min_variants_declared" in _hard_names(rep), _hard_names(rep)
+
+
+def test_uncovered_missing_samtools_blocks_not_skips(tmp_path, monkeypatch):
+    """`tool[samtools]`：samtools 探测不到 → fail-closed 拦截（不是"跳过=通过"）。
+
+    与既有的 `test_missing_tool_fails_closed_not_silently_passed` 是**不同的工具**：
+    那条屏蔽的是 bcftools（VCF 侧），本条屏蔽 samtools（BAM 侧）。
+    两侧各自 fail-closed 才算完整 —— 只堵一边的话，没装 samtools 的机器上
+    BAM 的 reads 数、@RG、排序、索引**全部**判据静默失效而报告全绿。
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    make_bam(str(out / "s1.sorted.bam"), sample="s1")
+    _orig = SV.tool
+    monkeypatch.setattr(SV, "tool", lambda n: None if n == "samtools" else _orig(n))
+    rc, rep = run_verifier(tmp_path, "01_bwa_sort", samples="s1")
+    assert rc == 1, "samtools 缺失时未拦截（门禁在没装工具的机器上静默失效）"
+    assert "tool[samtools]" in _hard_names(rep), _hard_names(rep)
+    assert "samtools" in rep["missing_tools"], rep["missing_tools"]
+
+
+# ============ 覆盖面审计：**只跑过 PASS、从没见过 FAIL** 的判据 ============
+#
+# 为什么单列这一段（方法论，值得记）：上面那批 11 条是拿"源码里有哪些判据"
+# 对比"测试里提到过哪些名字"找出来的，抓的是**整条判据从未被触及**。
+# 但那个办法看不见第二种形态 —— **判据跑了，却只跑过 PASS 分支**。
+# 一条 hard 判据若永远只在健康数据上被调用过，它接错参数、判反条件、
+# 把真值写成常量 True，整套回归**一个红灯都不会有**。
+#
+# 实测办法：给 `Report.add` 打桩，记录三元组 (源码行号, level, passed)，
+# 跑完整套测试后统计。结果是下面这些判据**从未登记过 passed=False**：
+#     hard: body_readable / genotypes / quickcheck / read_totals_recorded
+#     warn: index_drift / genotype_completeness / filter_applied / markdup.coverage
+# 其中 quickcheck 是审计 finding [12] 点名的那条（"连 stdout/JSON 都用不上，
+# 强制它永远判 FAIL 后 pytest 全绿、探针全绿"）。下面逐条补上阴性对照。
+# 变异验证：把上面四条的登记整块删掉，修复前 566 passed（无人察觉）。
+
+
+def _mk_genotype_vcf(path, samples, *, missing, n=30):
+    """造一个**基因型可控**的 VCF：前 n-missing 条 `0/1`，其余 `./.`。
+
+    与 `_mk_vcf` 的区别：那个所有位点都是 `0/1`，因此 `genotypes` 判据
+    **只会走 PASS 分支** —— 正是本节要补的缺口。
+    """
+    raw = str(path)[:-3]
+    lines = ["##fileformat=VCFv4.2", "##contig=<ID=chr1,length=100000>",
+             '##FILTER=<ID=PASS,Description="ok">',
+             '##FORMAT=<ID=GT,Number=1,Type=String,Description="GT">',
+             "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t"
+             + "\t".join(samples)]
+    for i in range(n):
+        gt = "./." if i >= n - missing else "0/1"
+        lines.append(f"chr1\t{100+i*10}\t.\tA\tG\t50\tPASS\t.\tGT\t"
+                     + "\t".join(gt for _ in samples))
+    with open(raw, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    assert _sh(["bgzip", "-f", raw]).returncode == 0
+    assert _sh(["tabix", "-f", "-p", "vcf", str(path)]).returncode == 0
+    return str(path)
+
+
+def _mk_vcf_no_gt_header(path, samples, n=30):
+    """造一个**头部没有 ##FORMAT=<ID=GT>** 的 VCF（记录行仍是 GT）。
+
+    这正是 `genotypes` 判据第一条分支描述的形态：GenotypeGVCFs 没跑、
+    或被 `bcftools annotate -x` 把 FORMAT/GT 定义删掉。下游
+    `bcftools query -f '[%GT\\n]'` 会直接报 no such tag defined。
+    """
+    raw = str(path)[:-3]
+    lines = ["##fileformat=VCFv4.2", "##contig=<ID=chr1,length=100000>",
+             '##FILTER=<ID=PASS,Description="ok">',
+             # 故意不加 ##FORMAT=<ID=GT,...>
+             "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t"
+             + "\t".join(samples)]
+    for i in range(n):
+        lines.append(f"chr1\t{100+i*10}\t.\tA\tG\t50\tPASS\t.\tGT\t"
+                     + "\t".join("0/1" for _ in samples))
+    with open(raw, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    assert _sh(["bgzip", "-f", raw]).returncode == 0
+    assert _sh(["tabix", "-f", "-p", "vcf", str(path)]).returncode == 0
+    return str(path)
+
+
+def test_quickcheck_pass_is_not_enough_body_must_be_readable(tmp_path):
+    """★核心阴性对照：**中段损坏**的 BAM 必须拦（`quickcheck` 抓不到它）。
+
+    这是 finding [17] 的第二半，也是本判据存在的**唯一理由**：
+    `quickcheck` 只看文件头与末尾 28 字节 BGZF EOF，**不读数据块**；
+    `idxstats` 只看索引。于是"位翻转/局部覆写但长度、头、EOF、索引都没变"
+    的 BAM 一路全绿。实测（本节 fixture 自证）：
+        healthy   quickcheck rc=0
+        corrupted quickcheck rc=0   <- 结构检查**通过**
+        corrupted view -c   rc=1    <- 本体读不出来
+    故断言必须是"quickcheck 判过、body_readable 判失败、且 rc=1"三者同时成立：
+    只断言 rc==1 的话，换成别的判据拦住也会通过（"因错误的原因通过"）。
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    bam = str(out / "s1.sorted.bam")
+    make_bam(bam, sample="s1", reads=200)
+    # 前提自检：健康时两样都过（否则下面的拦不一定是"中段损坏"引起的）
+    assert _sh([SAMTOOLS, "quickcheck", bam]).returncode == 0
+    # 中段抹掉 64 字节（保持文件长度、头部与 EOF 不变）
+    data = open(bam, "rb").read()
+    mid = len(data) // 2
+    open(bam, "wb").write(data[:mid] + bytes(64) + data[mid + 64:])
+    assert _sh([SAMTOOLS, "quickcheck", bam]).returncode == 0, \
+        "前提不成立：本 fixture 没能造出「quickcheck 看不出来」的损坏"
+    assert subprocess.run([SAMTOOLS, "view", "-c", bam],
+                          capture_output=True).returncode != 0, \
+        "前提不成立：损坏还不够深，samtools 本体读得出来"
+
+    rc, rep = run_verifier(tmp_path, "01_bwa_sort", samples="s1")
+    assert rc == 1, "中段损坏的 BAM 被放行（quickcheck 通过了）"
+    bad = _hard_names(rep)
+    assert "bam[s1].body_readable" in bad, bad
+    assert "bam[s1].quickcheck" not in bad, (
+        "quickcheck 本应对此**通过** —— 若它失败了，说明 fixture 变成了"
+        "另一种损坏（头/EOF 被破坏），本条就测不到「结构检查挡不住」这一层了")
+
+
+def test_truncated_bgzf_eof_is_caught_by_quickcheck(tmp_path):
+    """★阴性对照：**截断掉末尾 BGZF EOF 块**的 BAM 必须被 `quickcheck` 拦下。
+
+    与上面 `test_quickcheck_pass_is_not_enough_body_must_be_readable` 是**互补**的
+    两条，合起来才说明 `quickcheck` + `body_readable` **两条判据各司其职**：
+        中段损坏   quickcheck rc=0（看不见） / view -c rc=1  → body_readable 抓
+        EOF 截断   quickcheck rc=16（专抓这个） / view -c rc=0 → quickcheck 抓
+    实测确认（见两条测试的前置断言）。少了这一条，`quickcheck` 的失败分支
+    从未被执行过 —— 它的登记即使被整块删掉、或永远判 True，回归也全绿
+    （审计 finding [12] 正是这么证明它"对整套回归没有任何贡献"的）。
+    `view -c` 在本形态下**返回 0 且读数正常**，所以只靠 body_readable 抓不到它。
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    bam = str(out / "s1.sorted.bam")
+    make_bam(bam, sample="s1", reads=200)
+    data = open(bam, "rb").read()
+    open(bam, "wb").write(data[:-28])            # 去掉 28 字节 BGZF EOF 块
+    assert _sh_rc([SAMTOOLS, "quickcheck", bam]) != 0, \
+        "前提不成立：截断 EOF 后 quickcheck 仍然通过"
+    assert _sh_rc([SAMTOOLS, "view", "-c", bam]) == 0, \
+        "本 fixture 同时破坏了数据体 —— 那测的就不是 quickcheck 这一条了"
+
+    rc, rep = run_verifier(tmp_path, "01_bwa_sort", samples="s1")
+    assert rc == 1, "缺 BGZF EOF 块的 BAM 被放行"
+    bad = _hard_names(rep)
+    assert "bam[s1].quickcheck" in bad, bad
+    assert "bam[s1].body_readable" not in bad, (
+        "本体可读，这条不该失败 —— 否则说明 fixture 破坏过头，"
+        "本条就测不到「quickcheck 独立抓 EOF 截断」这一层")
+
+
+def test_index_drift_is_reported_as_warn_not_silent(tmp_path):
+    """`index_drift`：索引漏计（Parabricks applybqsr 常见）→ 必须**报出来**。
+
+    finding [23] 的产物：`pbrun applybqsr` 写的 .bai 在中小输入上系统性漏计
+    （实测 10/200/300 reads → 索引报 0）。修法是"本体计数为准"，但**分歧本身
+    必须可见** —— 否则一个坏索引会静静躺在磁盘上，直到某天下游按区读取拿到空结果。
+    判据定为 warn 而非 hard：BAM 完好、下游可用，只需重建索引（拦下会误伤健康数据）。
+    故本条同时断言 rc==0（不误伤）与 index_drift 存在且为 warn（不静默）。
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    bam = str(out / "s1.sorted.markdup.BQSR.bam")
+    make_bam(bam, sample="s1", reads=200)
+    # 造"漏计"的索引：拿另一个 10-reads BAM 的 .bai 顶替（长度足够，内容指向太少）
+    decoy = str(tmp_path / "decoy.bam")
+    make_bam(decoy, sample="s1", reads=10)
+    shutil.copy(decoy + ".bai", bam + ".bai")
+    idx_says = subprocess.run([SAMTOOLS, "idxstats", bam], capture_output=True,
+                              text=True).stdout
+    body = subprocess.run([SAMTOOLS, "view", "-c", bam], capture_output=True,
+                          text=True).stdout.strip()
+    assert int(body) == 200, body
+    assert "200" not in idx_says, (
+        f"前提不成立：索引没被换成漏计的版本，idxstats={idx_says!r}")
+
+    rc, rep = run_verifier(tmp_path, "02_markdup_bqsr", samples="s1")
+    drift = [c for c in rep["checks"] if c["name"].endswith(".index_drift")]
+    assert drift, "索引与本体分歧，却没有登记 index_drift（缺口静默）"
+    assert drift[0]["level"] == "warn" and not drift[0]["passed"], drift[0]
+    assert rc == 0, (
+        "漏计索引被判 hard 拦下了健康 BAM —— 这正是 finding [23] 的原始症状"
+        f"（拦下好数据）：{_hard_names(rep)}")
+
+
+def test_all_missing_genotypes_are_caught(tmp_path):
+    """★核心阴性对照：记录行/样本列/FILTER 全正常，但**所有基因型都是 `./.`**。
+
+    finding 另一条：Stage 4/5 早期没有任何判据读基因型。这种产物的所有"结构性"
+    判据（存在、索引、位点数、样本列、GVCF 标记）**全部通过**，而交付物里
+    一个可用基因型都没有 —— 下游关联分析拿到的是空表。
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    _mk_vcf(out / "co.combined.g.vcf.gz", ["S1"], gvcf=True)
+    _mk_genotype_vcf(out / "co.vcf.gz", ["S1"], missing=30)   # 全部 ./.
+    rc, rep = run_verifier(tmp_path, "04_joint_genotyping", samples="S1", prefix="co")
+    assert rc == 1, "全部基因型缺失却放行"
+    assert "joint.genotypes" in _hard_names(rep), _hard_names(rep)
+
+
+def test_missing_gt_header_is_caught(tmp_path):
+    """`genotypes` 的另一条分支：**头部没有 FORMAT/GT 定义**（记录行仍是 GT）。
+
+    与"全 `./.`"是不同的失效：这条是定义被删（`annotate -x`）或
+    GenotypeGVCFs 没真正跑。下游 `bcftools query -f '[%GT\\n]'` 直接报错，
+    而门禁若只看 `bcftools view -H` 的行数是看不出区别的。
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    _mk_vcf(out / "co.combined.g.vcf.gz", ["S1"], gvcf=True)
+    _mk_vcf_no_gt_header(out / "co.vcf.gz", ["S1"])
+    rc, rep = run_verifier(tmp_path, "04_joint_genotyping", samples="S1", prefix="co")
+    assert rc == 1, "头部缺 FORMAT/GT 定义却放行"
+    bad = _hard_names(rep)
+    assert "joint.genotypes" in bad, bad
+    det = " ".join(c["detail"] for c in rep["checks"]
+                   if c["name"] == "joint.genotypes")
+    assert "FORMAT/GT" in det, det
+
+
+def test_sparse_genotypes_warn_on_completeness(tmp_path):
+    """`genotype_completeness`：非缺失基因型 < 50% → warn（放行但告警）。
+
+    为什么是 warn 不是 hard：某些真实项目确实靠低深度样本，位点缺失过半可能
+    是**预期**的（如低覆盖测序）。但它必须被说出来 —— 关联分析的有效样本量
+    会因此大幅缩水，而报告若全绿没人会去数。
+    故断言 rc==0（不误伤）+ 该 warn 存在（不静默）。
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    _mk_vcf(out / "co.combined.g.vcf.gz", ["S1"], gvcf=True)
+    _mk_genotype_vcf(out / "co.vcf.gz", ["S1"], missing=24, n=30)   # 只有 6/30 非缺失
+    rc, rep = run_verifier(tmp_path, "04_joint_genotyping", samples="S1", prefix="co")
+    gc = [c for c in rep["checks"] if c["name"].endswith(".genotype_completeness")]
+    assert gc, "非缺失基因型仅 20%，却没有登记 genotype_completeness"
+    assert gc[0]["level"] == "warn" and not gc[0]["passed"], gc[0]
+    assert rc == 0, f"低完整度被判 hard 拦下（应只告警）：{_hard_names(rep)}"
+
+
+def test_filter_dot_is_distinguished_from_all_passing(tmp_path):
+    """`filter_applied`：FILTER 为 `.` 的位点必须与"过滤后都留下"区分开。
+
+    这是本项目反复出现的"假 PASS"形态（V18/fail_rate 同族）：全部位点的
+    FILTER 都是 `.`（未记录判定）时，`pass_rate` 只统计 `== "PASS"` 的条数，
+    于是 npass=0 → 那条判据反而会拦（正确）；但若**一部分**是 PASS、另一部分
+    是 `.`，`pass_rate` 依然绿，读报告的人会以为"这些位点通过了 QD/FS/SOR/MQ"，
+    实际上它们**根本没被过滤过**（VariantFiltration 没跑）。
+    故本条造"一半 PASS 一半 `.`"：断言 rc==0（pass_rate 不该拦）但
+    `filter_applied` 必须登记为 warn。
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    raw = str(out / "co.snp.filter.vcf.gz")
+    lines = ["##fileformat=VCFv4.2", "##contig=<ID=chr1,length=100000>",
+             '##FILTER=<ID=PASS,Description="ok">',
+             '##FORMAT=<ID=GT,Number=1,Type=String,Description="GT">',
+             "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1"]
+    ts = [("A", "G"), ("G", "A"), ("C", "T"), ("T", "C")]
+    for i in range(40):
+        r, a = ts[i % 4]
+        filt = "PASS" if i < 20 else "."          # 后 20 条未记录判定
+        lines.append(f"chr1\t{100+i*7}\t.\t{r}\t{a}\t50\t{filt}\t.\tGT\t0/1")
+    rawp = raw[:-3]
+    open(rawp, "w").write("\n".join(lines) + "\n")
+    assert _sh(["bgzip", "-f", rawp]).returncode == 0
+    assert _sh(["tabix", "-f", "-p", "vcf", raw]).returncode == 0
+    _mk_vcf(out / "co.indel.filter.vcf.gz", ["S1"], gvcf=False)
+
+    rc, rep = run_verifier(tmp_path, "05_filtering", samples="S1", prefix="co")
+    fa = [c for c in rep["checks"] if c["name"].endswith(".filter_applied")]
+    assert fa, "有 20 条 FILTER='.' 却没有任何登记（与'都过滤过了'无法区分）"
+    assert fa[0]["level"] == "warn" and not fa[0]["passed"], fa[0]
+    assert "snp.filter_applied" not in _hard_names(rep), _hard_names(rep)
+
+
+def test_markdup_coverage_partial_warns(tmp_path):
+    """`markdup.coverage`：部分样本缺 markdup BAM → warn（不是静默通过）。
+
+    为什么是 warn：走 Parabricks fq2bam 后端时 markdup 已在该步完成，
+    本阶段不产出 markdup BAM **属预期**。但"少了几个"必须看得见 ——
+    否则 markdup 步骤真被跳过时，报告里连一行都没有。
+    与 `bqsr.coverage`（hard）的分工：BQSR BAM 是 Stage 3 的输入契约，
+    缺了必然失败；markdup BAM 只是中间产物。
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    make_bam(str(out / "s1.sorted.markdup.BQSR.bam"), sample="s1")
+    make_bam(str(out / "s1.sorted.markdup.bam"), sample="s1")
+    make_bam(str(out / "s2.sorted.markdup.BQSR.bam"), sample="s2")
+    # s2 缺 markdup BAM（但 BQSR BAM 在）
+    rc, rep = run_verifier(tmp_path, "02_markdup_bqsr", samples="s1,s2")
+    mc = [c for c in rep["checks"] if c["name"] == "markdup.coverage"]
+    assert mc, "s2 缺 markdup BAM 却没有登记 markdup.coverage"
+    assert mc[0]["level"] == "warn" and not mc[0]["passed"], mc[0]
+    assert "markdup.coverage" not in _hard_names(rep), _hard_names(rep)
+
+
+def test_read_totals_recorded_is_asserted_not_assumed(tmp_path):
+    """`read_totals_recorded`：Stage 1 必须真的把 reads 数写进报告。
+
+    finding [17]/V4 的同族形态：Stage 2 的 reads 守恒判据读 `prev["read_totals"]`，
+    而早期**没有任何地方写过该键** —— 守恒检查因此永远静默跳过（"声称存在、
+    从不生效"）。本判据是"上游真的写了"的唯一证据，故它不能只被当成
+    "反正总会过"的一条。这里断言三件事：该判据存在、**判过**、且
+    `rep["read_totals"]` 里确实有该样本的读数。
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    make_bam(str(out / "s1.sorted.bam"), sample="s1", reads=120)
+    rc, rep = run_verifier(tmp_path, "01_bwa_sort", samples="s1")
+    assert rc == 0, rep
+    rt = [c for c in rep["checks"] if c["name"] == "read_totals_recorded"]
+    assert rt, "Stage 1 没有登记 read_totals_recorded"
+    assert rt[0]["passed"], rt[0]
+    assert rep.get("read_totals"), (
+        "报告里 read_totals 是空的 —— Stage 2 的守恒判据会因此静默跳过")
+    assert rep["read_totals"].get("s1") == 120, rep["read_totals"]

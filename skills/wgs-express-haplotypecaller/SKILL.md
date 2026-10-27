@@ -133,7 +133,16 @@ for i in "${!samples[@]}"; do
         done
     done
 done
-for pid in "${pids[@]}"; do
+# ⚠️ 展开式 ${pids[@]+"${pids[@]}"} 不可省（实测 rc=1）：上面的并发池用
+#    `unset 'pids[$j]'` 摘除已结束的 pid，于是进入这里时**有效元素数 =
+#    样本数 % MAX_CONCURRENT**。余数为 0 时数组已空 —— 样本数恰为 MAX_CONCURRENT
+#    的整数倍、MAX_CONCURRENT=1、或 resume 全部跳过（本阶段的 resume 判断是
+#    `if [ -f "${GVCF}" ] && [ -f "${GVCF}.tbi" ]`，全跳过是常规情形）都会命中。
+#    bash 4.2 下 `"${pids[@]}"` 对空数组当场报 `pids[@]: unbound variable` 并 rc=1
+#    退出，**收尾门禁根本执行不到**：磁盘上既无 .done 也无 .failed，编排层归为
+#    "已中断"并引用户去查一个不存在的进程。`+` 形式在数组为空时展开为 0 个词，
+#    非空时行为与原来完全一致（两者都实测过）。
+for pid in ${pids[@]+"${pids[@]}"}; do
     wait "${pid}" || { FAILED=$((FAILED+1)); log_error "Subprocess ${pid} failed"; }
 done
 ```
@@ -141,6 +150,17 @@ done
 ## 收尾：结果校验门禁（**必须先过校验才写 `.done`**）
 
 ```bash
+# ─── 日志函数（本块自足：用了就必须定义，别指望别处）───
+# ⚠️ 本段不可省。本块调用了 log_error（以及日志类的其它函数），但**早期版本全文档
+#    都没有定义** —— 六个阶段 skill 里只有 align-sort / fastp-qc 定义了它们。
+#    LLM 照抄本块生成的脚本，首次调用处当场 `log_error: command not found`（rc=127）。
+#    要命的是这些调用**全在失败分支里**：本该"写 .failed 并打印原因"的路径反过来
+#    崩在写标记之前，磁盘上 .done/.failed 都不存在，编排层四态判定归为"已中断"、
+#    引用户去查一个不存在的进程 —— 真实原因只是这段函数没定义。
+#    与 align-sort / fastp-qc 的写法保持一致。
+log_info()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO]  $*"; }
+log_done()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [DONE]  $*"; }
+log_error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $*"; }
 # ─── 定位校验器（⚠ 不要写 `conda run -n Agent python`）───
 # 本脚本已由 `conda run -n Agent bash` 启动，该进程 PATH 中**没有 conda 可执行文件**
 # （只有 <conda>/envs/Agent/bin 与系统目录），嵌套调用会以 127 失败：

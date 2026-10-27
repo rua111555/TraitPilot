@@ -167,16 +167,21 @@ PBRUN() {
 3. 样本并行 = GPU 卡数：`GPU_IDX=$(( i % parallel_samples ))`，每样本一个 `PBRUN` 调用
 4. 单卡 24GB 超配时报 cuda OOM → 降 `parallel_samples` 或回退 CPU
 
-### 4.1 4.3.x 实用参数速查（已在本机 `pbrun <tool> --help` 逐一核对）
+### 4.1 4.3.x 实用参数速查（本机 `pbrun <tool> --help` 核对）
+
+> ⚠️ 早期这里的表头写「**已逐一核对**」—— 而 `genotypegvcf` 那一行恰恰是**没核对到**的那行
+> （它写着 `--num-gpus 1`，实测该子命令不接受该参数）。一句"已逐一核对"会让读者跳过
+> 复核，所以这里不再声称全覆盖：下表是**核对过的结果**，但**新增/改动任何一行前请自己
+> 再核一次** `pbrun <tool> --help`（表头不再为未核对的行背书）。
 
 | 工具 | 选卡 | CPU 线程参数 | 关键输入/输出参数 |
 |---|---|---|---|
 | `fq2bam` | `--num-gpus 1` | `--num-cpu N` | `--ref` `--in-fq R1 R2` `--out-bam`；**默认内含 markdup+BQSR**；24GB 卡加 `--low-memory --bwa-nstreams 1` |
 | `haplotypecaller` | `--num-gpus 1` | `--num-htvc-threads N` | `--ref` `--in-bam` `--out-variants` `--gvcf` |
-| `markdup` | `--num-gpus 1` | `--num-worker-threads N` | `--in-bam` `--out-bam` `--out-duplicate-metrics` |
+| `markdup` | `--num-gpus 1` | `--num-worker-threads N` | **`--ref`（必需，缺则 rc=2）** `--in-bam` `--out-bam` `--out-duplicate-metrics` |
 | `bqsr` | `--num-gpus 1` | 以 `--help` 为准 | `--ref` `--in-bam` **`--knownSites`**（驼峰，非 `--known-sites`）`--out-recal-file` |
 | `applybqsr` | `--num-gpus 1` | 以 `--help` 为准 | `--ref` `--in-bam` `--in-recal-file` `--out-bam` |
-| `genotypegvcf` | `--num-gpus 1` | `--num-threads N` | `--ref` `--in-gvcf` `--out-vcf`（4.3.x 联合分型工具，替代 GATK GenotypeGVCFs；**无** `genotypecaller`） |
+| `genotypegvcf` | **（不接受 `--num-gpus`）** | `--num-threads N` | `--ref` `--in-gvcf` `--out-vcf`（4.3.x 联合分型工具，替代 GATK GenotypeGVCFs；**无** `genotypecaller`）。⚠ **本行曾写 `--num-gpus 1`，实测是错的**：`pbrun genotypegvcf` 是唯一不接受该参数的子命令，加上即 `rc=2` `unrecognized arguments` 且零产物 |
 
 > fq2bam 在 4.3.x **默认即做 markduplicates+BQSR**（`--knownSites` 可选增强）。
 > 若管线仍按「stage2 单独 markdup+bqsr」设计，会重复处理；对 parabricks 后端建议直接消费

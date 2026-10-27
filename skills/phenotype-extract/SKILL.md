@@ -60,6 +60,11 @@ conda run -n Phenotype python phenotype_extract.py --pheno IMF
 | `imf_phenotype_gwas_gapit.csv` | GAPIT：`Taxa,IMF` 表头 |
 | `imf_verify.json` | **出口校验报告**：每条判据的结论与实测值 |
 
+> ⚠️ 上面**两个 `_gwas_*` 文件本身不经过出口门禁**。门禁只判明细表
+> （`imf_phenotype.csv`，它有 `状态` 列），判过之后才据此**写出**这两个导出；
+> 它们是投影、不是被校验的对象。故 `validate.py` 的「独立复核」也**不适用于**
+> 这两个文件（plink 无表头、gapit 无 `状态` 列）——详见下方说明。
+
 PLINK 行序与 `--fam` 指定的基因型 `.fam` 的相对顺序一致（`--fam`/`$FAM_PATH` 仅作排序基准，缺省按样本号排）。
 
 ## 出口校验门禁（结果值校验）
@@ -100,7 +105,7 @@ conda run -n Phenotype python phenotype_extract.py --pheno IMF --min-nir-r 0.6
 > 兜底数值**（兜底值通常落在合法值域内，会伪装成正常结果）。插件通过 `TASK` 的
 > `validate.value_range` 声明值域。
 
-**独立复核**（同一个门禁也可事后对任意明细 CSV 跑，供 GWAS 入口复用）：
+**独立复核**（同一个门禁也可事后对**明细 CSV** 跑，供 GWAS 入口复用）：
 
 ```bash
 conda run -n Phenotype python scripts/validate.py \
@@ -108,6 +113,20 @@ conda run -n Phenotype python scripts/validate.py \
     --col 'IMF_预测_%' --range 0 100 --min-nir-r 0.6 --json
 # 退出码 0=通过；1=应拦截（JSON 里 hard_failures 给出原因）
 ```
+
+> ⚠️ **本 CLI 只吃明细 CSV 的形态，不要指望它直接复核两个 GWAS 产物**
+> （第二轮审计实测，这条曾在本段被暗示为"任意 CSV 都能跑"）：
+> · `..._gwas_plink.txt` **无表头**（`<样本> <样本> <值>`）→ 给不出 `--col`，
+>   实测 `[err] 列 'IMF' 不在 CSV 中` rc=1 —— 不是"值不合格"，而是**根本无法复核**；
+> · `..._gwas_gapit.csv` 有表头但**没有 `状态` 列** → `value_range` 与 `fail_rate`
+>   都拿不到前提。这两条现在会**明说"未做该判定"**（warn），不再发出空头的
+>   `[PASS] fail_rate: 0%`；但"明说没判"不等于"判过了"。
+>
+> 而这两个文件恰恰是下游真正消费的（`gwas-gemma/SKILL.md` 与
+> `gwas-pipeline/usage-guide.md` 直接把 plink.txt 交给 `--pheno`）。要在 GWAS 入口
+> 复用本门禁，**请并回明细表再跑**（明细表自带 `状态` 与参照列，是唯一形态完整的产物）；
+> 或把明细 CSV 换个 `--outdir` 一并带过去。门禁的作用范围实际只有
+> **「提取流程内部」+「明细 CSV 的事后复核」**这两段。
 
 新增表型（~30 行代码，无需改框架）
 

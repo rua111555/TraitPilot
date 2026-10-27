@@ -587,6 +587,28 @@ A5 是唯一一条**修法本身也踩了坑**的：第一版修法（判空守�
 - 删掉索引命名判据 → H 段 4 条 `[BAD]`
 - 把 `test_defect_class_guards.py` 的谓词改宽/改恒假 → 自检分别报"误伤"/"漏报"
 
+**缺陷类防线的端到端验证**（比"谓词单测"更强的一层）：把每类违规**真的写进一份真实 skill 文档**，
+确认扫描会指名报出。自动发现命中 **25 份**文档（含 `usage-guide.md` 与 `references/*.md`）；
+六条防线逐一注入后 `1 failed, 152 passed`（失败项即注入的那份文件），还原后 153 passed：
+
+| 注入的违规 | 注入文件 | 结果 |
+|---|---|---|
+| 裸 `tabix -p vcf`（无 `-f`） | wgs-express-fastp-qc/SKILL.md | ✓ 指名报出 |
+| 「fq2bam 自动生成（符合 `SM` 即可）」表行 | wgs-express-server-detect/SKILL.md | ✓ 指名报出 |
+| `BWA=/home/alice/anaconda3/envs/Agent/bin/bwa` | 同上 | ✓ 指名报出 |
+| 用 `${SAMPLES_CSV}` 而全文档无赋值 | 同上 | ✓ 指名报出 |
+| 收尾块写 `DONE_FILE` 但无 `rm -f .../.failed` | wgs-express-filtering/SKILL.md | ✓ 指名报出 |
+| 「只告警：比对率 ≥90%」且通篇无 `mapped_ratio` | wgs-express-server-detect/SKILL.md | ✓ 指名报出 |
+
+**两点反查**（确认防线**不过度**触发，否则会被迫关掉）：
+- 第 4 类注入到 `wgs-express-server-detect/SKILL.md` **不报** —— 该文档 `grep -cE '\.failed|stage_verify|VERIFIER|四态'` = **0**，
+  不在门禁链上（`gwas-*` 同理：7 个 skill 的 `.failed` 出现次数均为 0，是另一条不跑 `stage_verify.py` 的流水线）。
+  这是**作用域判定**在起作用，不是漏报；改成真实收尾块形态注入到 `wgs-express-filtering` 后即报出。
+- 首轮注入"写 `.done` 不清 `.failed`"时用的是 `date > "${DONE_FILE}"` 单行 —— 未触发，因为该防线按
+  **围栏块**判定且要求块内含 `.done` 字样。补齐成真实收尾块（含 `DONE_FILE=` 赋值与 `.done` 路径）后即报出。
+  记下这点是因为它说明**防线的判据是"结构"而非"子串"**：单行 `date > "${DONE_FILE}"` 本身
+  也可能出现在与门禁无关的上下文里，按块判定才不会冤枉。
+
 **这批的共同点（与前几批不同之处）**：前四批的缺陷都在产品里，修复的作用域是"文件"；
 这一批暴露的是**作用域本身错了**——六条里三条（F1/F2/F5）是已"修好"缺陷在没改到的文件里复发，
 根因是我按"这次动过的文件"逐个改，而缺陷按**写法**传播。所以 F1 的产出不是又一份文档补丁，
@@ -601,6 +623,157 @@ F7 是同一逻辑推到证据链上：**复核工具的可信度必须自己也
 却被判失败。故每条谓词都必须配**正控**（纠正措辞不得被误伤）与**负控**（真违规必须被抓到），
 这正是 `test_guards_actually_discriminate` 存在的原因：没有它，一条写松或写死的正则会在整个仓库上
 "全绿"而什么也没防住。
+
+### 11.6 第五批（2026-10-27/28）：第二轮对抗审计的 33 条，逐条处置
+
+第二轮审计用六个透镜并行找、每条再由独立复核方对抗性裁定（33 条发现 → 10 条进入复核 → **10/10 全部成立，无一条被驳回**）。
+本批与前四批的不同：**前几批是"我找缺陷"，这批是"审计找我的缺陷"**，其中还包含审计对**我上一批修复本身**的再审查。
+故处置方式也分两类：**(a) 已被上一批修复覆盖**（逐条回代验证，不重复改）；**(b) 仍然敞开的**（本轮新修）。
+
+**已由上一批覆盖、本轮逐条回代确认的（16 条）**：`[1][2][3][4][5][7][8][9][13][14][15][29][30][31][32][33]`
+—— 均属"索引可用性""缺工具 fail-closed""模板自足"等上批已落地判据的其它站点。回代方式：读当前树的实际代码/文档，确认对应判据存在且可触发（不是"我改过所以应该好了"）。
+
+**本轮新修（8 条）**，每条都**先用真实工具复现、再修、修完做变异验证**：
+
+> ⚠️ **本表最初漏记 9 条，于 11.7 补齐**（`[6][10][11][12][17][20][22][23][28]`）。
+> 记账时按"我记得改过哪些"写，漏掉的正是**改动分散在多轮、且部分落在 11.5 之前**的那些。
+> 这本身是本项目反复出现的同一形态在**证据链**上的复现：台账声称"33 条逐条处置"，
+> 实际只覆盖 24 条 —— 读台账的人无从知道有 9 条从未被处置或被处置了没记。
+> 补记方式与 11.7 的各条一致（复现、变异验证），漏记的那几条也**重新验了一遍现状态**，
+> 其中 `[12]` 重新验证后发现**当时的"已覆盖"判断是错的**（见 11.7）。
+
+| 代号 | 一句话 | 复现方式（实测，全部真工具） | 修法 | 判据落地 |
+|---|---|---|---|---|
+| **[16]** | **模板调用的 `log_*` 在本文档内没有定义**，而调用**全在失败分支里** → 本该"写 `.failed` 并打印原因"的路径反过来崩在写标记之前（rc=127），磁盘上 `.done`/`.failed` 都不存在，编排层归为"已中断"并引用户查一个不存在的进程。致命处在于**这是失败报告路径自身的失败**——只在已经出错时出现，而"没有标记"又被归因到别处 | 从五份 SKILL.md 抽出收尾段在真 bash 跑，命中 `log_error: command not found`（rc=127）且 `.failed` 不存在。六份子 skill 里当时只有 align-sort / fastp-qc 定义过这些函数 | 四份文档各补 `log_info`/`log_done`/`log_error` 定义块（与已定义的两份写法一致），并说明为何不可省 | `tests/test_stage_gate_template.py::test_template_defines_every_log_function_it_calls`（7 文件参数化）。**变异验证**：删掉 filtering 的定义 → 新防线 + 4 条既有集成测试共 **6 条失败** |
+| **[16-补]** | **我的测试自己把上面这个洞盖住了**：`build_stage_script` 当时**硬编码注入**了一个假的 `log_error() { echo ...; }`。骨架里既然已有定义，"模板是否自足"这个问题**永远问不出口** | 读测试源码即见注入；把注入去掉后，原测试立刻以 rc=127 失败 | 删掉假注入，改用**文档自己的**定义（新增 `extract_log_definitions()`）；某份文档没定义则骨架里就没有，漏洞变成可观测的 | 同上；**变异验证**：在副本里删定义 → 修复前全绿 / 修复后 6 条红。这是 F7 同一形态的第二次出现（复核工具本身不成立） |
+| **[21]** | **`combined` 的样本列从未与队列对账**：`check_vcf` 对 joint 传了 `expect_samples`，唯独 combined 这一处漏传。实测造 `#CHROM` 为 X,Y 而 joint 为 S1,S2 的产物 → combined 只有 5 条判据且全绿、报告里**没有 combined.samples 这一行**、rc=0 放行 | 造 combined/joint 样本列不一致的 GVCF，跑 Stage 4 | 补传 `expect_samples`。**边界说清**：只有两者**互相分歧**时才是独立漏检；一致而共同偏离队列时 joint.samples 仍会拦 —— 准确说法是"combined 的检查严格弱于 joint" | `test_stage_verify.py` 相关用例；反事实验证（健康数据 rc=0 不误伤、样本**顺序**不同不误报） |
+| **[24]** | **`min_variants` 的量级错配**：SNP 与 INDEL **共用**同一个标量，而两者真实量级差一个数量级（人类全基因组 SNP ~4-5M vs INDEL ~0.5-1M）。文档指引"通常 ≥ 数百万位点"恰好把用户引进**必拦健康数据**的区间，且拦截文案把人引向"上游 GVCF 有问题/参考基因组选错"——**方向完全错误**（产物其实是好的） | 实测两侧互斥：下限 ≤ INDEL 真值 → 放过 600k 的 SNP 产物（rc=0）；下限 > INDEL 真值 → 健康 INDEL 被 hard 拦 | 新增 `_resolve_min_variants_indel()`：INDEL 用**独立**的 `min_variants_indel`（`run.params.json`）；未声明时登记一条 warn **明说"未对 INDEL 做该判定"及其原因**（而非笼统说"未声明"）。畸形值判 hard（与 SNP 侧同一条 fail-closed 原则：想开却没生效必须被看见） | `test_stage_verify.py` 多条；**变异验证**：拆掉回落分支 → 相应测试失败 |
+| **[25][26][27]** | **Parabricks 三处文档错误**，全部**真容器复现**：① `genotypegvcf` 是**唯一**不接受 `--num-gpus` 的子命令（加上即 rc=2 `unrecognized arguments`、零产物），且它**根本不需要 GPU**；② `pbrun markdup` 的 `--ref` 是**必需项**（缺即 rc=2），文档当作可选；③ `pbrun bqsr` **没有** `--out-bam`（"支持时可一步完成"是把 applybqsr 的参数记到了 bqsr 头上） | 起 `clara-parabricks:4.3.2-1`：`pbrun genotypegvcf --num-gpus 1` → rc=2、无产物；去掉后 rc=0、产出 VCF+`.tbi`；`pbrun markdup` 不给 `--ref` → rc=2；`pbrun bqsr -h` 无 `--out-bam`。**附带发现**：`pbrun <tool> -h` 必须带 `--gpus "device=N"`，否则打印 "Could not find accessible GPUs" 且**整个参数表不可见**（我第一轮探测因此对所有工具都数出 0 个 `--num-gpus`，是假阴性） | 三处文档与 §4.1 速查表逐条改正；`git` 模板删掉 `--num-gpus 1`、markdup 模板补 `--ref`；把 §4.1 表头"已逐一核对"的**过度声称**换成告诫块（该表头恰恰为那行没核对到的 `genotypegvcf` 背了书） | `verify_fix_probe.py` L 段；文档侧由 `test_defect_class_guards.py` 的写法扫描覆盖 |
+| **[18]/[19]** | **Stage 0.5 的 read 数只从 fastp JSON 读、从不数 clean FASTQ**：而 BWA 消费的是 FASTQ，JSON 只是 fastp **打算**写多少条。三种攻击全部 rc=0：① 10 条 read 的文件配 90 万条的 JSON；② R1/R2 严重不配对；③ **0 条 read 的合法 gzip 空流**（`gzip -t` 对它也返回 0，完整性判据抓不到） | 真 fastp 1.1.0 造产物，四种配置逐一测量 JSON 语义：`summary.after_filtering.total_reads` = **双端之和**（1000 对 → 2000）；顶层 `read1/read2_after_filtering` = **各端条数**，与两个 clean 文件**完全相等**（常规过滤 / 非对称过滤 / 接头二聚体+polyG+correction / `--unpaired1/2` 分流 皆然）；`--merge` 下 per-mate 键**消失**、多出 `merged_and_filtered` | 改为**流式解压一趟同时得"完整性 + 真实读数"**（实测 7 种输入的退出码与 `gzip -t` 逐一相同，故**取代**它、解压次数不变）；read 数 > 0、R1==R2 配对守恒、JSON per-mate 与实际**逐端对账**三条 hard 判据；缺 JSON 由 warn 升 hard（它是唯一能对账的独立来源）；`--merge` 与 SE 形态分别明说拦截理由 | `test_stage_verify.py` 12 条新用例 + 探针 F 段 6 项（旧夹具的 JSON 缺 per-mate 字段，**与真实产物不同形**，已改正）。**变异验证 8 个变异体全部被捕获** |
+| **[19-补]** | **末行无换行的合法 FASTQ 会误拦**（我在实现 [19] 时自己引入的）：行数是数换行符得的，`4n` 行的文件只有 `4n-1` 个换行，照 `% 4` 判就会把**健康数据**拦下 | 造 100 条记录、末行不写换行的 FASTQ：换行数 399、`399 % 4 = 3` | `count_fastq_reads` 额外返回"末行是否不完整"，据此把**真实行数**还原再判整除 —— 截断的记录（末行不完整且补不上第 4 行）仍被拦 | `test_stage05_fastq_without_trailing_newline_is_not_blocked` + `test_stage05_truncated_record_is_caught`（**一对**：假阳性防线与阴性对照配对）。**变异验证**：把补算去掉 → 前一条立刻红 |
+| **[19-补2]** | **新判据与 resume 检查打架，形成死循环**：fastp 的 clean FASTQ 是**边跑边写**、JSON 是**跑完才写**；`kill -9` 掉正在跑的 fastp 后实测 `clean_1/2.fq.gz` 已落盘（2 MB 半截内容）而 `fastp.json` **不存在**。此时 resume 只看 `O1`/`O2` → 跳过该样本；而门禁（我把缺 JSON 升成 hard 后）要求它 → **重跑仍跳过、门禁仍失败**，用户看到的提示却是"重跑本阶段即可" | `kill -9` 真 fastp 进程，检查磁盘：两个 clean FASTQ 存在（各 2060288 字节）、`rep.json`/`rep.html` 都不存在 | resume 条件纳入 `${JSON}`（缺 JSON ⇒ 该样本重跑并完整覆盖重写半截 FASTQ）；并在文档里写下**一般原则**：resume 判存在性的产物集必须是门禁要求集的**超集** | 文档侧修（`wgs-express-fastp-qc/SKILL.md`）；同一形态在 align-sort 亦存在（resume 只看 `${BAM}`，门禁另需 `.bai`），已在文档指明 |
+
+**本批对我的复核工具自身的发现（第三次，F7 同类）**：
+两个探针（`stage_verify_probe.py`、`verify_fix_probe.py`）都把仓库根**写死成绝对路径**。
+后果：把它们复制到别处做变异测试时，副本里的探针**去测原仓的未变异代码**，
+于是"变异没被捕获"看起来像"判据没有区分度"，实则是**根本没测到变异体**。
+我据此得出过一条错误结论（"need_tool 的 fail-open 变异存活"），复查后才发现是探针自己的问题。
+两处均改为按 `__file__` 回溯仓库根。修正后重跑：`need_tool` 变异**被捕获**（FAILED: 1）。
+教训与 F7 完全一致——**复核工具的可信度必须自己也被复核**，且这类"工具静默跑错对象"的失败模式
+比"判据写松"更隐蔽：它给出的全是**看起来正常**的结果。
+
+**G10a-4 从文本断言改为行为断言**：该条原为 `"def need_tool" in src and 'rep.skip(...)' not in src` ——
+纯源码文本匹配。`rep.skip` 删光后后两个 `not in` **恒为真**；前半句只问"函数定义在不在"，
+把 `need_tool` 改成 fail-open 它照样绿（实测确认）。改为真跑一次**空 PATH、产物造齐**的子进程，
+断言 `rc == 1`。两处细节值得记：① 第一版没造 fixture，产物不存在时 `have()` 先返回，
+`need_tool` 根本到不了 —— rc 仍是 1 但**因为别的原因**，即"测试因错误的原因通过"；
+② 断言的**关键项必须是 rc**，因为变异下 `missing_tools` 里**照样**列着 gzip，
+只有 rc 会从 1 变 0。
+
+**回归基线（第五批）**：`550 passed`（较第四批 516 增 34：`test_stage_verify.py` +12、`test_stage_gate_template.py` +7、其余为各条判据的配套用例）；
+`verify_fix_probe.py` **64/64**（较第四批 46 增 18：F 段 6 + 其余）；`stage_verify_probe.py` FAILED 0；`skill_doc_consistency_probe.py` FAILED 0。
+（**补记后的现基线见 §11.7 末尾：`575 passed`。**）
+
+**区分度验证（这一批的硬要求，全部在真副本里跑）**：
+- Stage 0.5 的 8 个变异体（对账永远通过 / 配对永远通过 / 零 read 降级 warn / 缺 JSON 退回 warn / 末行不补算 / merge 降级 warn / gzip 永远通过 / per_mate_fields 降级 warn）→ **8/8 被捕获**，且每个都由**指名的那条**测试杀掉
+- `need_tool` 改 fail-open → 探针 G10a-4 红（**修正探针根路径后**；修正前该变异"存活"是探针假象）
+- 探针与 pytest 的覆盖边界已实测登记：`need_tool` **两者都抓**；Stage 0.5 的四条新判据**仅 pytest 抓**（探针的 F 段只覆盖 fastp 产物的三种陈旧形态）
+
+
+### 11.7 第五批补记（2026-10-28）：**11.6 漏记的 9 条**，含一条"已覆盖"判断是错的
+
+起因是复核 11.6 的记账完整性：把六个找出方的 33 条按文件顺序编号后与 11.6 的两张表对，
+发现**只覆盖 24 条**，漏了 `[6][10][11][12][17][20][22][23][28]`。
+逐条回查后分三类：**两条从未处置**（`[6]` 文档侧、`[12]` 的补测）、
+**五条已修但没记**（`[17][20][22][23][28]`，代码在树里、11.6 表里没有）、
+**两条是"我方工具自身"的发现**（`[10]` 探针、`[11]` 测试跳过）。
+
+| 代号 | 一句话 | 现状态（本次重新实测） | 处置 |
+|---|---|---|---|
+| **[6]** | **表型门禁 CLI 只吃明细 CSV 形态**，而下游真正消费的是 `_gwas_plink.txt` / `_gwas_gapit.csv`；SKILL.md:103 却把三者并列为"可复核"。实测 plink 无表头 → `[err] 列 'IMF' 不在 CSV 中` rc=1（根本无法复核）；gapit 有表头无 `状态` 列 → `value_range`/`fail_rate` 失去前提 | **本轮修**（见下） | ① SKILL.md 把措辞收紧为"**明细 CSV**"，并新增警告块说明两个导出**本身不过门禁**（是投影、不是被校验对象）；② 输出表给两个 `_gwas_*` 补"本门禁不直接校验这两个文件"；③ **连带修掉 fail_rate 的假 PASS**（缺 `状态` 列时它报 `0/3 个样本失败（0.0%）`，即上文 finding 的同一形态）——改为明说"**未做失败率判定**，注意这不是失败率为 0" |
+| **[12]** | **5 条 hard 判据无任何测试触及**：`bqsr_output` / `prefix` / `report_persisted` / `{label}.readable` / `report[{s}]`。审计的证明方式是"强制它们永远判 FAIL 后 pytest 49 passed、探针 45/45 全绿" | 11.6 曾把这条算作"已由上一批覆盖"——**这个判断是错的**。本次重做了覆盖测量（给 `Report.add` 打桩记录 `(源码行号, level, passed)`，跑完整套），发现除审计点名的 5 条外，**还有 4 条 hard 判据从未见过 FAIL**：`body_readable` / `genotypes` / `quickcheck` / `read_totals_recorded` | **本轮修**，见下 |
+| **[10]** | **探针 G10a-4 是纯文本断言**：`"def need_tool" in src` + 两条**恒真**的 `'rep.skip(...)' not in src`（全仓 `rep.skip(` 调用点为 0，故"没写 A"被当成"做了 B"）。把 `need_tool` 改成 fail-open，G10a-4 仍 `[PASS]` | 已在 **11.6 的"G10a-4 从文本断言改为行为断言"**段处置（真跑空 PATH 子进程 + 断言 rc）。本次复核确认该段仍在，且断言的**关键项是 rc**（因为变异下 `missing_tools` 里照样列着 gzip，只有 rc 会从 1 变 0） | 已处置（11.6 段，本次补记使其**可被检索到**） |
+| **[11]** | **`test_stage_verify.py` 整文件 skipif**：缺 samtools/bcftools 时 49 条 WGS 用例静默全跳过，`pytest` 退出码仍为 **0** —— 与"全部通过"在退出码上**无法区分** | **本轮修**（见下） | 模块级守卫：缺工具时 `raise RuntimeError` **不是 skip**；确要跳过须显式设 `SKILL_AGENT_ALLOW_SKIP_WGS_TOOLS=1`，且用 `warnings.warn` 出声（实测 pytest 默认**捕获**收集期 stderr，而 warnings summary 必定打印） |
+| **[17]** | **BAM 的 reads 数采信索引且只按整秒 mtime 判新旧**：外来索引 / 同秒覆写 / 截断后贴回 BGZF EOF 三种坏 BAM 全部 rc=0 | **已修但 11.6 未记**。现树：`body_readable`（读 BAM **本体**，`samtools view -c`）取代索引采信；索引只作旁证 | 本次补测：`test_quickcheck_pass_is_not_enough_body_must_be_readable` + `test_truncated_bgzf_eof_is_caught_by_quickcheck` |
+| **[20]** | **VCF 索引判据只判存在性**：外来 `.tbi` / 纯文本 `.tbi` / 陈旧 `.tbi` 全部 `[PASS]`，而按区读取返回 0 行且 rc=0 —— 下游 GATK `-L`、`bcftools -r`、`tabix` 静默拿到空结果 | **已修但 11.6 未记**。现树：**真的用一次**（取全量扫描首条记录的坐标做一次按区读取，要求 rc=0 且 ≥1 行）；拿不到坐标时登记"**未做可用性探测**"而非假装判过 | 本次复核：该分支的**失败路径**（L611）已被既有 Stage 4/5 用例覆盖（测试期内登记过 `passed=False`） |
+| **[22]** | **文档承诺"全 unmapped 即拦"的 hard 判据在 `total<100` 时整条不登记**，且不留提示：50 条全 unmapped → 报告里既无 `mapped_ratio` 也无"未做该判定"，`✅ 全部检查通过` rc=0 | **已修但 11.6 未记**。现树：`mapped == 0` **从统计门槛里拆出来单判 hard**（"一条 read 都没比上"是确定事实，与样本量无关）；只有 `mapped_rate`（≥90%，统计性判断）保留 `total>=100` | 本次复核：`test_stage1_all_unmapped_is_caught` 现用 150 reads；**小样本路径另补**（见下 `read_totals` 同批） |
+| **[23]** | **Parabricks 默认后端下 Stage 2 的 BQSR BAM 被判"空 BAM"而硬拦**：`pbrun applybqsr` 写的 `.bai` 不覆盖全部 reads（实测 10/200/300→0、1000→971、53296→53215），idxstats 据此报 0，**但 BAM 内 reads 完好、下游完全可用**。这正是"判据读派生数据"的**反向**失效：陈旧索引放过坏数据，漏计的新索引**拦下好数据** | **已修但 11.6 未记**。现树：**本体计数为准**，索引与本体分歧时登记 `index_drift`(warn) 明说"以本体为准、重建索引即可"；`mapped_ratio` 在索引不可信时**不判但留痕**（照它判会得出 mapped=0→"全 unmapped"→硬拦健康数据） | 本次补测：`test_index_drift_is_reported_as_warn_not_silent`（同时断言 rc==0 **不误伤**） |
+| **[28]** | **编排层 §2.2 权威门禁模板引用从未定义的 `${SAMPLES_CSV}`**（全仓仅此一处出现该名字）：`set -euo pipefail` 下当场 `unbound variable` 退出，磁盘上 `.done`/`.failed` 都不存在，编排层归为"已中断"并引用户查进程；补上后又暴露第二半——成功路径缺 `rm -f` 陈旧 `.failed` → 重跑通过后被误报"校验未通过" | **已修**（11.5 的 F1 就是它，但 11.6 里没回引） | 已处置。本次补记使 F1 与 finding `[28]` 的对应关系**可查** |
+
+**本轮（11.7）新修两处**：
+
+**（一）finding [11]：把静默 skip 改成响亮的失败。**
+`test_stage_verify.py` 原为整文件 `pytestmark = pytest.mark.skipif(...)`。
+实测复现（造只含 python/bash 的 PATH）：`453 passed, 49 skipped`、**退出码 0** ——
+"门禁判据从未运行"与"全部通过"在 CI 上完全无法区分（这正是本项目"纸面具备"的又一形态，
+只不过宿主从产品换成了证据链）。修法：
+
+- 模块级守卫改为 `raise RuntimeError(...)`，消息里**列出四个工具的探测结果与当前 PATH**，
+  并给两条修法（激活工具环境 / 显式设 `SKILL_AGENT_ALLOW_SKIP_WGS_TOOLS=1`）；
+- 四个工具**都要判**（原先是 `all((SAMTOOLS, BCFTOOLS, BGZIP, TABIX))`）：只判前两个时，
+  `bgzip`/`tabix` 缺失会让 **6 条**用例（combined GVCF / GVCF 身份 / INDEL 下限）
+  **单独静默跳过**，而模块级守卫照样绿 —— 缺口从大门挪到侧门；
+- 显式跳过的路径**也要出声**：用 `warnings.warn` 而**不是** `print(..., file=sys.stderr)`。
+  实测（独立小模块验证）：不带 `-s` 时 pytest **捕获**收集期 stderr，print 完全不出现；
+  而 warnings summary 在默认输出里**必定**打印。
+
+**（二）finding [12]：补上"只跑过 PASS、从没见过 FAIL"的判据。**
+审计证明"未被触及"的办法是"强制判 FAIL 看有没有人发现"。我把它反过来做成**可测量的覆盖面指标**：
+给 `Report.add` 打桩记录 `(源码行号, level, passed)` 三元组，跑完整套测试后统计
+**哪些 hard 判据从未登记过 `passed=False`**。结果（修复前）：
+
+```
+hard 判据 42 种，其中从未见过 FAIL 的 4 种：
+    X.body_readable      (中段损坏的 BAM)
+    X.genotypes          (全 ./. 或头部缺 FORMAT/GT)
+    X.quickcheck         (缺 BGZF EOF 块)
+    read_totals_recorded (无失败分支，见下)
+```
+
+这比"名字有没有被提到"严一层：判据**跑了**，只是只在健康数据上跑过 ——
+于是它接错参数、判反条件、把真值写成常量 `True`，整套回归**一个红灯都不会有**。
+补了 9 条阴性对照（8 条针对上表 + 1 条针对 `genotype_completeness`/`filter_applied`/
+`markdup.coverage` 三条 warn 级），全部先**验证 fixture 的前提**再断言：
+例如"中段损坏"必须先自证 `quickcheck rc=0 且 view -c rc≠0`，否则测的就不是那一层。
+
+**`read_totals_recorded` 不强补 FAIL 分支**（已在 11.7 实测确认）：无产出时该判据
+**根本不登记**，由 `cohort_sample_set`(hard) 拦下 —— 它是个"正面确认"判据，
+没有失败分支是设计使然。故改为断言**它的实质**（`rep["read_totals"]` 真有该样本的读数），
+这才是 V4（"Stage 2 读 `prev["read_totals"]` 而无处写过该键"）真正要防的。
+
+**回归基线（第五批补记）**：`575 passed`（较 v0.2.0 树里的 516 **增 59**）。
+逐文件实测（`--collect-only`，两边同一套命令）：
+
+| 文件 | v0.2.0 | 现在 | 增 |
+|---|---:|---:|---:|
+| `tests/test_stage_verify.py` | 59 | 91 | +32 |
+| `tests/test_phenotype_validate.py` | 30 | 48 | +18 |
+| `tests/test_stage_gate_template.py` | 57 | 64 | +7 |
+| `tests/test_probe_selfcheck.py` | 4 | 6 | +2 |
+| `tests/test_defect_class_guards.py` | 153 | 153 | 0 |
+| `tests/test_version.py` | 5 | 5 | 0 |
+| **合计** | **516** | **575** | **+59** |
+
+（`test_stage_verify.py` 的 +32 = 11.6 那批 12 + 本节 11.7 的 20；
+`test_phenotype_validate.py` 的 +18 主要是门禁判据配套用例。）
+`verify_fix_probe.py` **64/64**；`stage_verify_probe.py` FAILED 0；`skill_doc_consistency_probe.py` FAILED 0。
+（11.6 里写的 `550 passed` 是**当时**的基线，非当前值，已在彼处加注指向本节。）
+
+**区分度验证（11.7，全部在真副本 `/home/chenyuxi/mut5` 里跑，一次一个变异体）**：
+- 9 条新阴性对照 → 逐个变异其守卫的判据（`body_readable` 判 True / `index_drift` 删登记 /
+  `genotypes` 判 True / `genotype_completeness` 删登记 / `filter_applied` 删登记 /
+  `markdup.coverage` 删登记 / `read_totals_recorded` 删登记 / `read_totals` 不再写入 /
+  `quickcheck` 判 True）→ **9/9 被捕获，且每个都由指名的那条测试杀掉**
+- 覆盖面指标本身也复测：打桩后重跑，`从未见过 FAIL 的 hard 判据` 由 **4 → 1**
+  （剩下那 1 条即上面说明的 `read_totals_recorded`）
+- 副本与主仓逐字节比对确认变异未污染主仓（`diff -q` 一致）
+
+**这一批的教训（与 11.5/11.6 同一形态，第三次换宿主）**：11.5 是"按改动过的文件去修，
+而缺陷按**写法**传播"；11.6 的表本身又栽在"按**我记得改过什么**去记账"。
+两次的自救办法是同一条：**别靠记忆，去做一个能自动发现遗漏的测量**——
+11.5 的产出是 `test_defect_class_guards.py`（按失效模式扫全部文档），
+这一次的产出是"判据覆盖面打桩"。**台账的完整性也必须被测量，而不是被声明。**
+
 
 ### 11.2 复核方另发现的能力边界（不改变判定，登记备查）
 

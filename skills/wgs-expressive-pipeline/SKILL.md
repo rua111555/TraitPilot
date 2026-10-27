@@ -108,7 +108,16 @@ nohup conda run -n Agent bash "${SCRIPT_PATH}" > "${RUN_DIR}/nohup.out" 2>&1 &
 
 ```bash
 # ─── 阶段收尾：先校验，再决定写哪个标记 ───
-# ⚠️ 本块刻意做成**自足可抄**：下面用到的每个变量都在本块内出现定义或显式确认。
+# ⚠️ 本块刻意做成**自足可抄**：下面用到的每个变量**和函数**都在本块内出现定义或显式确认。
+#    ⚠️ 函数也算：本块用了 `log_error`/`log_done`，早期版本**只调用不定义**，
+#    而六个阶段 skill 里只有 align-sort / fastp-qc 定义了它们。LLM 照抄本模板生成的
+#    脚本在首次调用处当场 `log_error: command not found`（rc=127）—— 那正好发生在
+#    **失败分支**里，于是"本该写 .failed 并报原因"的路径反而崩在写标记之前：
+#    磁盘上 .done/.failed 都不存在，四态判定归为"已中断"，用户被引去查进程。
+#    故这里补上定义（与 align-sort / fastp-qc 的写法一致，含 log_done/log_info）。
+log_info()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO]  $*"; }
+log_done()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [DONE]  $*"; }
+log_error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $*"; }
 #    `RUN_DIR` 是唯一无法给默认值的 —— 它**就是**写 .done/.failed 的目的地。
 #    注意确认方式用 `[ -z ]` 判空，**不是** `: "${RUN_DIR:?}"`：后者在空值/未定义时
 #    立刻 exit（set -e），磁盘上既无 .done 也无 .failed，编排层归为"已中断"并引用户
@@ -228,7 +237,7 @@ log_done "Stage 1 complete (校验通过)"
 
 | 阶段 | 最容易漏掉的**硬性**判据（不过即不写 `.done`） |
 |------|---------------------------------------------|
-| 0.5 fastp | 清洗后 reads > 0；JSON 可解析；**clean FASTQ 的 gzip 流完整**（截断的 .gz 仍能通过"存在且非空"，要到 BWA 读一半才炸） |
+| 0.5 fastp | **read 数直接数 clean FASTQ 本体**（不再采信 JSON）且 > 0；R1/R2 配对守恒；**clean FASTQ 的 gzip 流完整**（截断的 .gz 仍能通过"存在且非空"，要到 BWA 读一半才炸）；JSON 可解析且其 per-mate 读数与 FASTQ **逐端一致**（防陈旧/混轮次产物） |
 | 1 align | **reads 数 > 0**（`quickcheck` 对空 BAM 也放行，只有计数能抓）；**`mapped` = 0（全 unmapped）即拦**（参考基因组选错/物种不符的头号症状 —— 注意这是 `mapped_ratio` 这条 **hard** 判据，与下面 warn 级的 `mapped_rate` ≥90% 是**两条不同的判据**）；`@RG` 存在且 `SM` 与样本号一致；`.bai` 存在 |
 | 2 markdup/bqsr | **每个样本都有 BQSR BAM**（Stage 3 的输入契约；缺一个即拦）；**Stage 1 有产出的样本不得消失**（reads 守恒只比数值，丢整个样本要看集合差） |
 | 3 HC | **头部含 `##ALT=<ID=NON_REF>`**（漏 `-ERC GVCF` 的头号症状，Stage 4 必失败）；**GVCF 内部声明的样本名与文件名一致**（否则样本串了） |

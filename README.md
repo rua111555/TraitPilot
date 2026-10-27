@@ -9,7 +9,7 @@ API 凭证/配置从本目录的 `config.json` 读取——**不依赖 Claude Co
 
 **当前版本**：见 [`VERSION`](VERSION)（唯一载体），变更历史见 [`CHANGELOG.md`](CHANGELOG.md)。
 ```bash
-python3 run.py --version        # → TraitPilot 0.2.0
+python3 run.py --version        # → TraitPilot 0.3.0
 ```
 
 ## 快速开始

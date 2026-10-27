@@ -194,11 +194,27 @@ def parse_xls(corr_xls, nir_xls):
 
 
 def read_fam(fam_path):
-    """返回按 fam 行序排列的 IID 列表。"""
-    iids = []
+    """返回按 fam 行序排列的 ``[(FID, IID), ...]``。
+
+    ⚠️ **必须成对返回，不能只取 IID**：PLINK/GEMMA 的表型是按 ``(FID, IID)`` **二元组**
+    匹配的。早期本函数只返回第 2 列，而 PLINK 导出把 FID 硬编码成了 IID
+    （``f"{iid} {iid} {value}"``）—— 只要基因型文件的 FID ≠ IID（多场次/多群体合并的
+    fam 是常态），表型文件里的每一行都匹配不上任何个体。
+
+    实测（真实 plink）：fam 行为 ``farmA et3 ...``、表型文件写 ``et3 et3 3.3757`` 时，
+    plink 打印 ``0 phenotype values present after --pheno`` + ``Note: No phenotypes
+    present.``，**退出码仍是 0**，且**不产出结果文件**（只有一个 .log）；改写
+    ``farmA et3 3.3757`` 后同样是退出码 0，但 ``3 phenotype values present`` 并产出
+    .qassoc。两次退出码相同、日志里那句 Note 极易被滚动刷掉 —— 整个队列的表型被
+    静默全部丢弃，没有任何一步会报错。
+
+    FID 为空时保留 IID（PLINK 容忍 ``0`` 作为 FID，但空串会被解析成缺失列，故用 "0"）。
+    """
+    pairs = []
     with open(fam_path) as f:
         for line in f:
             parts = line.split()
             if len(parts) >= 2:
-                iids.append(parts[1])
-    return iids
+                fid, iid = parts[0], parts[1]
+                pairs.append((fid if fid else "0", iid))
+    return pairs

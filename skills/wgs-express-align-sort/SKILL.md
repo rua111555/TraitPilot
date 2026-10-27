@@ -172,7 +172,16 @@ done
 # ⚠️ 不要写 `wait "${pid}" || log_error ...` 然后不管 —— `||` 会把退出码变成 0，
 #    后面的 `set -e` 不再触发，脚本照常走到末尾写 .done，编排层于是误判"完成"。
 #    必须把失败**累计**下来，交给收尾的校验门禁裁决。
-for pid in "${pids[@]}"; do
+# ⚠️ 展开式 ${pids[@]+"${pids[@]}"} 不可省（实测 rc=1）：上面的并发池用
+#    `unset 'pids[$j]'` 摘除已结束的 pid，于是进入这里时**有效元素数 =
+#    样本数 % MAX_CONCURRENT**。余数为 0 时数组已空 —— 样本数恰为 MAX_CONCURRENT
+#    的整数倍、MAX_CONCURRENT=1、或 --resume 全部跳过（=0 个样本）都会命中，都是
+#    常规配置而非边角。bash 4.2 下 `"${pids[@]}"` 对空数组当场报
+#    `pids[@]: unbound variable` 并 rc=1 退出，**收尾门禁根本执行不到**：
+#    磁盘上既无 .done 也无 .failed，编排层归为"已中断"并引用户去查一个不存在的
+#    进程，真实原因只是这一行。`+` 形式在数组为空/未声明时展开为 0 个词，
+#    非空时行为与原来完全一致（两者都实测过）。
+for pid in ${pids[@]+"${pids[@]}"}; do
     wait "${pid}" || { FAILED=$((FAILED+1)); log_error "Subprocess ${pid} failed"; }
 done
 [ "${FAILED}" -gt 0 ] && log_error "本阶段有 ${FAILED} 个子进程非零退出（见收尾校验）"

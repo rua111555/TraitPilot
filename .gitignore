@@ -18,3 +18,9 @@ skills/**/model/*.onnx
 # 派生产物
 .skill-agent/
 logs/
+
+# pytest 的 tmp_path 残留：TMPDIR 未设或指向仓库根时，pytest 会在**仓库根**
+# 建 pytest-of-<user>/（内含各用例的 .fam/.txt 等真实产出的临时件）。
+# 实测：把它当普通未跟踪文件时，`git status` 会一直挂着一项，
+# 而它既不是源码也不该进版本库 —— 与 .pytest_cache/ 同性质。
+pytest-of-*/

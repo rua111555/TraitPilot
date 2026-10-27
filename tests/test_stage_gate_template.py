@@ -41,6 +41,10 @@ def extract_verifier_block(path):
 
     起于 `VERIFIER="$(python`，止于紧随其后的 `fi`。抽不出来就 fail ——
     那说明模板结构变了，本测试必须跟着改（而不是静默跳过、假装还在测）。
+
+    ⚠️ 本函数**只取门禁那一段**，不含同围栏里更靠前的代码（align-sort 的同围栏
+    前缀是注释，但 fastp-qc 的同围栏前缀是**真的 fastp 循环** —— 整段跑起来会去调
+    fastp）。门禁段运行所需的 `log_*` 由 `extract_log_definitions()` 单独供给。
     """
     text = open(path, encoding="utf-8").read()
     i = text.find('VERIFIER="$(python')
@@ -50,13 +54,36 @@ def extract_verifier_block(path):
     return text[i:j + 4]
 
 
+def extract_log_definitions(path):
+    """抽出该文档里**自己定义的** `log_*` shell 函数行。
+
+    ⚠️ 为什么需要它（第二轮审计 major）：`build_stage_script` 早期**硬编码注入**了一个
+    假的 `log_error() { echo ...; }`。骨架里既然已经有了定义，"模板自己有没有定义
+    log_error"这个问题就**永远不会被问到** —— 而六份子 skill 里当时只有 2 份定义过
+    它，其余都在失败分支里裸调 `log_error`（首次调用即 `command not found` rc=127，
+    崩在写 .failed 之前 → 磁盘上两个标记都没有 → 编排层误判"已中断"）。
+    本测试的假函数正是把这个漏洞盖住的那层纸。
+
+    修法：不注入假的，改用**文档自己的**定义。某份文档若没定义，骨架里就没有 ——
+    测试当场以 rc=127 失败，漏洞变成可观测的。定义在文档哪个围栏里不重要
+    （align-sort/fastp-qc 在配置段、其余四份在门禁段），只要**本文档**里有即可。
+    """
+    text = open(path, encoding="utf-8").read()
+    return [ln for ln in text.splitlines()
+            if re.match(r"^log_[a-z_]+\(\)\s*\{.*\}\s*$", ln)]
+
+
 def build_stage_script(path, tmp):
-    """把抽出的段包进最小骨架，变成可直接 bash 执行的脚本。"""
+    """把抽出的段包进最小骨架，变成可直接 bash 执行的脚本。
+
+    ⚠️ `log_*` 用**该文档自己定义的**，不再硬编码注入假的（见
+    `extract_log_definitions` 的说明）：注入假函数会让"模板是否自足"永远测不到。
+    """
     script = os.path.join(tmp, "stage.sh")
     with open(script, "w", encoding="utf-8") as f:
         f.write("set -euo pipefail\n"
-                'log_error() { echo "[ERROR] $*" >&2; }\n'
-                'RUN_DIR="$1"\n'
+                + "".join(ln + "\n" for ln in extract_log_definitions(path))
+                + 'RUN_DIR="$1"\n'
                 + extract_verifier_block(path)
                 + '\necho "REACHED_VERIFIER_CHECK"\n')
     return script
@@ -170,3 +197,34 @@ def test_all_templates_use_the_same_guard_shape():
         shapes[rel] = (has_empty_check, has_isfile)
     bad = {k: v for k, v in shapes.items() if v != (True, True)}
     assert not bad, f"这些模板的守卫不是「判空 + 判存在」两段式：{bad}"
+
+
+@pytest.mark.parametrize("rel", sorted(TEMPLATE_FILES))
+def test_template_defines_every_log_function_it_calls(rel):
+    """★本轮新增防线：模板调用的每个 `log_*` 必须在**本文档内**有定义。
+
+    为什么这条重要（第二轮审计 major，实测确认）：门禁段的 `log_error` 调用
+    **全在失败分支里**。某份文档只调用不定义时，LLM 照抄生成的脚本在"本该写
+    `.failed` 并打印原因"的路径上反而崩在写标记之前（`command not found`，
+    rc=127）—— 磁盘上 `.done`/`.failed` 都不存在，编排层四态判定归为"已中断"，
+    引用户去查一个不存在的进程。**失败报告路径本身的失败**是最难自查的一类：
+    它只在已经出错时才出现，而"没有标记"又被归因到别处。
+
+    实测：本测试原先在骨架里硬编码注入了一个假的 `log_error()`，于是这个问题
+    永远问不出口。改为用文档自己的定义后，本条即是那条缺失的判据。
+    """
+    text = open(os.path.join(REPO, rel), encoding="utf-8").read()
+    i = text.find('VERIFIER="$(python')
+    j = text.find("\nfi\n", i)
+    seg = text[i:j + 4]
+    called = set(re.findall(r"\b(log_[a-z_]+)\b", seg))
+    if not called:
+        pytest.skip(f"{rel}: 门禁段未调用任何 log_* 函数")
+    defined = set(re.findall(r"^(log_[a-z_]+)\(\)\s*\{", text, re.M))
+    missing = sorted(called - defined)
+    assert not missing, (
+        f"{rel}: 门禁段调用了 {missing}，但**本文档内没有定义** —— "
+        f"照抄生成的脚本执行到该行会 `command not found`（rc=127）。"
+        f"而这些调用全在失败分支里：本该写 .failed 的路径反而崩在写标记之前，"
+        f"磁盘上两个标记都没有，编排层会误判成「已中断」。"
+        f"本文档已定义：{sorted(defined)}")

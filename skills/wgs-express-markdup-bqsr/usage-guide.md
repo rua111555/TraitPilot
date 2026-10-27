@@ -34,7 +34,8 @@ via the `PBRUN()` docker wrapper (rendered by params-propose); container sees on
 card, so pbrun uses `--num-gpus 1`:
 
 ```bash
-PBRUN "${GPU_IDX}" markdup    --in-bam "${INPUT_BAM}" --out-bam "${MARKDUP_BAM}" \
+# ⚠️ markdup 的 --ref 是必需参数（实测缺它 rc=2 "the following arguments are required: --ref"）
+PBRUN "${GPU_IDX}" markdup    --ref "${REF}" --in-bam "${INPUT_BAM}" --out-bam "${MARKDUP_BAM}" \
                     --out-duplicate-metrics "${METRICS}" --num-worker-threads "${per_gpu_cpus}" --num-gpus 1
 PBRUN "${GPU_IDX}" bqsr       --ref "${REF}" --in-bam "${MARKDUP_BAM}" \
                     --knownSites "${KNOWN_SNPS}" --knownSites "${KNOWN_INDELS}" \

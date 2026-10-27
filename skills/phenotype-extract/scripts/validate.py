@@ -229,12 +229,34 @@ def validate_batch(rows, pcol, task=None, *, max_fail_rate=0.05,
                 + (f"；越界: {'; '.join(bad[:5])}" if bad else ""))
 
     # ---- 2. 失败率 ----
-    n_fail = int((df["状态"] != "ok").sum()) if total and "状态" in df.columns else 0
-    rate = (n_fail / total) if total else 0.0
-    report.add(
-        "fail_rate", "hard", rate <= max_fail_rate,
-        f"{n_fail}/{total} 个样本失败（{rate:.1%}），阈值 ≤{max_fail_rate:.0%}"
-        + ("" if rate <= max_fail_rate else "；先查明细 CSV 的『状态』列"))
+    # ⚠️ 与 value_range 同一形态的**假 PASS**（第二轮审计实测）：早期这里写的是
+    #    `n_fail = ... if total and "状态" in df.columns else 0` —— 缺 `状态` 列时
+    #    n_fail 取 0、rate 取 0.0，于是判据以 **hard 级 `[PASS] fail_rate: 0/3 个
+    #    样本失败（0.0%）`** 出现在报告里。它**什么也没断言**，但读报告的人只会看到
+    #    一个绿色的"失败率 0%"，比"没判"更坏：没判至少不误导。
+    #    触发路径不是边角——`{trait}_phenotype_gwas_gapit.csv` 是 `Taxa,<trait>` 两列、
+    #    **没有状态列**，而它正是下游 GWAS 实际消费的文件之一（gwas-gemma/SKILL.md:34、
+    #    gwas-pipeline/usage-guide.md:15）；按模块 docstring 的设计意图在 GWAS 入口
+    #    重新校验它时，走的就是这条分支。
+    #    故改为与 value_range 一致的处置：前提不满足 → **明说未判**（warn），
+    #    缺口在报告里看得见，而不是发一张空头 PASS。
+    rate_ready = bool(total) and "状态" in df.columns
+    if not rate_ready:
+        report.add(
+            "fail_rate", "warn", False,
+            ("**未做失败率判定** —— CSV 里没有 `状态` 列，无法区分「推理成功的样本」"
+             "与「失败样本」。注意这不是「失败率为 0」：本判据**什么也没断言**。"
+             "本门禁的明细 CSV（`*_phenotype.csv`）自带该列；"
+             "按 `Taxa,<trait>` 形态裁剪过的导出（如 GAPIT 产物）请并回明细表再复核"
+             if total else
+             "**未做失败率判定** —— 没有任何样本行（空表）"))
+    else:
+        n_fail = int((df["状态"] != "ok").sum())
+        rate = n_fail / total
+        report.add(
+            "fail_rate", "hard", rate <= max_fail_rate,
+            f"{n_fail}/{total} 个样本失败（{rate:.1%}），阈值 ≤{max_fail_rate:.0%}"
+            + ("" if rate <= max_fail_rate else "；先查明细 CSV 的『状态』列"))
 
     # ---- 3. 非常数（防模型没真跑）----
     vals = pd.to_numeric(df[pcol], errors="coerce").dropna() if (total and pcol in df.columns) else pd.Series(dtype=float)
@@ -251,16 +273,58 @@ def validate_batch(rows, pcol, task=None, *, max_fail_rate=0.05,
                    f"有效值仅 {n} 个（<3），无法判断是否为常数输出")
 
     # ---- 4. 参照一致性 ----
+    #
+    # ⚠️ 本段与 value_range 段**同一形态**的坑（第二轮审计实测）：早期写法是
+    #    `if rc and n >= 3:` —— 参照列找不到（忘带 --nir-xls、xls 列名对不上、
+    #    经 --corr-xls 关联后 id2ref 为空……）时整段**不执行**：报告里既无 PASS
+    #    也无 WARN，`nir_agreement` **连一行都不出现**，末尾照打"✅ 全部检查通过"、
+    #    rc=0。用户显式给了 `--min-nir-r 0.6`（= 他的验收标准）也照样消失 ——
+    #    而"报告里没出现"与"这条判据通过了"在读者眼里是同一件事。
+    #    这恰恰是最难自查的一种：报告全绿、warnings 为空，读的人无从知道有一条
+    #    他明确要求的判定从未运行。
+    #    真实场景：跑 162 样本时忘带 --nir-xls（本机 161 个样本有真值、r≈0.73 正常），
+    #    或关联表列名对不上导致 sample2id/id2ref 都是 0 条 —— 此时"模型加载错、
+    #    预测与真值反相关"这类最强异常信号**没有任何门禁在看**。
+    #
+    # 分级（两条判据分开定的，别混）：
+    #   · 判定**运行了**：显式阈值 → hard；默认阈值 → warn（理由见下方原注释）
+    #   · 判定**跑不起来**：一律登记一条"未做该判定"，让缺口在报告里看得见；
+    #     若用户**显式要求过**，则判 **hard** —— 与 `min_variants` 同一原则：
+    #     "想开却没生效必须被看见"，声明的验收标准不能被静默跳过。
+    #     未显式要求时只 warn：--nir-xls 按文档是可选的，缺参照本身不是错误。
+    explicit_nir = min_nir_r is not None
+    thr_nir = float(min_nir_r) if explicit_nir else 0.6
+
+    def _nir_unavailable(why):
+        """参照判定跑不起来时的登记：明说没判（而非静默消失）。"""
+        report.add(
+            "nir_agreement", "hard" if explicit_nir else "warn", False,
+            why + ("。⚠️ **你显式要求了 --min-nir-r，该判定却无法运行** —— "
+                   "声明的验收标准没有被验证。补上参照数据（--nir-xls / --corr-xls），"
+                   "或去掉 --min-nir-r 明确表示这次不做一致性把关" if explicit_nir else
+                   "（未做该判定；如需把关请提供 --nir-xls 与 --corr-xls）"))
+
     rc = _ref_col(df, pcol) if total else None
-    if rc and n >= 3:
+    if not rc:
+        _nir_unavailable(
+            "明细里没有参照真值列（`*NIR_%` / `*_ref`）—— 常见原因：提取时没给 "
+            "`--nir-xls`，或关联表列名对不上使 sample2id/id2ref 为空")
+    elif n < 3:
+        _nir_unavailable(f"有效值仅 {n} 个（<3），无法算相关")
+    else:
         a = pd.to_numeric(df[rc], errors="coerce").values
         b = pd.to_numeric(df[pcol], errors="coerce").values
         m = ~np.isnan(a) & ~np.isnan(b)
-        if m.sum() >= 3:
+        if m.sum() < 3:
+            # 主脚本产出的明细**总是**带参照列（插件会给它填 None），所以
+            # "忘了 --nir-xls"这个真实场景走的正是本分支：列在、值全是空。
+            _nir_unavailable(
+                f"参照非空仅 {int(m.sum())} 条（<3）—— 参照列存在但没有可比对的值")
+        else:
             r = float(np.corrcoef(b[m], a[m])[0, 1]) if np.std(b[m]) and np.std(a[m]) else float("nan")
             if math.isnan(r):
-                report.add("nir_agreement", "warn", False,
-                           f"{int(m.sum())} 条参照，预测或参照为常数，无法算相关")
+                _nir_unavailable(
+                    f"{int(m.sum())} 条参照，预测或参照为常数，无法算相关")
             else:
                 # 分级取决于**用户有没有明说**：
                 #   · 显式给了 --min-nir-r → 这是他声明的验收标准，没达到就该拦（hard）
@@ -269,17 +333,13 @@ def validate_batch(rows, pcol, task=None, *, max_fail_rate=0.05,
                 #     "喊狼来了"，最终被绕过而彻底失去保护 —— 故只告警（warn）
                 # 早期版本**一律 warn**，于是"模型加载错、预测与真值反相关"这种
                 # 最强的整批异常信号也照放（实测 r=0.382 仍旧 EXIT=0）。
-                explicit = min_nir_r is not None
-                thr = float(min_nir_r) if explicit else 0.6
                 report.add(
-                    "nir_agreement", "hard" if explicit else "warn", r >= thr,
-                    f"预测 vs 参照 r={r:.3f}（{int(m.sum())} 条，阈值 ≥{thr}）"
-                    + ("" if r >= thr else
+                    "nir_agreement", "hard" if explicit_nir else "warn", r >= thr_nir,
+                    f"预测 vs 参照 r={r:.3f}（{int(m.sum())} 条，阈值 ≥{thr_nir}）"
+                    + ("" if r >= thr_nir else
                        "；预测与真值不符，请先确认模型/阈值/关联表"
-                       + ("（阈值由 --min-nir-r 指定，未达到即拦截）" if explicit else
+                       + ("（阈值由 --min-nir-r 指定，未达到即拦截）" if explicit_nir else
                           "（默认阈值仅告警；确认过就加 --min-nir-r 让它变成硬性拦截）")))
-        else:
-            report.add("nir_agreement", "warn", False, f"参照非空仅 {int(m.sum())} 条（<3），跳过")
 
     # ---- 5. 产出样本数 ----
     report.add(
