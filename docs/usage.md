@@ -4,9 +4,10 @@
 > 配置从本目录 `config.json` 读取——**不依赖 Claude Code**。
 > 自带 18 个技能（WGS / GWAS 两大管线 + 表型提取）。入口在仓库根 `agent/`。
 >
-> 本文覆盖：安装与凭证、三种入口、全部命令行参数、环境变量、REPL 命令、Web 前端、
+> 本文覆盖：安装与凭证、版本号、三种入口、全部命令行参数、环境变量、REPL 命令、Web 前端、
 > 12 个可选 harness 能力、技能机制、端到端示例、故障排查。
-> 设计与实现细节见 `docs/harness-gap-analysis.md`，依赖决策见 `docs/dependency-strategy.md`。
+> 版本变更历史见 [`CHANGELOG.md`](../CHANGELOG.md)；设计与实现细节见 `docs/harness-gap-analysis.md`，
+> 依赖决策见 `docs/dependency-strategy.md`。
 
 ---
 
@@ -116,6 +117,17 @@ cd ~/TraitPilot && python3 run.py list    # 自动探测到仓库根
 
 ## 2. 三种入口
 
+### 2.0 版本号
+
+```bash
+python3 run.py --version        # 或 python3 -m skill_agent --version
+# TraitPilot 0.2.0
+```
+
+**版本号的唯一载体是仓库根的 [`VERSION`](../VERSION) 文件** —— `skill_agent.__version__`
+从它读取，REPL 启动横幅也会显示。改版本只改这一处，不会出现文件与代码两处硬编码各自漂移。
+每个版本为什么值得单独发，见 [`CHANGELOG.md`](../CHANGELOG.md)。
+
 ### 2.1 列技能
 
 ```bash
@@ -157,6 +169,7 @@ python3 run.py chat -p "列出 phenotype-extract 提供哪些表型" -m DSv4-fla
 | `--project DIR` | 项目根（含 `skills/`） | 从 cwd 向上自动探测 |
 | `--skills-dir DIR` | 显式技能目录 | `<project>/skills` |
 | `--config FILE` | 显式 config.json 路径 | `<project>/config.json` 或 `./config.json` |
+| `--version` | 打印版本号并退出（**不读 config.json、不需要凭证**） | — |
 | `--cwd DIR` | Bash 等工具的执行目录 | = 项目根 |
 | `--permission {auto,ask}` | `auto`：危险命令仅告警；`ask`：每个 Bash 先询问 | `auto` |
 | `--max-tokens N` | 单次响应 token 上限 | `8192` |

@@ -11,17 +11,27 @@
 """
 import numpy as np
 
-from ._common import foreground_mask
+from ._common import foreground_mask, PhenotypeError
 
 
 def compute_imf(ctx):
-    """ctx: 见主脚本 phenotype_extract.py (含 img/seg/sample/thresh/mappings)。返回 (value, extra)"""
+    """ctx: 见主脚本 phenotype_extract.py (含 img/seg/sample/thresh/mappings)。返回 (value, extra)
+
+    ⚠️ 抠图失败必须**抛错**，不能返回兜底值：ROI 面积为 0 时若除以 max(meat_px, 1)，
+    会得到 IMF=0.0% —— 一个落在合法值域内、看起来完全正常的数。这种错会一路带进
+    GWAS 且事后无法从数值上识别（分不清「真没脂肪」还是「抠图失败」）。
+    因此这里显式判空并抛 PhenotypeError，主脚本会把它记成 fail 行而非数值 0。
+    """
     img = ctx["img"]       # BGR uint8
     seg = ctx["seg"]       # int 数组类标签 (0=背景,1=脂肪)
     roi = foreground_mask(img, ctx.get("thresh", 30))
     meat_px = int(roi.sum())
+    if meat_px <= 0:
+        raise PhenotypeError(
+            f"前景抠取失败：ROI 面积=0（thresh={ctx.get('thresh')}）；"
+            f"图像对比度/底板颜色与阈值不匹配，调 --thresh 后重试")
     fat_px = int((seg == 1)[roi].sum())
-    ratio = 100.0 * fat_px / max(meat_px, 1)
+    ratio = 100.0 * fat_px / meat_px
 
     extra = {"组织面积_px": meat_px, "脂肪面积_px": fat_px}
     m = ctx.get("mappings") or {}
@@ -41,4 +51,6 @@ TASK = {
     "pheno_col": "IMF_预测_%",
     "compute": compute_imf,
     "mask_encode": lambda seg: np.where(seg == 1, 38, 0).astype(np.uint8),
+    # 出口校验声明：液/气界面上脂肪像素占比的物理值域就是 0~100%
+    "validate": {"value_range": [0.0, 100.0]},
 }

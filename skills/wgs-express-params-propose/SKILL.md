@@ -171,6 +171,8 @@ LLM **必须**生成以下 JSON 文件并保存至 `{RUN_DIR}/run.params.json`�
   },
   "output_dir_base": "<GENO>/temp",
   "fastq_dir": "<GENO>/fastq",
+  "verifier_path": "<REPO>/skills/wgs-expressive-pipeline/scripts/stage_verify.py",
+  "min_variants": 0,
   "compute_backend": "parabricks",
   "server_detection": {
     "total_cores": 128,
@@ -216,6 +218,26 @@ LLM **必须**生成以下 JSON 文件并保存至 `{RUN_DIR}/run.params.json`�
 > 说明：`compute_backend` 为 `parabricks` 时，阶段 1-4 的脚本按 `parabricks` 块生成
 > Parabricks 命令；阶段 5 过滤无论何种后端恒用 GATK（CPU）。`parallelism` 块始终保留，
 > 作为回退 GATK 路径与 Java 工具（MarkDuplicates/过滤）的线程基准。
+>
+> **`verifier_path` 必须写成绝对路径**（`<REPO>` = 本仓库根，即 `skills/` 的上一级）。
+> 阶段脚本位于 `{RUN_DIR}/scripts/`，与仓库无固定相对关系，只能靠这里解析出的绝对路径
+> 定位校验器。
+>
+> **`min_variants` = 位点数下限**，供 Stage 3/4/5 的"变异数异常少"判据使用：
+> 校验器在调用方未传 `--min-variants` 时**读回本字段**（与 `verifier_path` 同范式）。
+> 取值按**本次运行的参考基因组大小与队列规模**推算 —— 没有普适默认值（人类全基因组
+> 队列通常 ≥ 数百万位点；本仓库探针用的 200kb 迷你 ref 则差 4 个数量级）。
+> **必须与用户确认后写入**，不要自己拍一个数：拍高了拦健康数据，拍低了形同虚设。
+> 用户明确不做此判定时写 `0`（= 未声明，校验器登记一条 warn 明说"未做该判定"）。
+> ⚠️ 不要写 `"1M"` 这类字符串、负数或小数 —— 校验器会判 **hard 不通过**（想开却没生效
+> 必须被看见，而不是静默退回"未声明"）。
+>
+> 调用方是**阶段脚本自己**（不是编排层代劳）：每个阶段 skill 的收尾门禁段都从
+> `${RUN_DIR}/run.params.json` 读出本字段赋给 `VERIFIER`，再以
+> `python "${VERIFIER}" --stage ...` 调用。本字段缺失时，门禁段会写 `.failed`
+> 并以 `exit 1` 结束 —— 属有意为之：**校验器定位不到就不放行**（宁可早失败，
+> 也不要静默跳过校验）。注意这类失败是**环境问题**而非数据问题，`.failed` 里会
+> 明确写出这一点，免得排查被引向数据。
 
 ## 用户审核
 

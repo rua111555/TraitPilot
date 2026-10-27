@@ -58,10 +58,58 @@ conda run -n Phenotype python phenotype_extract.py --pheno IMF
 | `imf_phenotype.csv` | 明细：Taxa/个体号/图像/组织与脂肪像素面积/IMF_预测_%/参照(NIR)真值/状态 |
 | `imf_phenotype_gwas_plink.txt` | PLINK/GEMMA：`<样本> <样本> <IMF>` 无表头，**仅含模型预测到的样本，不做缺失填充** |
 | `imf_phenotype_gwas_gapit.csv` | GAPIT：`Taxa,IMF` 表头 |
+| `imf_verify.json` | **出口校验报告**：每条判据的结论与实测值 |
 
 PLINK 行序与 `--fam` 指定的基因型 `.fam` 的相对顺序一致（`--fam`/`$FAM_PATH` 仅作排序基准，缺省按样本号排）。
 
-## 新增一个表型（~30 行代码，无需改框架）
+## 出口校验门禁（结果值校验）
+
+**表型提取的错误大多是静默的** —— 抠图失败、模型没加载对、阈值与数据不匹配，产出的
+往往不是一个报错，而是一个**看起来合理的数值**（典型：抠图失败时若用 `max(meat_px,1)`
+兜底，会得到 `IMF=0.0%`，落在合法值域内）。这种错在明细表里翻不出来，却会一路带进
+GWAS，事后没人能判断那个 0.0 是"真的没脂肪"还是"抠图失败"。
+
+因此提取流程**在写 GWAS 表型文件之前**做出口校验（`scripts/validate.py`）：
+
+| 判据 | 级别 | 含义 |
+|------|:----:|------|
+| `value_range` | hard¹ | 值须落在插件声明的物理值域内（IMF 为 `[0,100]`） |
+| `fail_rate` | hard | 失败样本占比 ≤5%（`--max-fail-rate` 可调） |
+| `not_constant` | hard | 不能所有样本同值 —— 那是模型没真跑的最常见形态 |
+| `sample_count` | hard | 可产出样本数 ≥ `--min-samples` |
+| `sample_uniqueness` | hard | 同一 `Taxa` 只能有**一个**成功测量值。按图像一行的固有风险：同一个体拍多张时，PLINK 导出按键去重、GAPIT 导出保留全部行 → **两个 GWAS 文件静默分歧**；多次测量值互相矛盾时更无从取舍。拦截信息里会区分"有重复个体"与"重复个体间值互相矛盾" |
+| `nir_agreement` | warn | 预测 vs 参照真值的相关系数 ≥ `--min-nir-r`（建议 0.6） |
+
+> ¹ **`value_range` 的级别取决于插件是否声明值域**：插件写了 `validate.value_range`
+> 才是 hard；**没写则降级为 warn 并明说"未做该判定"**（物理不可能的值不会被拦，但报告里
+> 看得见这件事没做）。一个没声明值域的新插件不会因此静默失去越界保护而不留痕迹 ——
+> 但也**别把值域当常量**：它由插件按自己的表型语义声明（IMF 是 `[0,100]`，别的表型可能是
+> 比率、计数或负值）。
+
+**拦截行为**：hard 判据未过 → **不写出 GWAS 表型文件**（`imf_phenotype_gwas_*`），
+退出码 1；但**明细 CSV 与校验报告仍写出**，供排查根因。warn 未过 → 照常产出，仅告警。
+
+```bash
+# 需要更严的样本量下限（如 GWAS 前）：
+conda run -n Phenotype python phenotype_extract.py --pheno IMF --min-samples 100
+# 有参照真值时，把相关性纳入门禁：
+conda run -n Phenotype python phenotype_extract.py --pheno IMF --min-nir-r 0.6
+```
+
+> **插件契约**：`compute(ctx)` 在「算不出可信值」时必须抛 `PhenotypeError`，**不得返回
+> 兜底数值**（兜底值通常落在合法值域内，会伪装成正常结果）。插件通过 `TASK` 的
+> `validate.value_range` 声明值域。
+
+**独立复核**（同一个门禁也可事后对任意明细 CSV 跑，供 GWAS 入口复用）：
+
+```bash
+conda run -n Phenotype python scripts/validate.py \
+    --csv "$GENO_DIR/phenotype/IMF/imf_phenotype.csv" \
+    --col 'IMF_预测_%' --range 0 100 --min-nir-r 0.6 --json
+# 退出码 0=通过；1=应拦截（JSON 里 hard_failures 给出原因）
+```
+
+新增表型（~30 行代码，无需改框架）
 
 1. **写代码插件** `scripts/phenotypes/<name>.py`（参考 `imf.py`），定义顶层 `TASK`：
    - `name`/`title`/`description`：随即自动出现在 `--list` 建议里

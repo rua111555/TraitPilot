@@ -28,6 +28,7 @@ import os
 import json
 import time
 import argparse
+import sys
 
 # 数据根目录：由环境变量提供（便于换机器/换物种）；缺省为通用的 $HOME/genomics_data 布局。
 GENO_DIR  = os.environ.get("GENO_DIR",  os.path.join(os.path.expanduser("~"), "genomics_data"))
@@ -41,6 +42,7 @@ import pandas as pd
 
 from phenotypes import load_tasks, get_task
 from phenotypes import _common as C
+from validate import validate_batch
 
 
 def suggest(db_path):
@@ -82,6 +84,55 @@ def suggest(db_path):
     return None
 
 
+def build_gwas_exports(rows, pcol, fam_path):
+    """决定两个 GWAS 导出文件共用的样本集与顺序。返回 (pred, order, not_in_fam)。
+
+    **这是 A4 缺陷的修法核心**，抽成纯函数是为了能被测试直接覆盖（原先内联在
+    ``main()`` 里，只能靠跑整条推理管线才碰得到 —— 而那条路径需要模型与图片）。
+
+    背景：早期版本两个导出各走各的构造方式 ——
+
+      · PLINK: ``pred = {r["Taxa"]: r[pcol] ...}`` 先按键去重，再用
+        ``[iid for iid in fam_order if iid in pred]`` 过滤
+      · GAPIT: ``df[["Taxa", pcol]].dropna()`` 保留**全部**行
+
+    于是只要 ``--fam`` 里缺某个样本，PLINK 少一行、GAPIT 多一行，两个文件被
+    同时当作权威产物写出，且**没有任何机制会发现**（实测复现）。下游用哪个文件
+    取决于跑的是 PLINK/GEMMA 还是 GAPIT，两份样本清单互相矛盾。
+
+    修法不是"加一条检查来发现分歧"，而是**让两边由同一个集合构造**：本函数返回
+    唯一的 ``order``，两处导出都用它，分歧在构造上就不可能发生。
+
+    ``--fam`` 的语义按 SKILL.md 的契约是**排序基准**
+    （"仅作 PLINK 文件样本排序基准(取其在 fam 的相对行序)"），**不是**成员过滤器：
+
+      · fam 里有、本次没预测到的样本 → 合理地不出现（它们本来就没有表型值）
+      · 有预测值、但不在 fam 里的样本 → **保留**，追加在 fam 序之后
+        （早期把它们静默丢掉，等于拿排序基准当了过滤器 —— 用户以为只是换了个
+        顺序，实际丢了样本）
+
+    追加上去的样本排在末尾，与基因型文件的行不再对应 —— 这一点由调用方
+    打印警告说明（GEMMA 的 ``-p`` 是按行序对齐的）。返回 ``not_in_fam`` 就是为了让它能说。
+    """
+    pred = {r["Taxa"]: r[pcol] for r in rows
+            if r["状态"] == "ok" and r[pcol] == r[pcol]}
+    not_in_fam = []
+    fam_used = None
+    if fam_path and os.path.isfile(fam_path):
+        fam_order = C.read_fam(fam_path)
+        fam_used = [iid for iid in fam_order if iid in pred]
+        not_in_fam = sorted(set(pred) - set(fam_order))
+    order = (fam_used + not_in_fam) if fam_used is not None else sorted(pred)
+
+    # 不变量：两个导出的样本**集合**必须一致（顺序可以不同，PLINK 要按 fam 序）。
+    # 这条断言防的是**将来**有人只改一处导出而又引入分歧。
+    if sorted(order) != sorted(pred):
+        raise AssertionError(
+            f"内部错误：PLINK 与 GAPIT 的样本集不一致 "
+            f"({sorted(set(order) ^ set(pred))}) —— 导出路径被改坏了")
+    return pred, order, not_in_fam
+
+
 def main():
     ap = argparse.ArgumentParser(description="通用表型提取: DB图片→模型→CSV→GWAS表型")
     ap.add_argument("--pheno", default=None,
@@ -107,6 +158,13 @@ def main():
                     help="同时把预测 mask 存到 {outdir}/{pheno}/masks/")
     ap.add_argument("--allow-download", action="store_true",
                     help="允许联网下载骨干权重; 默认离线用本地 HF 缓存")
+    # ---- 出口校验门禁 ----
+    ap.add_argument("--max-fail-rate", type=float, default=0.05,
+                    help="失败样本占比上限(默认 0.05=5%%), 超出则不写出 GWAS 表型文件")
+    ap.add_argument("--min-samples", type=int, default=1,
+                    help="可产出样本数下限(默认 1), 低于则不写出")
+    ap.add_argument("--min-nir-r", type=float, default=None,
+                    help="预测 vs 参照真值的最小相关系数(默认不判; 建议 0.6)")
     args = ap.parse_args()
 
     if not args.pheno:
@@ -122,6 +180,17 @@ def main():
 
     if not args.allow_download:
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
+    # ---- --fam 的可用性在**开工前**就交代清楚 ----
+    # ⚠️ 早期版本把 `args.fam and os.path.isfile(args.fam)` 的判断推迟到导出那一刻，
+    #    于是「传了 --fam 但路径写错 / 文件被删」会**静默**退回样本号排序 —— 用户以为
+    #    已按基因型文件对齐，实际没有，而 GWAS 里样本顺序错位是个不会报错的错误。
+    #    这里在推理开始前（昂贵步骤之前）就告知，让用户能中断重跑。
+    if args.fam and not os.path.isfile(args.fam):
+        print(f"[warn] --fam 指定的文件不存在: {args.fam}\n"
+              f"       PLINK 导出将**退回按样本号自然排序**，而非按该 .fam 的行序 ——\n"
+              f"       若下游要靠行序与基因型文件对齐，这个顺序很可能是错的。\n"
+              f"       检查路径，或用 $FAM_PATH 环境变量指定。", flush=True)
 
     outdir = os.path.join(args.outdir, task["name"])
     os.makedirs(outdir, exist_ok=True)
@@ -184,19 +253,29 @@ def main():
                            "thresh": args.thresh, "mappings": mappings,
                            "device": args.device, "args": args}
                     value, extra = task["compute"](ctx)
-                    r[pcol] = round(float(value), 4)
+                    # 插件必须给出可用数值；NaN/Inf 一律计为失败样本，
+                    # 不能留下「状态=ok 但值为 NaN」的矛盾行（那会污染后续统计）
+                    fv = float(value)
+                    if fv != fv or fv in (float("inf"), float("-inf")):
+                        raise C.PhenotypeError(f"插件返回了非有限数值: {value!r}")
+                    r[pcol] = round(fv, 4)
                     r.update({k: v for k, v in extra.items() if k != pcol})
                     if masks_dir and mask_encode:
                         cv2.imwrite(os.path.join(masks_dir, f"{num}_mask.png"),
                                     mask_encode(seg))
                     ok = True
+                except C.PhenotypeError as e:
+                    # 校验性失败（插件明确判定算不出可信值）——原因原样透出
+                    err = str(e)
                 except Exception as e:
                     err = f"compute/infer失败: {e}"
         note = (f"{time.time()-t0:.2f}s" if ok else ("err:" + err))
         r["状态"] = "ok" if ok else f"fail:{err}"
         rows.append(r)
-        print(f"[{idx:>3}/{len(images)}] {r['Taxa']:>6} {note}  {pcol}="
-              f"{r[pcol]:.2f}%", flush=True)
+        v = r[pcol]
+        shown = f"{v:.2f}%" if v == v else "-"     # NaN（失败样本）不打印成 nan%
+        print(f"[{idx:>3}/{len(images)}] {r['Taxa']:>6} {note}  {pcol}={shown}",
+              flush=True)
 
     df = pd.DataFrame(rows)
     okn = sum(1 for r in rows if r["状态"] == "ok")
@@ -204,42 +283,85 @@ def main():
     df.to_csv(csv_path, index=False, encoding="utf-8-sig")
     print(f"\n[out1] 明细CSV : {csv_path}  ({len(df)} 行)")
 
-    # ---- GWAS-PLINK/GEMMA: 仅含模型预测到的样本, 不做缺失填充 ----
-    pred = {r["Taxa"]: r[pcol] for r in rows
-            if r["状态"] == "ok" and r[pcol] == r[pcol]}
-    if args.fam and os.path.isfile(args.fam):
-        fam_order = C.read_fam(args.fam)
-        order = [iid for iid in fam_order if iid in pred]
-    else:
-        order = sorted(pred)
+    # ---- 出口校验门禁（明细 CSV 已落盘，失败时有据可查） ----
+    # 校验不过 → 不写 GWAS 表型文件。理由：GWAS 文件是给下游消费的**唯一入口**，
+    # 一旦写出，一个静默错误（如全 0 值、抠图失败）就会一路带进关联分析，
+    # 事后无法从数值上分辨。明细 CSV 保留全部失败原因，供排查。
+    report = validate_batch(rows, pcol, task,
+                            max_fail_rate=args.max_fail_rate,
+                            min_samples=args.min_samples,
+                            min_nir_r=args.min_nir_r)
+    print(report.render(f"表型结果校验 — {trait}"))
+    # 校验报告写盘失败不应拖垮主流程（报告是辅助产物，不是判据本身）——
+    # 但要说出来，不能静默吞掉（否则事后以为有报告可查）
+    verify_path = os.path.join(outdir, f"{trait.lower()}_verify.json")
+    try:
+        with open(verify_path, "w", encoding="utf-8") as f:
+            json.dump({"trait": trait, "column": pcol, "n_rows": len(df),
+                       "n_ok": okn, **report.as_dict()}, f,
+                      ensure_ascii=False, indent=2)
+        print(f"[out4] 校验报告: {verify_path}")
+    except Exception as e:                                    # noqa: BLE001
+        print(f"[warn] 校验报告写盘失败（不影响判定）: {e}")
+
+    if report.blocked:
+        print(f"\n[abort] 表型文件**未**写出（明细 CSV 可供排查）："
+              f"{', '.join(c.name for c in report.hard_failures)}")
+        for c in report.hard_failures:
+            print(f"        - {c.name}: {c.detail}")
+        sys.exit(1)
+
+    # ---- GWAS 两个导出：样本集与顺序由 build_gwas_exports() 统一决定 ----
+    # ⚠️ 这段的核心不变量：**两个导出文件的样本集必须完全相同**（PLINK 的 FID/IID
+    #    行 与 GAPIT 的 Taxa 行）。它们是下游 GWAS 的唯一入口，若一个含 s4、另一个
+    #    不含，同一批表型就有了两份互相矛盾的样本清单，用哪份取决于跑的是 PLINK/GEMMA
+    #    还是 GAPIT —— 而没人会去比对两个文件。门禁的 sample_uniqueness 查的是
+    #    「同一 Taxa 出现多行」，查不到这个（实测：fam 少一个样本时
+    #    PLINK 3 行 / GAPIT 4 行，旧版本两个都照写、rc=0）。
+    #    实现细节与理由见 build_gwas_exports() 的 docstring（抽成纯函数是为了可测）。
+    pred, order, not_in_fam = build_gwas_exports(rows, pcol, args.fam)
+
+    if not_in_fam:
+        # 不拦（有的个体本就没有基因型数据，属正常），但必须说清楚代价：
+        # GEMMA 的 -p 是**按行序**对应的，这些样本被追加在 fam 序之后，
+        # 位置与基因型文件的行并不对应 —— 靠行序对齐时会错位。
+        print(f"\n[warn] 有 {len(not_in_fam)} 个样本算出了表型但**不在 --fam 里**: "
+              f"{not_in_fam[:8]}"
+              f"\n       它们已写入两个 GWAS 文件（保持两文件样本集一致），"
+              f"但排在 fam 行序**之后**。"
+              f"\n       ⚠ GEMMA 的 -p 按行序对齐基因型，这些样本的位置与 .fam 行不对应 ——"
+              f"\n         若要用它们做关联分析，先把基因型文件按同一顺序子集化，或核对 --fam。",
+              flush=True)
+
     plink_path = os.path.join(outdir, f"{trait.lower()}_phenotype_gwas_plink.txt")
     with open(plink_path, "w") as f:
         for iid in order:
             f.write(f"{iid} {iid} {pred[iid]}\n")
     print(f"[out2] GWAS-PLINK: {plink_path}  ({len(order)} 行, 仅含模型预测到的样本)")
+    if args.fam and os.path.isfile(args.fam):
+        print(f"       行序: 与 {os.path.basename(args.fam)} 的行序一致"
+              + (f"（另有 {len(not_in_fam)} 个追加在末尾）" if not_in_fam else ""))
 
     # ---- GWAS-GAPIT: Taxa,trait ----
-    g = df[["Taxa", pcol]].dropna(subset=[pcol])
-    g = g.rename(columns={pcol: trait}).sort_values("Taxa").reset_index(drop=True)
+    # 与 PLINK **同源**：都用 build_gwas_exports() 返回的 order/pred，
+    # 而不是从 df 独立取一遍（那样两条路径就会产出不同的样本集）。
+    g = pd.DataFrame({"Taxa": order, trait: [pred[i] for i in order]})
     gapit_path = os.path.join(outdir, f"{trait.lower()}_phenotype_gwas_gapit.csv")
     g.to_csv(gapit_path, index=False, encoding="utf-8-sig")
     print(f"[out3] GWAS-GAPIT: {gapit_path}  ({len(g)} 行)")
 
-    # ---- 汇总 ----
+    # ---- 汇总（统计量已由上面的门禁报告给出，此处只报耗时与产出） ----
     print("\n========== 汇总 ==========")
     print(f"总耗时 {time.time()-t0_all:.0f}s, 平均 {(time.time()-t0_all)/max(len(images),1):.2f}s/样本")
     print(f"成功 {okn}/{len(images)}   表型列: {pcol}")
-    has = df[pcol].dropna()
-    if len(has):
-        print(f"{pcol}: mean={has.mean():.3f} std={has.std():.3f} "
-              f"min={has.min():.3f} max={has.max():.3f}")
-    ref = [c for c in df.columns if c.endswith("NIR_%") or c.endswith("_ref")]
-    if ref:
-        a = df[ref[0]].astype(float).values
-        m = ~np.isnan(df[pcol].values) & ~np.isnan(a)
+    rc = [c for c in df.columns if c.endswith("NIR_%") or c.endswith("_ref")]
+    if rc:
+        a = pd.to_numeric(df[rc[0]], errors="coerce").values
+        b = pd.to_numeric(df[pcol], errors="coerce").values
+        m = ~np.isnan(a) & ~np.isnan(b)
         if m.sum() >= 3:
-            r = np.corrcoef(df[pcol].values[m], a[m])[0, 1]
-            print(f"对照({ref[0]}): {m.sum()} 条, 预测 vs 参照 r={r:.3f}")
+            r = np.corrcoef(b[m], a[m])[0, 1]
+            print(f"对照({rc[0]}): {m.sum()} 条, 预测 vs 参照 r={r:.3f}")
 
 
 if __name__ == "__main__":

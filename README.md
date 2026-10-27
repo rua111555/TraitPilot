@@ -7,6 +7,11 @@
 API 凭证/配置从本目录的 `config.json` 读取——**不依赖 Claude Code**。
 自带 18 个技能（WGS / GWAS 两大管线 + 表型提取）。
 
+**当前版本**：见 [`VERSION`](VERSION)（唯一载体），变更历史见 [`CHANGELOG.md`](CHANGELOG.md)。
+```bash
+python3 run.py --version        # → TraitPilot 0.2.0
+```
+
 ## 快速开始
 
 ```bash

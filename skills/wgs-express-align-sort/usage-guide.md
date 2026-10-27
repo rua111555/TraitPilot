@@ -30,7 +30,17 @@ to coordinate-sorted BAM files. This is Stage 1 of the WGS expressive pipeline.
 1. **Never pipe BWA into samtools** — BWA stderr contains progress info that
    corrupts the SAM stream. Always write BWA output to a temp SAM file first.
 2. **Always add Read Group (`-R`)** — GATK tools require `@RG` in the BAM header.
-3. **Use conda absolute paths** for all tools — sub-shells may lose PATH.
+   Format: `@RG\tID:{sample}\tSM:{sample}\tLB:{sample}\tPL:ILLUMINA`
+3. **Probe tools with `command -v`** — never hardcode machine-specific conda
+   absolute paths (repo hard rule #5.1). Stage scripts run under
+   `conda run -n Agent bash`, so the tools are already on `PATH`:
+   ```bash
+   resolve_tool() { command -v "$1" || { echo "✗ 找不到 $1 —— 请激活 conda 环境 Agent" >&2; exit 1; }; }
+   BWA="$(resolve_tool bwa)"
+   SAMTOOLS="$(resolve_tool samtools)"
+   ```
+   ⚠ 旧版本这里写的是「Use conda absolute paths for all tools」—— 那会把某台机器的
+   conda 路径固化进脚本，换机即失效，且与仓库硬规则 #5.1 直接冲突。
 
 ## Parabricks / GPU Mode
 
@@ -45,6 +55,7 @@ PBRUN "${GPU_IDX}" fq2bam \
     --ref "${REF_FASTA}" \
     --in-fq "${R1}" "${R2}" \
     --out-bam "${BAM}" \
+    --read-group-sm "${sample_name}" --read-group-lb "${sample_name}" --read-group-pl ILLUMINA \
     --num-cpu "${per_gpu_cpus}" \
     --num-gpus 1 \
     --low-memory --bwa-nstreams 1 \
@@ -56,9 +67,23 @@ PBRUN "${GPU_IDX}" fq2bam \
   default streams OOM loading the bwa index (`cudaSafeCall ... out of memory`).
 - 4.3.x fq2bam already runs MarkDuplicates + BQSR by default (see setup §4.1).
 - Output file name must stay `{sample}.sorted.bam` to honor the Stage 2/3 input contract.
-- Parabricks generates the Read Group automatically.
+- ⚠ **必须显式传 `--read-group-sm "${sample_name}"`** —— 见下方说明。
 - Still run `gzip -t` preflight — corrupted FASTQ breaks fq2bam too.
 - Verify exact flags with `PBRUN 0 fq2bam --help`.
+
+> ⚠ **`--read-group-sm` 是必需项，不是可选优化**（本机实跑 `pbrun fq2bam` 复核）。
+> 旧版本此处写的是「Parabricks generates the Read Group automatically」—— **那句话是错的**：
+> 不传 `--read-group-sm` 时 fq2bam 自动生成的是**写死的常量读组**
+> `@RG\tID:<prefix>.1\tLB:lib1\tPL:bar\tSM:sample`，其中 `SM:sample` 与真实样本号无关，
+> **每个样本都是同一个 `sample`**。后果是连锁的，且全部以"健康数据被拦"的面貌出现：
+> · Stage 1 门禁 `bam[s].readgroup` 是 **hard**（要求 `SM == 文件名里的样本号`）→ 每样本必拦；
+> · 该 `SM:sample` 会**继承到下游** GVCF 的样本列，Stage 3 的 `gvcf[s].samples` /
+>   `gvcf[s].identity` 两条 hard 判据连锁失败；
+> · 整个队列都是 `SM:sample` 时 Stage 4 `CombineGVCFs` 会合并失败或把多样本压成一个。
+> 而 `compute_backend=parabricks` 是 GPU+冒烟通过时的**默认路径** —— 即不传此参数时默认路径全阶段不可用。
+> `--read-group-pl` 用 `ILLUMINA` 与 CPU 路径的 `RG_STR` 保持一致；
+> `--read-group-lb` 传样本号，使同一样本的多个文库可被正确识别。
+> 完整论证见 [`SKILL.md`](SKILL.md) 的「Parabricks 模式」段。
 
 ## 错误预防清单（从实际运行经验总结）
 

@@ -162,10 +162,89 @@ for i in "${!sample_numbers[@]}"; do
     log_done "Sample ${name} done"
 done
 
-# ─── 完成标记 ───
+# ─── 收尾门禁：校验通过才写 .done ───
+# ─── 定位校验器（⚠ 不要写 `conda run -n Agent python`）───
+# 本脚本已由 `conda run -n Agent bash` 启动，该进程 PATH 中**没有 conda 可执行文件**
+# （只有 <conda>/envs/Agent/bin 与系统目录），嵌套调用会以 127 失败：
+# `conda: command not found`。那样数据再健康也会走失败分支，每阶段恒写 .failed、
+# 永不写 .done。`python` 就在同一环境的 PATH 上，直接调用即可。
+# ⚠️ 末尾的 `|| true` 不可省：`VAR="$(cmd)"` 是**赋值**语句，cmd 失败时
+#    `set -e` 会**当场退出整个脚本**（实测 rc=1），下面的 if 兜底永远到不了 ——
+#    于是"run.params.json 不存在/是非法 JSON"这两类配置下磁盘上仍无任何标记。
+#    加了 `|| true` 才能把空值交给下面的显式判空处理。
+VERIFIER="$(python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("verifier_path",""))' "${RUN_DIR}/run.params.json" 2>/dev/null || true)"
+# ⚠️ **不要**写成 `: "${VERIFIER:?...}"` —— 变量为空时它立刻 exit 1（set -e），
+#    会**绕过下面写 .failed 的兜底**：磁盘上既无 .done 也无 .failed，四态判定归为
+#    "已中断"并引用户去查进程，而真实原因只是配置读不到。
+#    实测 5 种畸形 run.params.json：「无文件 / 非法 JSON / 缺键 / 空串」这 4 种
+#    全都无标记，只有「有 verifier_path 但文件不存在」走到了兜底。故改为显式判空。
+if [ -z "${VERIFIER}" ] || [ ! -f "${VERIFIER}" ]; then
+    # ⚠️ 这里必须写 .failed：只 exit 1 会让编排层看到「无 .done 也无 .failed」，
+    #    于是按"已中断"处理、引用户去查进程 —— 而真实原因是环境问题（编排层没写
+    #    verifier_path、仓库被移动、或 RUN_DIR 下 run.params.json 不可读）。
+    log_error "定位不到校验器: '${VERIFIER}'（环境问题，非数据问题）"
+    mkdir -p "${RUN_DIR}/.failed"
+    { echo "stage=00_fastp_qc"; echo "time=$(date '+%F %T')"
+      echo "reason=校验器未指定或不可读：'${VERIFIER}'"
+      echo "这是环境问题，不是数据问题。逐项核对："
+      echo "  1) ${RUN_DIR}/run.params.json 是否存在、能否被 python json.load 解析"
+      echo "  2) 其中的 verifier_path 是否为**非空**且为**绝对**路径"
+      echo "  3) 该路径指向的文件是否还在（仓库被移动过？）"
+    } > "${RUN_DIR}/.failed/00_fastp_qc.failed"
+    exit 1
+fi
+# ─── 样本名单（从 run.params.json 兜底，不依赖脚本里声明了哪个数组名）───
+# ⚠️ 模板里样本循环用的数组名不完全统一（`samples` / `sample_number`/ `sample_names`）。
+#    若这里只认 `sample_names` 而脚本只声明了 `samples`，在 bash 4.2 + `set -u` 下
+#    `${sample_names[*]}` 会直接 `unbound variable` —— 结果是 .done 与 .failed **都不存在**，
+#    编排层把它当成"已中断"，而不是"校验没跑"。故此处显式解析，并在为空时报错。
+# 同上：加 `|| true`，否则 run.params.json 读不出时 set -e 直接退出、
+# 下面的"样本名单为空"分支（会写 .failed）根本到不了。
+SAMPLES_CSV="$(python -c 'import json,sys; print(",".join(json.load(open(sys.argv[1])).get("sample_names") or []))' "${RUN_DIR}/run.params.json" 2>/dev/null || true)"
+if [ -z "${SAMPLES_CSV}" ]; then
+    log_error "样本名单为空（run.params.json 的 sample_names 缺失或为 []）—— 不写 .done"
+    mkdir -p "${RUN_DIR}/.failed"
+    { echo "stage=00_fastp_qc"; echo "time=$(date '+%F %T')"
+      echo "reason=run.params.json 的 sample_names 为空，样本守恒判据无法运行"
+    } > "${RUN_DIR}/.failed/00_fastp_qc.failed"
+    exit 1
+fi
+
+# 先删掉本阶段的旧报告：跑完后它只要存在，就必然是本轮的产物。
+rm -f "${RUN_DIR}/.verify/00_fastp_qc.json"
+if ! python "${VERIFIER}" \
+        --stage 00_fastp_qc --run-dir "${RUN_DIR}" --samples "${SAMPLES_CSV}"; then
+    mkdir -p "${RUN_DIR}/.failed"
+    { echo "stage=00_fastp_qc"; echo "time=$(date '+%F %T')"
+      # ⚠️ 只在报告**属于本轮**时才附上：校验器没跑起来时（路径错/python 缺失），
+      #    .verify/ 里可能还留着上一次运行的文件，照抄会把排查引向数据而非环境。
+      rep="${RUN_DIR}/.verify/00_fastp_qc.json"
+      # 报告在调用校验器**之前**已被删除（见上方 rm -f），所以此处只要存在，
+      # 就一定是**本轮**产出的。不存在 ⇔ 校验器没跑起来或没落盘。
+      if [ -f "$rep" ]; then
+          echo "--- 校验报告（本轮）---"; cat "$rep"
+      else
+          echo "--- 没有本轮校验报告 ---"
+          echo "失败发生在校验器产出报告之前：多为环境问题（${VERIFIER} 不可读 /"
+          echo "python 缺失 / RUN_DIR 无写权限），而不是数据问题。"
+          echo "先看上面的错误行与 ${RUN_DIR}/nohup.out。"
+      fi
+    } > "${RUN_DIR}/.failed/00_fastp_qc.failed"
+    log_error "结果校验未通过，不写 .done"; exit 1
+fi
+
 date > "${DONE_FILE}"
-log_done "Stage 0.5 (fastp QC) complete"
+rm -f "${RUN_DIR}/.failed/00_fastp_qc.failed"   # 清掉上一轮的陈旧失败标记
+log_done "Stage 0.5 (fastp QC) complete (校验通过)"
 ```
+
+> **为什么必须清 `.failed`**：不清的话，重跑该阶段并通过后磁盘上会同时存在 `.done` 与
+> `.failed`。编排层的四态判定**优先读 `.failed`**，于是把这个已修好并通过的阶段报成
+> "校验未通过"，用户被误导去查一个不存在的问题。
+
+> 校验器查每样本的 `.clean_1/2.fq.gz` 是否存在非空、`fastp.json` 可解析且
+> `after_filtering.total_reads > 0`，并把保留率过低（<80%）作为**告警**报出 ——
+> 过滤过猛会丢真实信号，但那是可调参的问题，不该拦下整条管线。
 
 ## JSON 报告摘要
 
@@ -199,7 +278,7 @@ print(f"dup rate: {r['duplication']['rate']:.2%}")  # 诊断用
 4. ✅ 线程数合理（不超服务器核数）
 5. ✅ HTML/JSON 报告已开启（-h -j）
 6. ✅ SESSION-SAFE 保护（`.done` + `.pid`）
-7. ✅ 完成标记写入
+7. ✅ **写 `.done` 前过校验门禁**：`stage_verify.py --stage 00_fastp_qc`（清洗后 FASTQ 非空、JSON 可解析、reads>0），未过则写 `.failed` + `exit 1`
 8. ✅ resume 模式支持（输出文件存在性检查）
 9. ✅ 清洗后输出命名与下游 Stage 1 期望的 BWA 输入一致
 

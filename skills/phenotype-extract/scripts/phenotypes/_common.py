@@ -10,6 +10,13 @@ import pandas as pd
 import cv2
 
 
+# 异常类的**定义**放在 _errors.py（零依赖），这里只再导出。
+# 原因：validate.py 声明了「不 import 任何 ML 依赖」，若从这里导入就会连带
+# `import cv2`，那条声明即失效（实测：屏蔽 cv2 后 import validate 直接失败）。
+# 而类的同一性由模块缓存保证 —— 插件抛的与主脚本捕获的仍是同一个类。
+from ._errors import PhenotypeError  # noqa: F401  （对外 re-export）
+
+
 # ============================ 共享工具: 抠前景目标 ROI ============================
 def foreground_mask(img, thresh=30, min_component=2000):
     """从纯色底板照片抠掉背景, 得到目标物体的二值 mask(最大连通域 + 填洞)。img=BGR。

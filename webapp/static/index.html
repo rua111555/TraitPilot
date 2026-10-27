@@ -285,6 +285,7 @@
     <header>
       <div class="hd">
         <span class="badge"><span id="connDot"></span> <span id="connTxt">连接</span></span>
+        <span class="badge" id="verBadge" title="版本（仓库根 VERSION 文件）">—</span>
         <span class="badge" id="modelBadge">—</span>
         <select id="modelSel" title="模型"></select>
         <select id="permSel" title="权限">
@@ -519,6 +520,8 @@ const CHIPS = [
     const cfg = await (await fetch("/api/config")).json();
     state.model = cfg.model;
     $("#modelBadge").textContent = cfg.model;
+    // 版本号来自仓库根 VERSION 文件（经 /api/config 透出）—— 排障时一眼能看出跑的是哪版
+    if(cfg.version){ $("#verBadge").textContent = "v" + cfg.version; $("#verBadge").title = "TraitPilot " + cfg.version; }
     $("#proj").textContent = "project · " + cfg.project;
     $("#modelSel").innerHTML = cfg.models.map(m=>`<option value="${m}">${m}</option>`).join("");
     $("#modelSel").value = cfg.model;

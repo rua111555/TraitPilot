@@ -13,8 +13,28 @@ TASK 字段:
   pheno_col    CSV 明细中该表型的列名
   compute      fn(ctx) -> (value, extra_cols dict); ctx 见主脚本
   mask_encode  可选 fn(seg)->uint8 保存预测 mask(默认 255=非背景)
+  validate     可选 dict, 供出口校验门禁用。目前支持:
+                 value_range: [lo, hi]  该表型的物理值域(如 IMF 为 [0,100])
+               插件若声明了它就按它判; 未声明则跳过值域判定(仍做整批检查)。
+
+插件契约(重要): compute 在「算不出可信值」时必须抛 PhenotypeError(见 _common),
+  **不得返回兜底数值** —— 兜底值通常落在合法值域内(如抠图失败时 IMF=0.0%),
+  会伪装成正常结果一路带进 GWAS, 事后无法从数值上分辨。
 """
-from ._common import foreground_mask  # noqa: F401   方便插件复用
+# ⚠️ 不要在这里 `from ._common import foreground_mask` —— 那会让任何
+#    `import phenotypes` 都连带 `import cv2`（_common 顶层 import cv2），
+#    于是 validate.py 声明的"不 import ML 依赖"失效：它以独立 CLI 在 GWAS
+#    入口跑时（那边没有 cv2），连加载都做不到。
+#    改用惰性再导出（PEP 562）：只在真的取用 `phenotypes.foreground_mask` 时才
+#    加载 _common，`import phenotypes` 本身保持零重依赖。
+_LAZY = ("foreground_mask", "PhenotypeError")
+
+
+def __getattr__(name):
+    if name in _LAZY:
+        from . import _common
+        return getattr(_common, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 import os
 import importlib

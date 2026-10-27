@@ -431,3 +431,183 @@ print({k: getattr(cfg, k) for k in ("todo","prompt_cache","parallel_tools","retr
 | M13-08 | 归档后再对同 sid `append` 会 split-brain；`unarchive` 用归档文件覆盖根文件会丢新增 append | 并发边界，非用例判据 |
 | M13-08 | `unarchive` 不剥离归档时插入的 `_meta` 首行 | 根文件字节不再等于归档前原文（数据无损，仅多一行注解） |
 | M13-04 | SSE 的 `resume_discarded` 只挂在 `done` 事件 | 首轮以 `error` 结束则拿不到丢弃提示；另 WebSession 常驻缓存使同 sid 二次探测须换新 sid |
+
+---
+
+## 11. 阶段结果校验门禁（2026-10-26）
+
+**背景（用户诉求逐字）**：「在WGS管线或者表型提取的每一步结束之后，需要对结果值进行校验，
+以免出现中途错误还传递到后面步骤」
+
+**改动**：新增两个校验器 + 六个阶段 skill 的收尾门禁 + 编排层四态判定 + 表型侧出口校验。
+
+**跑法**（`samtools`/`bcftools` 需在 PATH —— 校验器用 `command -v` 探测）：
+```bash
+cd /home/chenyuxi/skill/agent
+export PATH=/home/chenyuxi/anaconda3/envs/Agent/bin:$PATH
+/home/chenyuxi/anaconda3/bin/python -m pytest tests/ -q          # 516 passed（含第四批 167 条）
+/home/chenyuxi/anaconda3/bin/python -I tools/concurrency/stage_verify_probe.py   # 30 PASS / 0 FAILED
+/home/chenyuxi/anaconda3/bin/python tools/concurrency/verify_fix_probe.py            # 46 项 / 46 通过
+/home/chenyuxi/anaconda3/bin/python tools/concurrency/skill_doc_consistency_probe.py # FAILED 0
+```
+> 计数随批次演进：首批 269 → 第二批（A1/A2/A7）271 → 第三批（A3/A4/A5/A6 + 版本载体）349
+> → 第四批（F1–F7 + 版本载体）516；探针 33 → 45 → 46。
+> 表中各行只记**该行自己**的实测结果，不重复记总数。
+
+| 用例 | 怎么测 | 实测证据 | 结论 |
+|---|---|---|---|
+| VERIFY-01 | `grep -l stage_verify.py skills/wgs-express-*/SKILL.md \| wc -l` | `6`；每阶段同时含 `.failed` 与 `exit 1` | 具备 |
+| VERIFY-02 | `pytest tests/test_stage_verify.py::test_stage1_empty_bam_is_caught` | 1 passed。空 BAM 触发 `read_count` hard 失败；**同一测试内断言** `samtools quickcheck` 对它返回 0（证明对照有区分度） | 具备 |
+| VERIFY-03 | `pytest ...::test_stage3_real_gvcf_passes ::test_stage3_fake_gvcf_is_caught` | 2 passed。真 GVCF（头部 `##ALT=<ID=NON_REF`）过；普通 VCF 被 `gvcf_marker` 拦 | 具备 |
+| VERIFY-04 | `pytest ...::test_stage4_sample_count_mismatch_is_caught` | 1 passed。VCF 有 SAMPLE_A 而期望 A,B → `samples` hard 失败 | 具备 |
+| VERIFY-05 | `pytest ...::test_stage5_all_filtered_indel_is_caught` | 1 passed。SNP 90% PASS 而 INDEL 全 LowQual → `indel.pass_rate` hard 失败 | 具备 |
+| VERIFY-06 | `pytest ...::test_titv_ratio_parsing_matches_bcftools_format` | 1 passed。造 ts:tv=2:1，解析出 Ti/Tv=2.00（真值） | 具备 |
+| VERIFY-07 | `pytest ...-k 'discrimination or unknown_stage or internal_error'` | 3 passed。好数据 rc=0 / 坏数据 rc=1；未知阶段与内部异常都判失败 | 具备 |
+| VERIFY-08 | 生成真实形态的阶段脚本 → 故意让一个样本产出空 BAM → 执行 → `ls run/.done/ run/.failed/` | 脚本 rc=1；`.done` **空**；`.failed/01_bwa_sort.failed` 存在且含校验报告。**查磁盘真值，未只看退出码** | 具备 |
+| VERIFY-09 | 承 VERIFY-08：修好数据重跑 | 重跑后 `.done` 出现、`.failed` 被清；编排层判定输出 `✅ 01_bwa_sort 已完成` | 具备 |
+| VERIFY-10 | `python -I tools/concurrency/stage_verify_probe.py \| grep G10e` | G10e-1…G10e-5 全 PASS | 具备 |
+| VERIFY-11 | `grep -c verifier_path skills/wgs-express-params-propose/SKILL.md` | ≥1，且文档说明必须是绝对路径、缺失时 `${VERIFIER:?}` 早失败 | 具备 |
+| VERIFY-12 | `pytest tests/test_phenotype_validate.py -q` | 24 passed（含 8 条阴性对照：越界/负值/全同值/全 0/失败率超限/样本数不足/重复个体/NaN 均 blocked） | 具备 |
+| VERIFY-13 | `pytest ...-k 'imf or single_class'` | 3 passed（实测；此前误写 4）。纯黑图+高阈值 → `compute_imf` 抛 `PhenotypeError`；跨模块同一类 identity 成立 | 具备 |
+| VERIFY-14 | `python -I tools/concurrency/stage_verify_probe.py \| grep G10g-3` | PASS：明细 CSV 落盘位置早于 `report.blocked` 判定 | 具备 |
+| VERIFY-15 | `pytest tests/test_stage_verify.py -q -k 'bai or index'` | 5 passed。四种合法索引命名（`foo.bam.bai`/`foo.bai`/`foo.bam.csi`/`foo.csi`）全被识别；markdup 索引 warn、BQSR 索引 hard；真缺 BQSR 索引仍 rc=1。另在 `verify_fix_probe.py` H/I 段以真 samtools 复现（6 项，回退旧实现即失败） | 具备 |
+| VERIFY-16 | `pytest tests/test_stage_verify.py -q -k 'variant_floor or tiny_variant'` | 3 passed。显式 `--min-variants` 时位数不足即 hard 拦截；未声明时登记 warn 明说"未做该判定"且不拦截；高于下限时通过。探针 J 段复现 | 具备 |
+| VERIFY-17 | `pytest tests/test_stage_verify.py -q -k 'stale_index'` | 2 passed。真 samtools 造"200 reads + 索引 → 覆写成 0 reads 空 BAM（沿用旧索引）、并 `os.utime` 回拨索引 mtime" → 门禁 rc=1，`index_stale`/`read_count` 两条 hard 失败；`samtools index` 重建后 rc=0。测试内断言前提（`view -c`=0、`idxstats` rc=0、stderr 含 "older than"）以防场景失真。探针 K 段 4 项（含前提自检与健康 BAM 对照） | 具备 |
+| VERIFY-18 | `python -I tools/concurrency/verify_fix_probe.py \| grep -A4 '^L\.'` | L 段 3 项全 OK。读组 `@RG ID:r0.1 LB:lib1 PL:bar SM:sample PU:r0.1`（真机 `pbrun fq2bam` 在 clara-parabricks:4.3.2-1 容器内的原样输出）→ `readgroup` hard 拦、rc=1；改 `SM:s1` → rc=0。align-sort 模板含 `--read-group-sm "${sample_name}"` | 具备 |
+| VERIFY-19 | `python -I tools/concurrency/verify_fix_probe.py \| grep -A6 '^M\.'` | M 段 5 项全 OK。真 bgzip+tabix 产物上裸 `tabix -p vcf` rc=1（`the index file exists`）、`tabix -f` rc=0；端到端把裸 tabix 放进 `set -euo pipefail` 脚本 → 其后的 `touch` 未执行（门禁行够不到，实测复现）；两个阶段 skill 已无比做性质的裸 tabix | 具备 |
+| VERIFY-20 | `pytest tests/test_stage_verify.py -q -k dup_rate` | 6 passed。真 GATK MarkDuplicates metrics（含 `LB lib1`）：解析得 `0.0`（真值），而同测试内断言**朴素正则会得 `1.0`** → 区分度成立；0.375 / 0.05 亦正确；非 metrics 文件返回 `(None, 原因)` 不抛异常。探针 N 段 5 项 | 具备 |
+| VERIFY-21 | `pytest tests/test_phenotype_validate.py -q` | 30 passed（含 6 条 A4 专项）。fam 缺 s4 时两导出同为 `s1..s4`（旧实现 PLINK 3 / GAPIT 4）；fam 外样本保留并返回 `not_in_fam=['s4']`；fam 行序生效（`s3,s1,s2` 非字典序）。探针 P 段 3 项 | 具备 |
+| VERIFY-22 | `pytest tests/test_stage_gate_template.py -q` | 57 passed。**5 种畸形配置 × 7 份模板**：rc≠0 且 `.failed` 存在含 `reason=`，且未走到校验调用；阳性对照下健康配置 rc=0 并**走到**校验器。抽真实 shell 段落在**真 bash** 里跑。回退 `\|\| true` → 3 条失败（已验区分度） | 具备 |
+| VERIFY-23 | `pytest tests/test_stage_verify.py -q -k 'combined or genomicsdb'` | 4 passed。缺 combined → hard 拦 rc=1（旧实现 rc=0 且报告 0 次提到 combined）；0 字节 → 报"存在但为空"（与缺失区分）；有 GenomicsDB 工作区 → warn 且 rc=0；两者都在 → 放行。探针 O 段 4 项 | 具备 |
+| VERIFY-24 | `pytest tests/test_stage_verify.py -q -k min_variants` | 7 passed。`run.params.json` 写 `min_variants=1000` 时 2 位点队列被 hard 拦 rc=1、报告写明下限来源；CLI 紧值覆盖文件松值；键不存在仍 warn 不拦；六种畸形值（`"1M"/0/-5/3.5/true/null`）一律 hard 拦住；Stage 1 不受影响。**变异验证**：拆掉回落分支 → 7 条失败。见 §11.5 F6 | 具备 |
+| PROBE-01 | `pytest tests/test_probe_selfcheck.py -q` | 4 passed（AST 静态检查：断言不得引用跨段陈旧结果变量、不得以 stdout 子串为唯一依据、结构化助手真被调用、被审计点名的 C/D 两段仍在）。**变异验证**：删 `bqsr.coverage` 登记 → 修复前探针 45/45 全绿、修复后 `[BAD]`；删 `reads_conservation_lost` 检测 → 修复前全绿（且打印自相矛盾的"rc=1（期望 1）；无 reads_conservation_lost"）、修复后抓住。见 §11.5 F7 | 具备 |
+| VERIFY-25 | `pytest tests/test_defect_class_guards.py -q` | 153 passed。**按写法扫全部 skill 文档**（自动发现，含 references/usage-guide）：裸 tabix / 读组自动生成主张 / 硬编码 conda 路径 / `${SAMPLES_CSV}` 无赋值 / 写 `.done` 不清陈旧 `.failed` / 比对率只写 warn / §2.2 模板自足。另含 `test_guards_actually_discriminate`：每条谓词配**负控**（真违规必须抓到）与**正控**（纠正叙述不得误伤），并做过变异验证（改宽→报"误伤"，改恒假→报"漏报"）。见 §11.5 F1/F2/F3/F5 | 具备 |
+| VERSION-01 | `pytest tests/test_version.py -q` | 5 passed。`VERSION` 文件为 `0.2.0`（干净 `X.Y.Z` + 单行）；`__version__` 与文件逐字相等；`run.py --version` rc=0 输出 `TraitPilot 0.2.0`（**清空 `ANTHROPIC_*` 后仍成功**，证明不依赖凭证）；`python -m skill_agent --version` 同值；拷走 `skill_agent/` 且无 `VERSION` 时回退 `0.0.0+unknown` 不抛异常 | 具备 |
+
+**独立 CLI 复核（Phenotype 环境实跑）**：
+```
+conda run -n Phenotype python scripts/validate.py --csv bad.csv --col IMF_预测_% --range 0 100
+→ [FAIL] not_constant: 20 个有效值，std=0，唯一值 1 个；**所有样本同值**，模型很可能没真正推理
+→ ❌ 拦截：1 项硬性检查未通过   退出码 1
+conda run -n Phenotype python scripts/validate.py --csv good.csv --col IMF_预测_% --range 0 100 --min-nir-r 0.6
+→ ✅ 全部检查通过（Ti/Tv 类比：r=1.000）   退出码 0
+```
+
+### 11.1 本轮开发中**实测踩到**的缺陷（均已修复并加判据）
+
+这些是本改动自身引入/发现的缺陷，登记备查——它们的共同点是**都靠真实工具输出或真实文件才暴露**，
+纯 mock 测试会忠实复现作者的错误假设从而放过：
+
+| # | 缺陷 | 症状 | 修法与判据 |
+|---|---|---|---|
+| V1 | GVCF 标记判据找错位置 | 在头部找字面量 `<NON_REF>`（带尖括号），而头部写的是 `##ALT=<ID=NON_REF,...>`（ID 值不带尖括号）→ **真 GVCF 被判成假** | 改为正则 `^##ALT=<ID=NON_REF`；G10a + `test_gvcf_marker_checks_header_declaration_not_literal` |
+| V2 | Ti/Tv 取错列 | `bcftools stats` 的 `TSTV` 行第 3/4 列是 ts/tv **计数**，第 5 列才是比值；误取第 4 列 → tv=20 被报成 `Ti/Tv=20.00` | 正则改为抓 5 个字段；`test_titv_ratio_parsing_matches_bcftools_format` |
+| V3 | 工具缺失时 fail-**open** | bcftools 不在 PATH 时，内容是乱码的 VCF 判**通过**（检查标为 SKIP，而 SKIP 不阻止放行）→ 任何没装工具的机器上门禁静默失效 | 新增 `Report.need_tool()`：缺工具登记为 hard 失败并单列 `missing_tools`（区分环境问题 vs 数据问题）；G10a-4 + `test_missing_tool_fails_closed_not_silently_passed` |
+| V4 | reads 守恒链断开 | Stage 2 读 `prev["read_totals"]`，但**无任何地方写过该键** → 守恒检查永远静默跳过（声称存在、从不生效） | `Report` 携带 `read_totals` 并写入 JSON，各阶段填充；G10a-5 + 4 条守恒测试（含"报告缺失须告警而非静默"） |
+| V5 | 装饰性参数 | `--ref` / `--expected-reads` 在 argparse 里有，代码里从不使用 → 传了以为多了层检查，实际没有 | 删除两参数；G10a-6 |
+| V6 | 空壳检查体 | 一处注释写「# 5) 比对率」但函数体是 `pass` → 比对率检查根本不存在，注释让人以为有 | 实装为 `mapped_ratio`（hard，全 unmapped 拦截）+ `mapped_rate`（warn，<90% 告警）；G10a-7 + 2 条测试 |
+| V7 | 编辑残留的重复行 | 连续两行完全相同的 `except ...: rep.add(...)` → 语法合法、`py_compile` 通过，但第二个分支不可达 | 删除重复行；G10a-8 静态检查连续重复可执行行 |
+| V8 | 陈旧 `.failed` 未清 | 坏数据→写 `.failed`；修好重跑通过→写 `.done` 但**遗留 `.failed`**；四态判定优先读 `.failed` → **已修好的阶段被误报"校验未通过"** | 六个阶段模板在写 `.done` 后 `rm -f` 同阶段 `.failed`；G10c-2 + VERIFY-09 端到端 |
+| V9 | `FAILED` 用而未定义 | haplotypecaller 模板用 `FAILED=$((FAILED+1))` 3 处却从未 `FAILED=0` → `set -u` 下**直接崩**（unbound variable） | 三个并发模板均加 `FAILED=0` 初始化；G10d-2 |
+| V10 | 索引命名只认一种 | 校验器查 `bam + ".bai"`，而 GATK/Picard 的 `--CREATE_INDEX true` 把索引写成 `foo.bai`（`.bam` 整个换成 `.bai`；`samtools index foo.bam` 才写 `foo.bam.bai`）→ **真机 GATK 产出的 BQSR BAM 稳定被判"缺索引"**。实测：ApplyBQSR 产出 `S1.sorted.markdup.BQSR.bai`，旧校验器报缺 `...BQSR.bam.bai`、rc=1 —— 健康数据被拦 | 新增 `bam_index()`：四种合法命名（`foo.bam.bai`/`foo.bai`/`foo.bam.csi`/`foo.csi`）全查 —— 实测 samtools 与 GATK 四种都认（`idxstats` 不走慢路径、`HaplotypeCaller` rc=0）；`test_all_four_index_namings_are_accepted` + `test_gatk_style_bai_is_recognized`（回退旧实现即失败，已验证区分度） |
+| V11 | 索引判级一刀切 hard | markdup BAM 的索引被判 hard，但 `gatk MarkDuplicates` 的 `CREATE_INDEX` **默认 false**、文档里的标准命令本就不产出；且下游 BaseRecalibrator/ApplyBQSR 读该 BAM **不需要**索引（实测 rc=0）→ 又一道拦健康数据的门槛 | `check_bam(..., index_level=)`：BQSR 索引 hard（实测 HaplotypeCaller 无索引 rc=2）、markdup 索引 warn；`test_bqsr_index_is_hard_but_markdup_index_is_warn` |
+| V13 | **docstring 承诺的失效没实现** | 模块 docstring 把"变异数异常少"列为要防的头号失效，但代码里**没有任何带宽判据** —— `min_variants=1` 只拦"完全为空"。实测：2 样本队列的联合 VCF 仅 2 条记录（全基因组真实应有数百万）→ `✅ 全部检查通过`、rc=0。文档承诺的保护不存在于代码中 | 新增 `variant_floor()`：`--min-variants` 显式声明即 hard 拦截；未声明则登记 **warn** 明说"未做该判定"（不静默通过、也不误拦）。接入 Stage 3/4/5 的 5 个 VCF 检查点；`test_tiny_variant_count_is_caught_when_floor_declared` 等 3 条 + 探针 J 段 |
+| V14 | 装饰性重复判据 | `verify_joint` 另登记 `joint.nonempty`，与 `check_vcf` 已登记的 `joint.variants` 判**同一个 `n`、同一阈值、同一补救措施** —— 零额外检测力，却让读报告的人以为有"两道独立位点守卫" | 删除 `joint.nonempty`，改为真正缺的那条（位点数下限，见 V13）；无测试引用该名字 |
+| V12 | 两套索引参数混用 | `--CREATE_INDEX` 是 Picard 风格（MarkDuplicates 认、默认 false）；walker 认的是 `--create-output-bam-index` / `--create-output-variant-index`（默认 true）。对 ApplyBQSR 传 `--CREATE_INDEX` 报 `not a recognized option` → 想关索引没关掉、想开索引没开成 | 文档记录差异（编排层错误预防 #24 + markdup skill #8-#10）；实测 4.3.0.0 各 walker 默认值 |
+| V15 | **门禁被陈旧索引整体绕过**（第二批，critical） | `samtools idxstats` 读的是**索引**而非 BAM 本体。BAM 被重写而索引没跟着重做时（重跑、`--resume` 跳过 index 步骤、覆写产物），idxstats **照旧值作答**：实测 200 reads 的健康 BAM 覆写成 0 reads 的空 BAM（沿用旧 `.bai`），`samtools view -c` 说 0、idxstats 说 200 → 门禁 `[PASS] read_count: mapped=200`、`✅ 全部检查通过`、rc=0。**`read_count`/`mapped_ratio`/`mapped_rate` 三条判据同时被骗过**，而这正是本模块 docstring 自认的头号防范目标（空 BAM） | 新增 `{label}.index_stale`(hard)：采信 samtools 自己往 stderr 打的 `[W::hts_idx_load3] The index file is older than the data file`（不另造一套 mtime 比较，避免与 samtools 判定标准不一致）；索引陈旧时**回退全量 `samtools view -c`** 计数；mapped/unmapped 无从取得时登记 `mapped_ratio`(warn) 明说"**未做**该判定"而非静默丢弃。`test_stage1_stale_index_does_not_mask_empty_bam` + `test_stage1_stale_index_fixed_by_reindexing_passes`（含前提自检）+ 探针 K 段 4 项；编排层错误预防 #25 |
+| V16 | **默认后端下拦下每一个样本**（第二批，critical） | `pbrun fq2bam` 不传 `--read-group-sm` 时自动生成**写死常量**读组：`@RG ID:r0.1 LB:lib1 PL:bar SM:sample PU:r0.1`（真机容器内跑出的原样）。GPU 就绪时 parabricks 是**文档规定的默认后端**（错误预防 #9/#10），于是 Stage 1 的 `readgroup`(hard) 对**每一个样本**都失败；该 SM 还会继承进 GVCF 样本列，使 Stage 3 的 `samples`/`identity`(hard) 连锁失败；队列样本同名则 Stage 4 `CombineGVCFs` 拒绝合并 | align-sort 的 fq2bam 模板补 `--read-group-sm "${sample_name}" --read-group-lb --read-group-pl ILLUMINA`，并加说明块与错误预防 #27（**不能反过来删判据**：删了常量读组就变成"放过串样本"）。探针 L 段 3 项：`SM:sample` 被拦 rc=1、`SM:s1` 放行 rc=0、模板含该参数 |
+| V17 | **脚本死在门禁之前**（第二批，major） | Stage 3/Stage 5 的 skill 文档各写着一条"补索引"的裸 `tabix -p vcf`。而 GATK walker 的 `--create-output-variant-index` **默认 true**，索引早已存在 → 裸 tabix **rc=1**（`the index file exists. Please use '-f' to overwrite.`），配合阶段脚本头部的 `set -euo pipefail` 当场退出。**健康的过滤结果既不写 `.done` 也不写 `.failed`**（磁盘上两者皆无），编排层按四态判定归为"已中断"、引用户去查进程 —— 而真实原因是一行文档里的多余命令 | 两个 skill 删除全部裸 `${TABIX} -p vcf` 与 `TABIX` 变量，改为说明"GATK 自动写索引，勿手工补"；确需重建时用 `tabix -f`。清单/验收项同步改写（否则 LLM 照清单又把裸 tabix 加回来）。探针 M 段 5 项含**端到端**：裸 tabix 之后的门禁行确实未执行；编排层错误预防 #26 |
+| V18 | **重复率被正则跨行抓错**（第三批，minor 但恒发） | `dup_rate` 用 `PERCENT_DUPLICATION[^\d]*([\d.]+)` 解析，而 `[^\d]*` **跨行**匹配，从下一行 `LB  lib1` 的库名里抓走了 `1`。真 GATK 产物实测：`PERCENT_DUPLICATION` 真值 `0`，报告写 **`重复率 100.0%；异常偏高，查文库/比对`**。后果不是漏拦而是**恒误报**——每个健康样本都带一条 warn，报告失真到无人再看 warn；且原实现把解析包在 `except: pass` 里，"指标文件在、重复率却没被检查"这件事在报告里完全看不出来（正是"纸面具备"）。修法与判据见 §11.4 A3 |
+| V19 | **两个 GWAS 导出无单一事实来源**（第三批，major） | PLINK 走 `pred` 字典（去重 + fam 过滤），GAPIT 走 `df.dropna()`（全部行）——两条独立构造路径。`--fam` 缺一个样本时实测 **PLINK 3 行 / GAPIT 4 行**，两个文件同时写出、rc=0。下游用哪份取决于跑 PLINK/GEMMA 还是 GAPIT；门禁的 `sample_uniqueness` 查的是"同一 Taxa 多行"，**结构上查不到跨文件分歧**。修法与判据见 §11.4 A4 |
+
+### 11.3 第二批（2026-10-27）：A1/A2/A7 三条
+
+用户点名的三条，均**先用真实工具独立复现**再修，修完双向验证（坏数据拦得住、健康数据不误伤）。
+
+| 代号 | 一句话 | 复现方式 | 现状 |
+|---|---|---|---|
+| A1 | 陈旧索引掩盖空 BAM（见 V15） | 真 samtools 造 200 reads BAM + 索引 → `samtools sort` 覆写为仅头部 → 索引未重做 | 已修 + 2 条 pytest + 探针 K 段 |
+| A2 | `pbrun fq2bam` 默认常量读组 `SM:sample`（见 V16） | docker 起 clara-parabricks:4.3.2-1 真跑 `pbrun fq2bam`，把产出的 BAM 喂给门禁 | 已修（文档）+ 探针 L 段；`--read-group-sm` 的真机对照 rc 由 1 变 0 |
+| A7 | 裸 `tabix` 在 `set -e` 下杀死脚本、够不到门禁（见 V17） | `tabix -p vcf` 对已索引文件 rc=1；再把该行放进 `set -euo pipefail` 脚本验后续行不执行 | 已修（文档）+ 探针 M 段 |
+
+**回归基线**：`271 passed`（较首批 269 增 2 条 A1 测试）；`verify_fix_probe.py` 33/33；`stage_verify_probe.py` FAILED 0。
+
+**这批的共同点**：三条都不是"判据写错了"，而是**判据根本没被触发或根本到不了**——
+A1 是判据被输入骗过、A2 是默认路径必拦健康数据、A7 是门禁执行不到。
+纯 mock 测试对三者全部无效（它们忠实复现作者的错误假设），只有真工具、真文件、真容器才暴露。
+
+### 11.4 第三批（2026-10-27）：A3/A4/A5/A6 四条
+
+同一套方法：**先复现、再修、修完双向验证**（坏数据拦得住 + 健康数据不误伤），
+并且每一条都做了**区分度验证**——把修法回退掉，确认对应的测试真的会红。
+
+| 代号 | 一句话 | 复现方式（实测） | 修法 | 判据落地 |
+|---|---|---|---|---|
+| A3 | **重复率解析取到库名里的数字**：`PERCENT_DUPLICATION[^\d]*([\d.]+)` 的 `[^\d]*` 会**跨行**吃掉 `ESTIMATED_LIBRARY_SIZE` 与库名，从 `LB  lib1` 里抓走那个 `1`。真值 0.0 被报成 **100.0%**，于是每个健康样本都背上一条"重复率异常偏高"的 warn（见 V18） | 用真 GATK 生成一份 MarkDuplicates metrics（内含 `LB  lib1`），`PERCENT_DUPLICATION` 真值 `0`；旧正则返回 `'1'` | 新增纯函数 `parse_percent_duplication()`：按**制表符切列**、用表头定位列号、只取同宽数据行——不再用会跨行的正则。取不到时返回 `(None, 原因)`，**不抛异常也不静默**；原先的 `except: pass` 改为显式登记一条 warn，写明"**未做重复率判定**" | `tests/test_stage_verify.py` 6 条（含一条**前提自检**：断言该 fixture 确实能骗过朴素正则，否则测试自身失去区分度）；探针 N 段 5 项 |
+| A4 | **两个 GWAS 导出可能静默分歧**：PLINK 用 `pred` 字典（按键去重、再按 `--fam` 过滤），GAPIT 用 `df.dropna()`（保留全部行）。`--fam` 里少一个样本时，PLINK 3 行 / GAPIT 4 行，**两个文件都被当权威产物写出、rc=0**，没有任何机制会发现。`sample_uniqueness` 查的是"同一 Taxa 多行"，查不到这个（见 V19） | 构造 fam 缺 s4 的场景跑导出：旧实现 PLINK 3 行、GAPIT 4 行 | 抽出 `build_gwas_exports()` 返回**唯一**的 `(pred, order, not_in_fam)`，两处导出都由它构造——分歧在构造上不可能发生（不是"加一条检查去发现分歧"）。同时纠正语义：`--fam` 按 SKILL.md 契约只是**排序基准**，不是成员过滤器，故 fam 外的样本**保留**并追加在末尾 + 打警告说明 GEMMA `-p` 按行序对齐的代价（早期把它们静默丢掉）。函数尾部带不变量断言，防将来有人只改一处导出又引入分歧 | `tests/test_phenotype_validate.py` 6 条（现共 30）；探针 P 段 3 项 |
+| A5 | **`${VERIFIER:?}` 抢先杀掉脚本，写 `.failed` 的兜底永远到不了**：5 种畸形配置形态里 4 种磁盘上什么都不写 → 编排层四态判定归为"已中断"，引用户去查进程（真实原因是配置读不到）。**且第一轮修法不够**：换成显式判空守卫后仍有 2 种失败——`VAR="$(cmd)"` 是**赋值**语句，`set -e` 下命令替换失败即退出整个脚本，`if [ -z ... ]` 根本执行不到 | 从 7 份 SKILL.md 里**抽出真实 shell 段落**放进真 bash 跑 5 种形态 × 7 文件 | ① 去掉 `: "${VERIFIER:?}"`，改显式判空 + 判存在两段式守卫；② 两处命令替换加 `|| true` 使其在 `set -e` 下安全；③ 兜底 `.failed` 里写可操作的排查三项（run.params.json 在不在 / verifier_path 是否非空绝对路径 / 文件是否还在） | `tests/test_stage_gate_template.py`（新文件，57 条）：5 形态 × 7 文件的核心参数化 + 阳性对照（健康配置必须**走到**校验器，证明不是"永远写 `.failed`"）+ 三条回归防线（`${VERIFIER:?}` 不得回来、赋值必须带 `|| true`、7 份守卫形态一致） |
+| A6 | **`combined.g.vcf.gz` 缺失时静默通过**：`if have(combined):` **没有 else**。实测只放 `co.vcf.gz`、不造 combined → 报告 4 条 PASS + 1 条 warn、`grep -c combined` = **0**、rc=0。而它是 Stage 4 SKILL.md 输出表与错误预防 #6 都列明的契约产物 | 只造 `co.vcf.gz`，跑 `verify_joint`，数报告里提到 combined 的行数 | 补 `else` 分支，并**区分三种情形**：文件缺失（hard，且说明 resume 的存在性检查会因它不在而重跑合并）、0 字节（hard，报"存在但为空"而非"缺失"）、有 GenomicsDB 工作区（warn，明说该路径合法地用 GenomicsDBImport 取代了 CombineGVCFs，故**未做**该判定）。第三种是为了不误伤合法路径——判据必须是"要么拦、要么明说没判"，不能既不说也不拦 | `tests/test_stage_verify.py` 4 条 + 探针 O 段 4 项；另修复 2 条既有测试与探针 J 段的 fixture（它们只造联合 VCF 不造 combined —— **fixture 不完整，不是判据放宽**） |
+
+**回归基线（第三批）**：`344 passed`（较第二批 271 增 73 条：A4 六条 + A5 五十七条 + A3/A6 十条）；`verify_fix_probe.py` **45/45**（较第二批 33 增 12：N 段 5 / O 段 4 / P 段 3）；`stage_verify_probe.py` FAILED 0；`skill_doc_consistency_probe.py` FAILED 0。
+
+**区分度验证**（把修法回退掉，确认测试真会红）：
+- 回退 A5 的 `|| true` → 3 条失败（`bad_json` / `no_run_params` / `test_assignments_are_set_e_safe`）
+- 回退 A4 的统一构造 → 2 条失败
+- 两者恢复 → 全绿
+
+**这批的共同点**：四条里三条的本质是**"判据读的不是本体"**——A3 读的是正则而非表格列、
+A6 读的是"文件在不在"却漏了不在的情形；A4 则是**两个产物各造各的**，没有单一事实来源。
+A5 是唯一一条**修法本身也踩了坑**的：第一版修法（判空守卫）看起来对，实测 5 形态里仍有 2 种漏网，
+根因在 shell 的控制流（赋值语句同样受 `set -e` 管辖）——所以它的测试必须抽真实 shell 段落在真 bash 里跑，
+文本断言（"文件里有 `if` 就通过"）恰恰是"纸面具备"的来源。
+
+### 11.5 第四批（2026-10-27）：F1–F6（含审计对我自己复核工具的发现）
+
+前四批的共同手法是"造坏输入，看门禁拦不拦"。这一批多了一层：审计的六个透镜里有**一份专门看"我的修复工具链本身"**，
+它抓到的两条都不是产品缺陷，而是**我用来证明"缺陷已修"的探针自己不成立**。这正是本项目反复出现的
+"纸面具备"形态换了个宿主——从产品挪到了证据链上。所以这一批的记录方式也变了：每条都要求
+**把被测代码真删掉，确认判据会红**（而不只是"测过、是绿的"）。
+
+| 代号 | 一句话 | 复现方式（实测） | 修法 | 判据落地 |
+|---|---|---|---|---|
+| F1 | **权威模板不自足**：编排层 §2.2 是"完整模板见编排层 SKILL.md"指定的那份，却直接用了 `${SAMPLES_CSV}` 而全仓库只有它一处出现该名字（六个阶段 skill 各自都有那一段，唯独权威版漏了）。照抄即 `SAMPLES_CSV: unbound variable`（`set -u`）→ 磁盘上 `.done`/`.failed` **都不存在**，编排层归为"已中断"并引用户查进程。补上后第二半又暴露：成功路径只写 `date > "${DONE_FILE}"`，没有 `rm -f` 陈旧 `.failed`（错误预防 #19 明文要求）→ 重跑通过后两个标记并存，四态判定优先读 `.failed`，**已修好的阶段被报成"校验未通过"**。同一批还发现 `RUN_DIR`/`DONE_FILE` 在本块内也无定义，"完整可抄"名不副实 | 逐行摘录 §2.2 到临时脚本（只补 `log_error`/`log_done`，其余一字不改）在真 bash 跑：`line 13: SAMPLES_CSV: unbound variable`、RC=1、`.done`/`.failed` 两目录都不存在；补定义后再跑，§2.2 的健康路径 rc=0 但 `.done` 与预置的陈旧 `.failed` 并存 | ① 把六个阶段 skill 已有的"样本名单兜底 + 判空写 `.failed`"块补进 §2.2；② 成功路径补 `rm -f "${RUN_DIR}/.failed/01_bwa_sort.failed"` 并加说明块；③ 块首补 `RUN_DIR`/`DONE_FILE` 的定义与确认（用 `[ -z ]` 判空，**不是** `${RUN_DIR:?}` —— 那正是 A5 的坑） | `tests/test_defect_class_guards.py`（新文件，153 条，按**写法**扫全部 skill 文档而非按"我改过的文件"）+ `test_orchestrator_template_is_self_contained` 要求 §2.2 用到的变量本块内都有定义 |
+| F2 | **A7 的第三处复发**：joint-genotyping 残留 `TABIX="$(resolve_tool tabix)"` 与清单第 5 项"输出 VCF 已 tabix 索引"。GATK `--create-output-variant-index` 默认 true → 裸 tabix rc=1 → `set -e` 下当场退出，够不到门禁。这一处**比前两处更危险**：变量就摆在手边，LLM 逐条过清单时极易照抄。当时只修了 HC 与 filtering 两个 skill | 用真 bgzip+tabix 造出已带 `.tbi` 的 VCF，把 `tabix -p vcf` 放进 `set -euo pipefail` 脚本：rc=1，其后的门禁行未执行 | 删掉 `TABIX` 变量与清单第 5 项的旧写法，改为与 HC/filtering 一致的"GATK 自动写索引，勿手工补；确需重建用 `tabix -f`" | `test_defect_class_guards.py::test_no_bare_tabix_without_force`（扫全仓，允许"告诫读者不要这么写"的行）+ 探针 M 段新增第三个 skill 的文档侧检查（45→46 项） |
+| F3 | **hard 判据在文档里只以 warn 面貌出现**：代码有 `mapped_ratio`(hard，全 unmapped 即拦) 与 `mapped_rate`(warn，≥90%) 两条，而编排层判据表与 warn 说明只写"比对率 ≥90%" → 读者以为"比对率低只是收到一行告警"，实际整个阶段被判失败；反向排查时按 warn 的定位又找不到这条硬失败 | 读编排层 SKILL.md 第 196/202-206 行与 workflow.md 第 156 行，`mapped_ratio` 零出现 | Stage 1 硬性列补上 `mapped_ratio` 并明确"这是 hard，与下面 warn 级的 `mapped_rate` 是两条不同判据"；warn 列表改为明确写 `mapped_rate`；并补一句"反向错误（把 hard 漏出硬性列）同样有害" | `test_defect_class_guards.py::test_mapped_ratio_not_documented_as_warn_only`（提到比对率 warn 却没提 hard 的就拦住） |
+| F4 | **hard 判据未进文档 + 缺前提时整条判据静默消失**：`sample_uniqueness`(hard) 未出现在表型侧判据表；`value_range` 在原实现里，当 CSV 缺 `状态` 列时整个判定块被跳过，报告里**连一行都没有**，末尾照样打"✅ 全部检查通过"——实测喂两列 CSV（含 `1000000` 这种百分比不可能值）rc=0，报告读起来像"值域已把关" | 造只有 `Taxa,IMF_预测_%` 两列的 CSV（正是 CLI 文档里"在 GWAS 入口重新校验已存在的表型文件"的用法），填入 1000000，跑 `validate.py`：rc=0 且报告无 `value_range` 行 | ① 判据表补 `sample_uniqueness`(hard) 与 `value_range` 的 hard¹ 脚注；② 重构 value_range 块：前提不满足时**明说为什么没判**（缺 `状态` 列 → 明说未做值域判定），而不是整条消失 | `tests/test_phenotype_validate.py`（30 条，含缺 `状态` 列的场景）；`test_defect_class_guards.py` 扫表型 SKILL.md |
+| F5 | **usage-guide 与硬规则直接冲突**：`Use conda absolute paths for all tools` 违反硬规则 #5.1（必须 `command -v` 运行时探测），照抄生成的脚本换机即失效；同文件还写着"Parabricks generates the Read Group automatically"（实测为假，见 V16） | 读文档 + 与硬规则 #5.1、V16 的实测结论对照 | 改为 `command -v` 探测 + `resolve_tool()` 示例，并注明旧写法为何被纠正；fq2bam 片段补 `--read-group-sm/-lb/-pl` | `test_defect_class_guards.py::test_no_hardcoded_conda_paths` 与 `::test_no_parabricks_readgroup_auto_claim` —— **两条正则都要区分"错误主张"与"纠正叙述"**（见下） |
+| F6 | **`--min-variants` 无从声明**：设计文档说"由调用方显式声明"，但全仓没有任何一处会传它——阶段脚本由 LLM 现场生成、`run.params.json` 无该字段、编排层无此参数。于是这条判据**恒停在 warn**，"声称可声明、实际无从声明"（V20/VERIFY-24） | 全仓 grep `min_variants`：只命中文档叙述与校验器自身，无写入方 | 校验器新增 `_resolve_min_variants()`（CLI > `run.params.json` > 未声明）；`STAGES_NEEDING_VARIANT_FLOOR` 限定只在该阶段拦（否则 Stage 1 也被卡）；params-propose schema 与说明补该字段 | `tests/test_stage_verify.py` 7 条：7 种取值路径 + 6 种畸形值一律 hard。**变异验证**：拆掉回落分支 → 7 条失败 |
+| F7 | **我的复核探针自己不成立**（审计发现，非产品缺陷）：C 段断言写 `rc == 1 or rc4 == 1`，而 `rc` 是**上一段的旧值、恒为 1** → `or` 左边永远成立；D 段把 `reads_conservation_lost` 只写进**说明字符串**、不参与断言（该场景 rc 被另一条判据拉成 1，于是断言恒真）。实测：把两个 critical 缺陷的检测代码**整段删掉**，探针仍打印 `45/45 全绿`，同一变异下 pytest 49 passed —— **"阶段 2 只做 markdup 也算通过"这条已修的 critical 缺陷，整套证据链再也发现不了它回归** | 按审计给的复现脚本删检测块：C 段仍 `[OK]`、D 段输出自相矛盾地打印"rc=1（期望 1）；无 reads_conservation_lost" | 探针新增 `verdicts()` / `hard_failed()` / `hard_failed_suffix()`：读 `.verify/<stage>.json` 的**级别+真值**做断言（子串无法区分"hard 拦住"/"warn 放行"/"恰好出现在说明里"）；新增静态自检文件 | `tests/test_probe_selfcheck.py`（4 条，AST 静态检查：陈旧结果变量、子串**唯一**依据、助手真被调用、C/D 两段仍在）。**变异验证**：删 `bqsr.coverage` 登记 → 修复前全绿 / 修复后 `[BAD]`；删 `reads_conservation_lost` 检测 → 修复前全绿 / 修复后抓住。自检自身也做变异（改宽谓词→报"误伤"、改恒假→报"漏报"） |
+
+**回归基线（第四批）**：`516 passed`（较第三批 349 增 167：`test_defect_class_guards.py` 153 + `test_probe_selfcheck.py` 4 + `test_stage_verify.py` 增 10）；`verify_fix_probe.py` **46/46**；`stage_verify_probe.py` FAILED 0；`skill_doc_consistency_probe.py` FAILED 0。
+
+**区分度验证（这一批的硬要求）**：
+- 拆掉 `min_variants` 的 `run.params.json` 回落 → 7 条失败
+- 删掉 `bqsr.coverage` 登记 → 探针报 `[BAD]`（修复前此处全绿）
+- 删掉 `reads_conservation_lost` 检测 → 探针报 `[BAD]`，且 `rc=1` 仍为真 —— 正是"rc 对但判据没了"这一形态
+- 删掉索引命名判据 → H 段 4 条 `[BAD]`
+- 把 `test_defect_class_guards.py` 的谓词改宽/改恒假 → 自检分别报"误伤"/"漏报"
+
+**这批的共同点（与前几批不同之处）**：前四批的缺陷都在产品里，修复的作用域是"文件"；
+这一批暴露的是**作用域本身错了**——六条里三条（F1/F2/F5）是已"修好"缺陷在没改到的文件里复发，
+根因是我按"这次动过的文件"逐个改，而缺陷按**写法**传播。所以 F1 的产出不是又一份文档补丁，
+而是 `test_defect_class_guards.py`：**自动发现全部 skill 文档、按失效模式扫描**，将来新增的文件
+自动纳入，不需要有人记得"这里也要改"。它上线即找出审计自己都没报的**第四处** A2 站点
+（align-sort 的"与 CPU 路径差异"对照表）。
+F7 是同一逻辑推到证据链上：**复核工具的可信度必须自己也被复核**——否则"已验证"三个字
+和它要防的"纸面具备"是同一种东西。
+
+**一个操作性教训（F5 的连带发现）**：这类"按写法扫描"的正则会把**纠正叙述本身**当成违规——
+`usage-guide.md` 里"旧版本这里写的是「Use conda absolute paths」—— 那句话是错的"是**正确**的文本，
+却被判失败。故每条谓词都必须配**正控**（纠正措辞不得被误伤）与**负控**（真违规必须被抓到），
+这正是 `test_guards_actually_discriminate` 存在的原因：没有它，一条写松或写死的正则会在整个仓库上
+"全绿"而什么也没防住。
+
+### 11.2 复核方另发现的能力边界（不改变判定，登记备查）
+
+| 项 | 说明 |
+|---|---|
+| `samtools quickcheck` 不验排序 | 实测：乱序 BAM 也返回 0；且 samtools **拒绝**给乱序 BAM 建索引（`[E::hts_idx_push] Unsorted positions`），故"乱序且带索引"在现实中不存在。排序判据改为验 `@HD SO:coordinate` 标签（缺标签即拦），见 `test_stage1_coordinate_header_is_checked` |
+| 比对率判据有样本量门槛 | total < 100 时不判比对率（小样本下比率无统计意义），只判 mapped > 0 |
+| `.recal.table` 缺失降为 warn | parabricks 的 `pbrun bqsr` 一步完成时不产出该文件，属预期；GATK 路径下缺失才说明 BQSR 被跳过。故不作 hard |
+| Stage 2 全无产出判 hard | 经查 Stage 3 消费 `{sample}.sorted.markdup.BQSR.bam`，而 fq2bam 只产出 `{sample}.sorted.bam` → 无论何后端 Stage 2 都必须产出 BQSR BAM，故 `bqsr_output` 保持 hard 正确 |
+| 重复率检查依赖未固定的文件名 | `MARKDUP_METRICS` 变量在 markdup skill 里被引用但**从未定义**文件名，故重复率检查做成"候选名命中才查"的可选判据（warn） |

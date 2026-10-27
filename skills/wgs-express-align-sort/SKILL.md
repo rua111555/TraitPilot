@@ -106,6 +106,7 @@ assign_numa_cmd() {
 | 3 | **`compute_backend=parabricks` 时禁用 BWA** — 用 `pbrun fq2bam` | 重复比对、GPU 资源白开 |
 | 4 | **fq2bam 输出命名必须符合输出契约**（`{sample}.sorted.bam` + `.bai`） | 下游 Stage 2/3 找不到输入 BAM |
 | 5 | **consumer 卡（4090 24GB）超配 OOM** — 报 cuda out of memory | 降低 `parallel_samples` 或该阶段回退 CPU |
+| 6 | **`pbrun fq2bam` 必须显式传 `--read-group-sm "${sample_name}"`**（本机实跑复核） | 不传时 fq2bam 自动生成**写死的常量读组** `@RG ID:<prefix>.1 LB:lib1 PL:bar SM:sample` —— 所有样本都是 `SM:sample`。Stage 1 的 `readgroup`（hard）每样本必拦；该 SM 还会继承进 GVCF 样本列，使 Stage 3 的 `samples`/`identity`（hard）连锁失败；全队列同名会让 Stage 4 合并失败。而 parabricks 是 GPU 就绪时的**默认后端**，等于默认路径全阶段不可用 |
 
 ### BWA + Read Group 标准写法
 
@@ -136,6 +137,7 @@ log_done "Sample ${sample_name} BAM generated: ${BAM}"
 # ─── 样本伪并行（wait -n 池） ───
 MAX_CONCURRENT=3   # 从 run.params.json parallelism.parallel_samples 读取
 pids=()
+FAILED=0           # ⚠️ 累计失败样本数，供收尾门禁判定
 
 for i in "${!samples[@]}"; do
     sample="${samples[$i]}"
@@ -158,7 +160,7 @@ for i in "${!samples[@]}"; do
     while [ "${#pids[@]}" -ge "${MAX_CONCURRENT}" ]; do
         for j in "${!pids[@]}"; do
             if ! kill -0 "${pids[$j]}" 2>/dev/null; then
-                wait "${pids[$j]}" || true
+                wait "${pids[$j]}" || { FAILED=$((FAILED+1)); log_error "PID ${pids[$j]} failed"; }
                 unset 'pids[$j]'
             fi
         done
@@ -167,19 +169,105 @@ for i in "${!samples[@]}"; do
 done
 
 # 等待所有后台作业完成
+# ⚠️ 不要写 `wait "${pid}" || log_error ...` 然后不管 —— `||` 会把退出码变成 0，
+#    后面的 `set -e` 不再触发，脚本照常走到末尾写 .done，编排层于是误判"完成"。
+#    必须把失败**累计**下来，交给收尾的校验门禁裁决。
 for pid in "${pids[@]}"; do
-    wait "${pid}" || log_error "Subprocess ${pid} failed"
+    wait "${pid}" || { FAILED=$((FAILED+1)); log_error "Subprocess ${pid} failed"; }
 done
+[ "${FAILED}" -gt 0 ] && log_error "本阶段有 ${FAILED} 个子进程非零退出（见收尾校验）"
 ```
 
-### 完成标记
+### 完成标记（**必须先过结果校验**）
 
 ```bash
-# ─── 完成标记 ───
+# ─── 收尾门禁：校验通过才写 .done ───
+# ─── 定位校验器（⚠ 不要写 `conda run -n Agent python`）───
+# 本脚本已由 `conda run -n Agent bash` 启动，该进程 PATH 中**没有 conda 可执行文件**
+# （只有 <conda>/envs/Agent/bin 与系统目录），嵌套调用会以 127 失败：
+# `conda: command not found`。那样数据再健康也会走失败分支，每阶段恒写 .failed、
+# 永不写 .done。`python` 就在同一环境的 PATH 上，直接调用即可。
+# ⚠️ 末尾的 `|| true` 不可省：`VAR="$(cmd)"` 是**赋值**语句，cmd 失败时
+#    `set -e` 会**当场退出整个脚本**（实测 rc=1），下面的 if 兜底永远到不了 ——
+#    于是"run.params.json 不存在/是非法 JSON"这两类配置下磁盘上仍无任何标记。
+#    加了 `|| true` 才能把空值交给下面的显式判空处理。
+VERIFIER="$(python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("verifier_path",""))' "${RUN_DIR}/run.params.json" 2>/dev/null || true)"
+# ⚠️ **不要**写成 `: "${VERIFIER:?...}"` —— 变量为空时它立刻 exit 1（set -e），
+#    会**绕过下面写 .failed 的兜底**：磁盘上既无 .done 也无 .failed，四态判定归为
+#    "已中断"并引用户去查进程，而真实原因只是配置读不到。
+#    实测 5 种畸形 run.params.json：「无文件 / 非法 JSON / 缺键 / 空串」这 4 种
+#    全都无标记，只有「有 verifier_path 但文件不存在」走到了兜底。故改为显式判空。
+if [ -z "${VERIFIER}" ] || [ ! -f "${VERIFIER}" ]; then
+    # ⚠️ 这里必须写 .failed：只 exit 1 会让编排层看到「无 .done 也无 .failed」，
+    #    于是按"已中断"处理、引用户去查进程 —— 而真实原因是环境问题（编排层没写
+    #    verifier_path、仓库被移动、或 RUN_DIR 下 run.params.json 不可读）。
+    log_error "定位不到校验器: '${VERIFIER}'（环境问题，非数据问题）"
+    mkdir -p "${RUN_DIR}/.failed"
+    { echo "stage=01_bwa_sort"; echo "time=$(date '+%F %T')"
+      echo "reason=校验器未指定或不可读：'${VERIFIER}'"
+      echo "这是环境问题，不是数据问题。逐项核对："
+      echo "  1) ${RUN_DIR}/run.params.json 是否存在、能否被 python json.load 解析"
+      echo "  2) 其中的 verifier_path 是否为**非空**且为**绝对**路径"
+      echo "  3) 该路径指向的文件是否还在（仓库被移动过？）"
+    } > "${RUN_DIR}/.failed/01_bwa_sort.failed"
+    exit 1
+fi
+# ─── 样本名单（从 run.params.json 兜底，不依赖脚本里声明了哪个数组名）───
+# ⚠️ 模板里样本循环用的数组名不完全统一（`samples` / `sample_number`/ `sample_names`）。
+#    若这里只认 `sample_names` 而脚本只声明了 `samples`，在 bash 4.2 + `set -u` 下
+#    `${sample_names[*]}` 会直接 `unbound variable` —— 结果是 .done 与 .failed **都不存在**，
+#    编排层把它当成"已中断"，而不是"校验没跑"。故此处显式解析，并在为空时报错。
+# 同上：加 `|| true`，否则 run.params.json 读不出时 set -e 直接退出、
+# 下面的"样本名单为空"分支（会写 .failed）根本到不了。
+SAMPLES_CSV="$(python -c 'import json,sys; print(",".join(json.load(open(sys.argv[1])).get("sample_names") or []))' "${RUN_DIR}/run.params.json" 2>/dev/null || true)"
+if [ -z "${SAMPLES_CSV}" ]; then
+    log_error "样本名单为空（run.params.json 的 sample_names 缺失或为 []）—— 不写 .done"
+    mkdir -p "${RUN_DIR}/.failed"
+    { echo "stage=01_bwa_sort"; echo "time=$(date '+%F %T')"
+      echo "reason=run.params.json 的 sample_names 为空，样本守恒判据无法运行"
+    } > "${RUN_DIR}/.failed/01_bwa_sort.failed"
+    exit 1
+fi
+
+# 先删掉本阶段的旧报告：跑完后它只要存在，就必然是本轮的产物。
+rm -f "${RUN_DIR}/.verify/01_bwa_sort.json"
+if ! python "${VERIFIER}" \
+        --stage 01_bwa_sort --run-dir "${RUN_DIR}" --samples "${SAMPLES_CSV}"; then
+    mkdir -p "${RUN_DIR}/.failed"
+    { echo "stage=01_bwa_sort"; echo "time=$(date '+%F %T')"
+      echo "failed_subprocesses=${FAILED}"
+      # ⚠️ 只在报告**属于本轮**时才附上：校验器没跑起来时（路径错/python 缺失），
+      #    .verify/ 里可能还留着上一次运行的文件，照抄会把排查引向数据而非环境。
+      rep="${RUN_DIR}/.verify/01_bwa_sort.json"
+      # 报告在调用校验器**之前**已被删除（见上方 rm -f），所以此处只要存在，
+      # 就一定是**本轮**产出的。不存在 ⇔ 校验器没跑起来或没落盘。
+      if [ -f "$rep" ]; then
+          echo "--- 校验报告（本轮）---"; cat "$rep"
+      else
+          echo "--- 没有本轮校验报告 ---"
+          echo "失败发生在校验器产出报告之前：多为环境问题（${VERIFIER} 不可读 /"
+          echo "python 缺失 / RUN_DIR 无写权限），而不是数据问题。"
+          echo "先看上面的错误行与 ${RUN_DIR}/nohup.out。"
+      fi
+    } > "${RUN_DIR}/.failed/01_bwa_sort.failed"
+    log_error "结果校验未通过，不写 .done"
+    exit 1
+fi
+
 log_info "All samples completed for Stage 1"
 date > "${DONE_FILE}"
-log_done "Stage 1 complete"
+rm -f "${RUN_DIR}/.failed/01_bwa_sort.failed"   # 清掉上一轮的陈旧失败标记
+log_done "Stage 1 complete (校验通过)"
 ```
+
+> **为什么必须清 `.failed`**：不清的话，重跑该阶段并通过后，磁盘上同时存在 `.done` 与
+> `.failed`。编排层的四态判定**优先读 `.failed`**（那是刻意的 —— 校验未通过时最该被看见），
+> 于是会把这个**已经修好并通过**的阶段报成"校验未通过"，用户被误导去查一个不存在的问题。
+> 陈旧状态和真实状态必须只留一个。清空动作放在 `exit 1` 之后的成功路径上，位置要对。
+
+> **为什么不能只看 `wait` 的返回值**：即使所有子进程都返回 0，BAM 仍可能是**空的**
+> （比对 0 条 read 也可能退出 0）。而 `samtools quickcheck` 对空 BAM 是**放行**的
+> （它只验文件结构完整）。只有读 count 才抓得住 —— 校验器的 `read_count` 判据就是干这个的。
 
 ## Parabricks 模式（compute_backend=parabricks）
 
@@ -203,11 +291,26 @@ PBRUN "${GPU_IDX}" fq2bam \
     --ref "${REF_FASTA}" \
     --in-fq "${R1}" "${R2}" \
     --out-bam "${BAM}" \
+    --read-group-sm "${sample_name}" --read-group-lb "${sample_name}" --read-group-pl ILLUMINA \
     --num-cpu "${per_gpu_cpus}" \
     --num-gpus 1 \
     --low-memory --bwa-nstreams 1 \
     --tmp-dir "${TMP_DIR}"
 ```
+
+> ⚠ **`--read-group-sm` 是必需项，不是可选优化**（本机实跑 `pbrun fq2bam` 复核）：
+> 不传它，fq2bam 会**自动生成一个写死的常量读组** `@RG\tID:<prefix>.1\tLB:lib1\tPL:bar\tSM:sample` ——
+> 其中 `SM:sample` 与真实样本号无关，**每个样本都是同一个 `sample`**。
+> 后果是连锁的，且全部以"健康数据被拦"的面貌出现：
+> · Stage 1 门禁 `bam[s].readgroup` 是 **hard**（要求 `SM == 文件名里的样本号`）→ 每样本必拦；
+> · 那个 `SM:sample` 会**继承到下游**：`pbrun haplotypecaller` 从 BAM 读 RG，GVCF 的
+>   `#CHROM` 样本列就是 `sample`，于是 Stage 3 的 `gvcf[s].samples` / `gvcf[s].identity`
+>   两条 hard 判据也拦（实测 GVCF 内部样本名随源 BAM 的 SM 走）；
+> · 若整个队列都是 `SM:sample`，Stage 4 `CombineGVCFs` 会**合并失败或把多样本压成一个**。
+> 而 `compute_backend=parabricks` 是 GPU+冒烟通过时的**默认路径**，即不传此参数时默认路径全阶段不可用。
+> `--read-group-pl` 用 `ILLUMINA`，与 CPU 路径的 `RG_STR` 保持一致（同一份数据在两条后端下
+> 产出的 BAM 头部应完全一致，否则下游按平台分流的工具会拿到不同结果）。`--read-group-lb`
+> 传样本号，使同一样本的多个文库可被正确识别。
 
 > `--tmp-dir` 必须在 `parabricks.mounts` 已挂载的路径下（容器看不到未挂载目录）。
 > ⚠ `--low-memory --bwa-nstreams 1` 是 **4090 24GB + 全基因组 ref 的必需项**：缺省流数下加载
@@ -224,7 +327,7 @@ PBRUN "${GPU_IDX}" fq2bam \
 
 | 项 | CPU（BWA） | GPU（fq2bam） |
 |----|-----------|---------------|
-| Read Group | 必须手工 `-R` | fq2bam 自动生成（符合 `SM` 即可） |
+| Read Group | 必须手工 `-R` | **必须显式传 `--read-group-sm`**（`--read-group-lb`/`--read-group-pl` 一并给）。**不传不会"自动符合 `SM`"**：fq2bam 生成的是写死的常量 `SM:sample`，与样本号无关，门禁 `readgroup`(hard) 会拦下每一个样本（详见下方 Parabricks 段） |
 | 输出 | `sorted.bam` | `sorted.bam`（默认同契约） |
 | 并行维度 | CPU 核数 | GPU 卡数（每样本 1 卡） |
 | SAM 临时文件 | 有（需清理） | 无 |
@@ -245,8 +348,9 @@ LLM 在执行前后应更新数据库：
 5. ✅ `set -euo pipefail`
 6. ✅ SESSION-SAFE 保护（`.done` + `.pid` + nohup）
 7. ✅ 样本并行 + NUMA 绑定（多样本时）
-8. ✅ 完成标记写入
-9. ✅ 中间文件清理（删除 SAM 临时文件）
-10. ✅ 若 `--resume` 开启，输出文件存在性检查
-11. ✅ 按 `compute_backend` 选命令路径：`parabricks`→`pbrun fq2bam`（禁 BWA）；否则→BWA+samtools
-12. ✅ GPU 路径：`--out-bam` 符合契约、每样本绑 1 卡（`--num-gpus`）、`pbrun fq2bam --help` 复核参数名
+8. ✅ **子进程失败必须累计**（`|| { FAILED=$((FAILED+1)); ... }`），**禁止** `wait ... || true` 或 `|| log_error` 单独了事（会吞掉退出码）
+9. ✅ **写 `.done` 前必须过校验门禁**：`stage_verify.py --stage 01_bwa_sort`，未过则写 `.failed` + `exit 1`
+10. ✅ 中间文件清理（删除 SAM 临时文件）
+11. ✅ 若 `--resume` 开启，输出文件存在性检查
+12. ✅ 按 `compute_backend` 选命令路径：`parabricks`→`pbrun fq2bam`（禁 BWA）；否则→BWA+samtools
+13. ✅ GPU 路径：`--out-bam` 符合契约、每样本绑 1 卡（`--num-gpus`）、`pbrun fq2bam --help` 复核参数名

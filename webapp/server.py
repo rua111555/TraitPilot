@@ -56,7 +56,10 @@ def favicon():
 @app.get("/api/config")
 def api_config():
     cfg = CFG_REF["config"]
+    from skill_agent import __version__
+
     return jsonify({
+        "version": __version__,
         "model": cfg.model,
         "models": _fetch_models(),
         "permission": cfg.permission,

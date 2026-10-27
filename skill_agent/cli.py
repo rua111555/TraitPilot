@@ -16,6 +16,7 @@ from .session import attach_all, resume_into
 from .session_store import SessionStore
 from .skills import SkillRegistry
 from .tools import ToolSet
+from . import __version__
 
 BANNER = "\n".join([
     "╭──────────────────────────────────────────────╮",
@@ -92,6 +93,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="显式技能目录（默认 <project>/skills）")
     p.add_argument("--config", dest="config_file", default=None, metavar="FILE",
                    help="显式 config.json 路径（默认 <project>/config.json 或 ./config.json）")
+    p.add_argument("--version", action="version", version=f"TraitPilot {__version__}",
+                   help="打印版本号并退出（版本号唯一载体：仓库根 VERSION 文件）")
     sub = p.add_subparsers(dest="command", required=False)
 
     sp = sub.add_parser("list", help="列出发现的 skills")
@@ -351,7 +354,8 @@ COMMANDS = {"/exit", "/quit", "/clear", "/skills", "/active", "/help", "/model",
 def _repl(agent: Agent, cfg: Config, registry: SkillRegistry, tools: ToolSet) -> int:
     logf = _open_session_log(cfg)
     print(BANNER)
-    print(f"模型：{cfg.model} | 项目：{cfg.project} | 权限：{cfg.permission} | 流式：{'开' if cfg.stream else '关'}")
+    print(f"版本：{__version__} | 模型：{cfg.model} | 项目：{cfg.project} | "
+          f"权限：{cfg.permission} | 流式：{'开' if cfg.stream else '关'}")
     print("输入 /help 查看命令；/exit 退出")
     while True:
         try:
