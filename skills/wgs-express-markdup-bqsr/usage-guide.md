@@ -31,7 +31,8 @@ sorted.bam → MarkDuplicates → marked.bam → BaseRecalibrator → recal.tabl
 
 When `compute_backend: "parabricks"`, replace GATK with `pbrun` (one GPU per sample)
 via the `PBRUN()` docker wrapper (rendered by params-propose); container sees one
-card, so pbrun uses `--num-gpus 1`:
+card, so pbrun uses `--num-gpus 1` (the only exception is `genotypegvcf`, which
+rejects the flag — see `parabricks-setup.md` §4.1):
 
 ```bash
 # ⚠️ markdup 的 --ref 是必需参数（实测缺它 rc=2 "the following arguments are required: --ref"）

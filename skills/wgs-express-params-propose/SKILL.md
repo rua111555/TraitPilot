@@ -141,7 +141,11 @@ PBRUN() {
 ```
 
 **关键正确性约定**：
-1. `--gpus "device=<宿主卡号>"` 只暴露 1 张卡 → **容器内 pbrun 一律 `--num-gpus 1`**
+1. `--gpus "device=<宿主卡号>"` 只暴露 1 张卡 → **容器内 pbrun 默认 `--num-gpus 1`**
+   （⚠️ 例外只有一个：**`genotypegvcf` 不接受该参数**，加上即 `rc=2`
+   `unrecognized arguments` 且零产物 —— 实测 clara-parabricks 4.3.2-1。别按兄弟工具类推，
+   其余 `fq2bam/haplotypecaller/markdup/bqsr/applybqsr` 都接受。详见
+   `wgs-express-joint-genotyping/SKILL.md` 的告诫与 `parabricks-setup.md` §4.1 速查表）
    （⚠ 4.3.x **没有** `--gpu` 参数：`--gpu 0` 会与 `--gpuwrite/--gpusort` 前缀歧义报错；
    各工具输入/输出/线程参数名亦不同，生成脚本前查 `pbrun <tool> --help`，速查表见
    `parabricks-setup.md` §4.1）
@@ -173,6 +177,7 @@ LLM **必须**生成以下 JSON 文件并保存至 `{RUN_DIR}/run.params.json`�
   "fastq_dir": "<GENO>/fastq",
   "verifier_path": "<REPO>/skills/wgs-expressive-pipeline/scripts/stage_verify.py",
   "min_variants": 0,
+  "min_variants_indel": 0,
   "compute_backend": "parabricks",
   "server_detection": {
     "total_cores": 128,
@@ -223,14 +228,37 @@ LLM **必须**生成以下 JSON 文件并保存至 `{RUN_DIR}/run.params.json`�
 > 阶段脚本位于 `{RUN_DIR}/scripts/`，与仓库无固定相对关系，只能靠这里解析出的绝对路径
 > 定位校验器。
 >
+> **`fastq_dir` 决定 Stage 1 消费哪一份 FASTQ**（**跑不跑 Stage 0.5 由用户选**，
+> 而它决定这个键该填什么）：
+>
+> | 本次是否跑 Stage 0.5 | `fastq_dir` 应填 | Stage 1 读到的文件 |
+> |:---:|---|---|
+> | **否**（可选阶段，常规路径） | `<GENO>/fastq` | `{sample_number}/{sample_number}_1.fq.gz`（**原始**） |
+> | **是** | `{RUN_DIR}/out` | `{sample_name}.clean_1.fq.gz`（fastp 清洗后） |
+>
+> ⚠️ **文件名形态由目录**推断**（`out/` ⇒ clean 命名，别的目录 ⇒ 原始命名），
+> 不额外声明命名键 —— 两个键可以互相矛盾，一个键不会。改名/改目录时
+> align-sort 的「输入契约」段与 fastp 的「输出」段要同步改。
+> ⚠️ 该键必须**被 Stage 1 脚本真正读用**（`fastq_dir="$(python -c ... )"`），
+> 不要写死 `$GENO_DIR/fastq`：写死时即便这里改成了 `out/`，脚本仍消费原始 FASTQ
+> —— 而两份文件都在磁盘上、都不为空，**没有任何门禁能发现**（实测：fastp 剔除的
+> 400 对又回到 BAM，两个阶段全绿）。
+>
 > **`min_variants` = 位点数下限**，供 Stage 3/4/5 的"变异数异常少"判据使用：
 > 校验器在调用方未传 `--min-variants` 时**读回本字段**（与 `verifier_path` 同范式）。
 > 取值按**本次运行的参考基因组大小与队列规模**推算 —— 没有普适默认值（人类全基因组
 > 队列通常 ≥ 数百万位点；本仓库探针用的 200kb 迷你 ref 则差 4 个数量级）。
 > **必须与用户确认后写入**，不要自己拍一个数：拍高了拦健康数据，拍低了形同虚设。
 > 用户明确不做此判定时写 `0`（= 未声明，校验器登记一条 warn 明说"未做该判定"）。
-> ⚠️ 不要写 `"1M"` 这类字符串、负数或小数 —— 校验器会判 **hard 不通过**（想开却没生效
-> 必须被看见，而不是静默退回"未声明"）。
+> ⚠️ 不要写 `"1M"` 这类字符串、负数或小数 —— 校验器会判 **hard 不通过**
+> （想开却没生效必须被看见，而不是静默退回"未声明"）。
+>
+> **`min_variants_indel` = **INDEL** 的位点数下限**，与 `min_variants` **分开声明**：
+> SNP 与 INDEL 的真实量级差约一个数量级（人类全基因组 ~4-5M vs ~0.5-1M），
+> **拿 SNP 标量去判 INDEL 会拦下健康数据**（那正是拆分两个键的原因）。语义三分同 SNP 侧：
+> 正整数 = 开判定；`0` = 显式不做此判定（warn 明说未判）；其它（含 `false`/小数/负数）= 畸形 → hard。
+> 只声明了 `min_variants` 而不声明本键时，INDEL 侧登记 warn 明说"未对 INDEL 判此下限"
+> （**不会**拿 SNP 标量去判 INDEL，也不会静默通过）。
 >
 > 调用方是**阶段脚本自己**（不是编排层代劳）：每个阶段 skill 的收尾门禁段都从
 > `${RUN_DIR}/run.params.json` 读出本字段赋给 `VERIFIER`，再以

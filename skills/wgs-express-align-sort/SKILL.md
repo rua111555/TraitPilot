@@ -24,7 +24,58 @@ allowed-tools:
 | 来源 | 说明 |
 |------|------|
 | `run.params.json` | 所有参数（参考基因组路径、样本列表、线程数等） |
-| FASTQ 文件 | 每样本 `{sample_number}_1.fq.gz` / `{sample_number}_2.fq.gz` |
+| FASTQ 文件 | 见下方**输入契约**（默认原始；跑了 Stage 0.5 则消费 clean） |
+
+### 输入契约：跟随 `fastq_dir`，两种形态
+
+本阶段消费哪一份 FASTQ **不是固定的**，由 `run.params.json` 的 `fastq_dir` 决定 ——
+**默认原始、声明了 clean 就消费 clean**：
+
+| 本次是否跑 Stage 0.5 | `fastq_dir` | 文件形态 |
+|:---:|---|---|
+| **否**（可选阶段，常规路径） | `<GENO>/fastq` | `{fastq_dir}/{sample_number}/{sample_number}_1.fq.gz`（**原始**） |
+| **是** | `{RUN_DIR}/out` | `{fastq_dir}/{sample_name}.clean_1.fq.gz`（fastp 清洗后） |
+
+两组键都要**同时**从 `run.params.json` 读出，不能只读一半 —— 原契约只按
+`{sample_number}` 拼路径，跑了 Stage 0.5 时那个路径下的文件**是存在的**（原始
+FASTQ 一直在），于是脚本不会报错、只是**静默地消费了错的那一份**：fastp 明确
+剔除的 read 又回到 BAM 里（实测 1400 对里 400 对 `-l 36` 丢弃 → BAM 2800 条
+而非应得的 2000 条），而 Stage 0.5 与 Stage 1 的门禁**双双放行**。
+
+⚠️ **两侧口径必须一致**：fastp 的输出表（`{sample_name}.clean_1/2.fq.gz`，
+`out/` 下）就是这里的第二行。改任一侧的名字或目录，另一侧必须同步改 ——
+`tests/test_defect_class_guards.py` 的交接一致防线会报红。
+
+> **与 `reads_anchor` 判据的联动**：本阶段门禁的 `reads_anchor` 拿 Stage 0.5 报告的
+> `primary_totals`（clean FASTQ 实测条数）与本阶段 BAM 的 primary 数对账。
+> **只有真的消费了 clean FASTQ，两个数才可比** —— 消费原始 FASTQ 时 BAM 必然
+> 多出被剔除的那些 read，对账必然失败。故"消费哪一份"与"能不能过门禁"是同一件事：
+> 门禁的失败文案里已点出这一可能（"本阶段消费的**不是** Stage 0.5 的产物"）。
+
+### 样板块里的赋值（逐样本循环内，**不可省**）
+
+```bash
+    # ⚠️ 这两组都要先赋值再用（早期版本只写 `bwa mem ... "${R1}" "${R2}"`，
+    #    而 R1/R2 在**全仓没有任何赋值点** —— 文档自相矛盾：交接处指名的是未赋值
+    #    的变量。抽该围栏加 `set -u` 真跑：`line 4: SAMPLE: unbound variable`, rc=1）
+    # ⚠️ 路径形态**跟随 fastq_dir**（见「输入契约」）：
+    #    · 跑了 Stage 0.5 → fastq_dir={RUN_DIR}/out，用 {sample_name}.clean_1/2.fq.gz
+    #    · 未跑 Stage 0.5 → fastq_dir=<GENO>/fastq，用 {sample_number}/{sample_number}_1/2.fq.gz
+    #    生成脚本时按本次运行的实际形态**二选一**，不要两组都写（会读到不存在的那组）。
+    sample_number="${sample_numbers[$i]}"
+    sample_name="${sample_names[$i]}"
+    R1="${fastq_dir}/${sample_name}.clean_1.fq.gz"      # ← 跑了 Stage 0.5 的形态
+    R2="${fastq_dir}/${sample_name}.clean_2.fq.gz"
+    # R1="${fastq_dir}/${sample_number}/${sample_number}_1.fq.gz"   # ← 未跑 Stage 0.5
+    # R2="${fastq_dir}/${sample_number}/${sample_number}_2.fq.gz"
+    SAMPLE="${sample_name}"                             # 供 RG_STR 用
+    SAM_FILE="${RUN_DIR}/out/${sample_name}.sam"
+    BAM="${RUN_DIR}/out/${sample_name}.sorted.bam"
+```
+
+> ⚠️ 上面两组 `R1/R2` **只能启用一组**（另一组留在注释里作对照）。`fastq_dir`
+> 从 `run.params.json` 读出，**不要在脚本里写死 `$GENO_DIR/fastq`** ——
+> 那样即便编排层把 `fastq_dir` 指向了 `out/`，脚本仍旧消费原始 FASTQ。
 
 ## 输出
 
@@ -55,6 +106,13 @@ PID_DIR="${RUN_DIR}/.pid"
 PID_FILE="${PID_DIR}/01_bwa_sort.pid"
 
 mkdir -p "${LOG_DIR}" "${DONE_DIR}" "${PID_DIR}" "${RUN_DIR}/out"
+# ⚠️ 开工先清掉**本阶段自己的**陈旧 .done —— 不清的话，重跑期间磁盘上会同时存在
+#    「陈旧 .done」与「存活 pid」，而编排层四态判定里 .done 优先于 pid 存活检查
+#    （它必须排在 .failed 之后，但 .failed 只在**校验未通过**时存在）。
+#    实测：nohup sleep 构造出"运行中"的阶段 + 一个上一轮留下的 .done，场景 B 当场报
+#    `✅ 01_bwa_sort 已完成`，而进程还在跑 —— 用户据此以为可以推进下一阶段。
+#    清掉后同一 fixture 正确报 `🕐 运行中`。
+rm -f "${DONE_FILE}"
 echo $$ > "${PID_FILE}"
 trap 'rm -f "${PID_FILE}"' EXIT
 
@@ -143,7 +201,14 @@ for i in "${!samples[@]}"; do
     sample="${samples[$i]}"
     
     # 检查是否已存在（resume 模式）
-    if [ -f "${BAM}" ]; then
+    # ⚠️ **必须用 `-s`（非空）而不是 `-f`**：门禁的 `have()` 判"存在"是
+    #    `isfile ∧ 大小 > 0`，**0 字节算不存在**。用 `-f` 时，一个 0 字节/被截断的
+    #    产物会让 resume 打印 skipping、直接跳到收尾；而收尾门禁照样判 hard FAIL
+    #    → **重跑逐字相同、永久卡死**（实测：0 字节 BAM）。resume 判存在性的
+    #    严格度必须 **≥** 门禁对该产物的存在判据 —— 否则重跑无法自愈。
+    #    （但**内容级**问题——如普通 VCF 冒充 GVCF——`-s` 覆盖不到，那类要靠
+    #    门禁的判据拦下后**先清产物再跑**，见门禁失败文案。）
+    if [ -s "${BAM}" ]; then
         log_info "BAM exists, skipping sample ${sample}: ${BAM}"
         continue
     fi
@@ -240,8 +305,16 @@ fi
 
 # 先删掉本阶段的旧报告：跑完后它只要存在，就必然是本轮的产物。
 rm -f "${RUN_DIR}/.verify/01_bwa_sort.json"
+# ⚠️ **必须传 --prev-reads-file**（指向 Stage 0.5 的报告），否则 reads_anchor 判据
+#    永远登记"未提供基准、未做该判定" —— 那是**纸面具备**：判据在，从不生效。
+#    这条判据是**唯一**能发现「合法但更短的 BAM」的（BGZF 块边界截断后贴回 EOF 块：
+#    quickcheck / 全量计数 / idxstats / 坐标有序**全部通过**，只有与上游 FASTQ
+#    的条数对账能发现它）。若本次未跑 Stage 0.5（可选阶段），该文件不存在，
+#    判据会如实登记"没有基准"，属预期而非失败。
+PREV_QC="${RUN_DIR}/.verify/00_fastp_qc.json"
 if ! python "${VERIFIER}" \
-        --stage 01_bwa_sort --run-dir "${RUN_DIR}" --samples "${SAMPLES_CSV}"; then
+        --stage 01_bwa_sort --run-dir "${RUN_DIR}" --samples "${SAMPLES_CSV}" \
+        --prev-reads-file "${PREV_QC}"; then
     mkdir -p "${RUN_DIR}/.failed"
     { echo "stage=01_bwa_sort"; echo "time=$(date '+%F %T')"
       echo "failed_subprocesses=${FAILED}"
@@ -287,7 +360,7 @@ log_done "Stage 1 complete (校验通过)"
 
 ```bash
 # 统一 PBRUN() docker wrapper（由 wgs-express-params-propose 在脚本头部展开，见其「PBRUN wrapper」）
-# 每样本: PBRUN <宿主GPU索引> <pbrun 子命令> ... ；容器内只暴露 1 张卡 → pbrun 用 --num-gpus 1
+# 每样本: PBRUN <宿主GPU索引> <pbrun 子命令> ... ；容器内只暴露 1 张卡 → pbrun 用 --num-gpus 1（⚠️ 唯一例外：genotypegvcf 不接受该参数，见 parabricks-setup.md §4.1）
 ```
 
 ### fq2bam 标准用法（PE，逐样本绑 1 卡）

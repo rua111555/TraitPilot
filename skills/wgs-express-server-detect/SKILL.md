@@ -220,7 +220,7 @@ if GPU_VRAM_GB < 32:
 2. NUMA 绑定：2+ 样本时绑定到不同 NUMA node
 3. 后台作业池：使用 `wait -n` 控制并行度
 4. 动态调整：后续阶段可重新评估负载
-5. **GPU 存在且 Parabricks 可用时，优先走 GPU 路径**：样本并行由 GPU 卡数主导，每个 pbrun 任务绑 1 张卡（`--num-gpus 1`）
+5. **GPU 存在且 Parabricks 可用时，优先走 GPU 路径**：样本并行由 GPU 卡数主导，每个 pbrun 任务绑 1 张卡（`--num-gpus 1`；⚠️ 唯一例外是 `genotypegvcf` —— 它**不接受**该参数，见 `references/parabricks-setup.md` §4.1）
 6. **consumer 卡（4090 等）不作数**：需先冒烟测试通过（见 `references/parabricks-setup.md`），否则回退 CPU GATK
 
 ## 错误处理

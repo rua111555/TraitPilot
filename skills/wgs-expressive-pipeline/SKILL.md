@@ -180,10 +180,23 @@ fi
 
 # 先删掉本阶段的旧报告：跑完后它只要存在，就必然是本轮的产物。
 rm -f "${RUN_DIR}/.verify/01_bwa_sort.json"
+# ⚠️ Stage 1 必须传 --prev-reads-file（指向 Stage 0.5 的报告）：reads_anchor 判据靠它
+#    拿到"上游 FASTQ 数出多少条 read"这个**外部基准**，而那是唯一能发现「合法但更短的
+#    BAM」的东西（BGZF 块边界截断后贴回 EOF 块 —— quickcheck / 全量计数 / idxstats /
+#    坐标有序全部通过）。不传则判据只会登记"未提供基准、未做该判定"（纸面具备）。
+#    未跑 Stage 0.5（可选阶段）时该文件不存在，判据会如实说明缺基准，属预期。
+# ⚠️ **本判据的前提是 BAM 与 clean FASTQ 同源**：只有两者来自同一次运行，primary 数
+#    与 FASTQ 条数才可比。故跑 Stage 0.5 时**必须同时**把 run.params.json 的
+#    `fastq_dir` 指向 `{RUN_DIR}/out/`（否则 Stage 1 按默认路径消费**原始** FASTQ，
+#    而基准来自 clean —— 实测 1400 对里 400 对被 fastp 剔除，BAM 得 2800 条而非
+#    应得的 2000 条，对账必然失败；更糟的是若两边门禁都没开，这个错位**完全无声**）。
+#    未跑 Stage 0.5 时两样都别做：不传本参数（判据如实登记"未做该判定"），
+#    fastq_dir 保持默认。
 if ! python "${VERIFIER}" \
         --stage 01_bwa_sort \
         --run-dir "${RUN_DIR}" \
-        --samples "${SAMPLES_CSV}"; then
+        --samples "${SAMPLES_CSV}" \
+        --prev-reads-file "${RUN_DIR}/.verify/00_fastp_qc.json"; then
     # 校验未通过 —— 不写 .done，写 .failed 并带上原因
     mkdir -p "${RUN_DIR}/.failed"
     {
@@ -215,6 +228,15 @@ log_done "Stage 1 complete (校验通过)"
 > `.failed`。编排层的四态判定**优先读 `.failed`**（那是刻意的 —— 校验未通过时最该被看见），
 > 于是会把这个**已经修好并通过**的阶段报成"校验未通过"，用户被误导去查一个不存在的问题。
 > 陈旧状态和真实状态必须只留一个（同错误预防 #19）。
+>
+> ⚠️ **上面是"收尾"这一半；还有"开工"那一半，在本块之外**：阶段脚本的前导段（配置区，
+> 写 `.pid` 之前）必须 `rm -f "${DONE_FILE}"` 清掉本阶段的陈旧 `.done` —— 不清的话，
+> 重跑一个曾成功过的阶段时，上一轮的 `.done` 与本轮存活的 pid 并存，四态判定会把正在
+> 跑的阶段报成"已完成"（判序已改为 pid 存活优先，那是给**旧版本脚本**兜底的；新样板
+> 两半都要有）。**本块不负责开工清理**：它是收尾模板，在这里清 `.done` 发生在所有工作
+> 之后，挡不住运行期间的竞态窗口 —— 看着修了而窗口没变，正是本项目所谓的"纸面具备"。
+> 六个阶段 skill 的前导段已各有一行，见 align-sort / fastp-qc 的 SESSION-SAFE 样板
+> 与 `gwas-*` 家族（同错误预防 #28）。
 
 **校验器**：`skills/wgs-expressive-pipeline/scripts/stage_verify.py`（`--stage` 取脚本名去 `.sh`）。
 不加 `--json` 输出人类可读报告；报告同时落盘 `{RUN_DIR}/.verify/{stage}.json`。
@@ -268,9 +290,16 @@ log_done "Stage 1 complete (校验通过)"
 >    Stage 0 解析落盘，阶段侧读回使用。**本仓库只提供 CLI 开关是不够的**：阶段脚本由 LLM
 >    现场生成，没有任何一处会把该参数写进命令行，于是这条判据会**恒停在 warn** ——
 >    又是"声称可声明、实际无从声明"的纸面具备。故校验器在 CLI 未给时**回落到
->    `run.params.json`**。（若写了该键却**无法生效**，如 `"1M"`/`0`/`-5`/`3.5`，
->    校验器判 **hard 不通过**而非静默降级 —— 想开却没生效必须被看见。）
+>    `run.params.json`**。（若写了该键却**无法生效**，如 `"1M"`/`-5`/`3.5`/`true`，
+>    校验器判 **hard 不通过**而非静默降级 —— 想开却没生效必须被看见。
+>    **`0` 是例外、不是畸形值**：它是文档明文定义的"显式不做此判定"，行为与"键不存在"
+>    一致（登记 warn 明说"未做该判定"）。`false` 与 `0.0` 仍判畸形 —— 那是类型写错。）
 > 2. `--min-variants N` 显式传给校验器（优先级高于 `run.params.json`）。
+>
+> **INDEL 侧另有一个键 `min_variants_indel`**（供 Stage 5 的 INDEL "变异数异常少"判据）：
+> 与 SNP 标量**分开声明**，因为两者真实量级差约一个数量级（人类全基因组 ~4-5M vs ~0.5-1M），
+> 拿 SNP 标量判 INDEL 会拦下健康数据。语义三分同 `min_variants`（正整数开判定 / `0` 显式不做 /
+> 其它畸形判 hard）。只声明了 `min_variants` 时，INDEL 侧登记 warn 明说"未对 INDEL 判此下限"。
 
 > 校验器路径必须**由 Stage 0 写进 `run.params.json`**（`verifier_path`）：
 > 生成的阶段脚本位于 `{RUN_DIR}/scripts/`，与仓库无固定相对关系，无法用相对路径
@@ -288,7 +317,11 @@ log_done "Stage 1 complete (校验通过)"
 3. 汇报保持**极简**（一行：`第 X/N 样本 | Y 个 BAM | 无报错`），不加分析过程
 4. `.done` 存在 → 读 `.verify/STAGE.json`，**把 warn 项带进汇报** → 进入下一阶段（生成脚本 → 交用户审批）
 5. `.failed` 存在 → **停止推进**，读失败原因如实报给用户，修复后重新审批该阶段
-6. 两者都不存在 → **结束本轮**，如实告知「还在跑，下次问我时我再查」
+6. **`.pid` 进程仍存活 → 判定「运行中」，不得推进**（即使 `.done` 也在）。
+   `.done` 可能是**上一轮**留下的陈旧标记：重跑一个曾成功过的阶段时，上一轮的 `.done`
+   与本轮存活的 pid 并存 —— 只看到 `.done` 就说"已完成"会让用户推进下一阶段，而上一
+   阶段还在写同一个产物。判序恒为 `.failed` → pid 存活 → `.done`（见场景 B 循环）。
+7. 两者都不存在 → **结束本轮**，如实告知「还在跑，下次问我时我再查」
 
 **检查间隔策略：**
 - 大样本量（>50 样本）管线运行时，间隔不可过密
@@ -335,14 +368,29 @@ conda run -n Agent python "$(dirname "$0")/scripts/db_query.py" --action query-a
 **场景 B — 对话框关闭后恢复**：用户说「推进 WGS」→ 执行恢复检查：
 
 ```bash
+# ⚠️ 空目录防护不可省：`"${RUN_DIR}"/scripts/*.sh` 无匹配时 bash **不展开** glob
+#    （全仓未设 nullglob），字面量 `*.sh` 会原样进循环体 → 报出一行 `⬜ * 未开始`，
+#    读者以为"有个阶段还没开始"。`[ -e ] || continue` 是三种防护里最省事的一种。
 for stage_script in "${RUN_DIR}"/scripts/*.sh; do
+    [ -e "${stage_script}" ] || continue      # 无匹配时 glob 保留字面量，跳过它
     stage_name=$(basename "${stage_script}" .sh)
     pid_file="${RUN_DIR}/.pid/${stage_name}.pid"
     log_file="${RUN_DIR}/logs/${stage_name}.log"
-    # ⚠️ 顺序要紧：.failed 必须先判 —— 校验未通过时**不会**有 .done，
-    #    但也不该被当成「已中断」（进程正常退出、日志正常），否则会误导用户去查日志
+    # ⚠️ 判序三段，两头都不能动（每一段都是实测踩出来的）：
+    #    ① `.failed` 最先：校验未通过时**不会**有 .done，但也不该被当成「已中断」
+    #       （进程正常退出、日志正常），否则会误导用户去查日志。
+    #    ② **pid 存活第二，必须早于 `.done`**：`.done` 是**上一轮**留下的陈旧标记时，
+    #       它与本轮存活的 pid 并存 —— 若 .done 先判，正跑着的阶段被报成 `✅ 已完成`，
+    #       用户据此推进下一阶段，而上一阶段还在写同一个产物。（陈旧 .done 的来源：
+    #       重跑一个曾成功过的阶段；模板现在开工即 `rm -f "${DONE_FILE}"` 清掉它，
+    #       但**旧版本生成的脚本**没有那一行，判序仍须自己扛住。）实测：
+    #         有陈旧 .done → `✅ 01_bwa_sort 已完成`；去掉 .done → `🕐 运行中`。
+    #    ③ `.done` 第三：能走到这里说明没有存活进程，此时 .done 才是**本轮**的真结论。
     if [ -f "${RUN_DIR}/.failed/${stage_name}.failed" ]; then
         echo "❌ ${stage_name} 校验未通过（读 .failed 文件看原因）"; continue
+    fi
+    if [ -f "${pid_file}" ] && kill -0 "$(cat "${pid_file}")" 2>/dev/null; then
+        echo "🕐 ${stage_name} 运行中"; continue
     fi
     if [ -f "${RUN_DIR}/.done/${stage_name}.done" ]; then
         # 通过校验的阶段：把 warn 项带出来，别让告警被"✅"盖住
@@ -358,9 +406,6 @@ try:
 except Exception:
     pass' "${RUN_DIR}/.verify/${stage_name}.json" 2>/dev/null)
         echo "✅ ${stage_name} 已完成 ${warn:+| 告警: $warn}"; continue
-    fi
-    if [ -f "${pid_file}" ] && kill -0 "$(cat "${pid_file}")" 2>/dev/null; then
-        echo "🕐 ${stage_name} 运行中"; continue
     fi
     [ -f "${log_file}" ] && echo "⚠️ ${stage_name} 已中断（进程不在，但无 .done/.failed）" \
                          || echo "⬜ ${stage_name} 未开始"
@@ -390,13 +435,20 @@ done
 ```
 
 > 阶段状态的四态判定（场景 B 的恢复检查据此分支）：
-> `.failed` → 校验未通过（**最优先判**）｜`.done` → 已完成且校验通过｜
-> `.pid` 且进程活 → 运行中｜其余 → 未开始 / 已中断
+> `.failed` → 校验未通过（**最优先判**）｜`.pid` 且进程活 → 运行中（**排在 `.done` 之前**）｜
+> `.done` → 已完成且校验通过｜其余 → 未开始 / 已中断
 >
 > `.failed` 之所以最优先：它的存在意味着**这一阶段的数据不可信**，必须停下来修，
 > 而不是继续推进。代价是必须有配套的清理 —— 阶段重跑并通过时要在写 `.done` 的同时
 > `rm -f` 同阶段的 `.failed`，否则已修好的阶段会被这条优先级误报成"未通过"
 > （实测踩到过）。两者是**同一个设计的两半，不能只做一半**。
+>
+> pid 存活之所以排在 `.done` 之前：`.done` 可能是**上一轮**留下的陈旧标记（重跑一个
+> 曾成功过的阶段时必然如此），此时它与本轮存活的进程并存。若 `.done` 先判，正跑着的
+> 阶段被报成 `✅ 已完成`，用户据此推进下一阶段而上一阶段还在写同一产物（实测复现）。
+> 配套的清理同样是两半：**成功路径清 `.failed`（写 `.done` 时），开工清 `.done`（模板
+> 已加 `rm -f "${DONE_FILE}"`）** —— 磁盘上只留一个真实的当前状态。旧版本生成的脚本
+> 没有开工那一行，判序自己也能扛住（pid 存活先报「运行中」）。
 
 ## 错误预防（生成每个脚本前检查）
 
@@ -417,7 +469,7 @@ done
 | 12 | **GPU OOM（24GB 消费卡）**——降低并行样本数或转回 CPU GATK | 阶段 1-4 |
 | 13 | **收尾用 `wait "${pid}" \|\| log_error ...` 会吞掉子进程失败**（`\|\|` 使 rc=0，`set -e` 不触发）→ 脚本继续跑到末尾**无条件**写 `.done` → 编排层误判"完成"并推进。必须改为 `|| FAILED=1` 累计，并在写 `.done` 前过校验门禁 | 全部 |
 | 14 | **`.done` 必须有条件写入**——先跑 `stage_verify.py`，通过才写 `.done`，否则写 `.failed` 并 `exit 1`。无条件写 `.done` 是"中途错误传到后面"的根源（见 §2.2） | 全部 |
-| 15 | **`samtools quickcheck` 对空 BAM 放行**（它只验结构完整，不看有无数据）——`.bam` 存在 + quickcheck 过**不足以**说明比对成功，必须再查 reads 数（`idxstats`） | align-sort/全部 BAM 阶段 |
+| 15 | **`samtools quickcheck` 对空 BAM 放行**（它只验结构完整，不看有无数据）——`.bam` 存在 + quickcheck 过**不足以**说明比对成功，必须再查 reads 数。⚠️ **查法：`samtools view -c` 全量遍历 BAM 本体**，不是 `idxstats`（读索引）——见第 25 行 | align-sort/全部 BAM 阶段 |
 | 16 | **GVCF 判据要看头部 `##ALT=<ID=NON_REF` 声明**，不是字面 `<NON_REF>` —— 头部里 ID 值不带尖括号，带括号的形态只出现在记录行 ALT 列。找错地方会把真 GVCF 判成假的 | haplotypecaller/joint |
 | 17 | **`bcftools stats` 的 TSTV 行第 5 个字段才是比值**（第 3/4 是 ts/tv 计数）——取错列会把 tv 计数（如 20）报成 Ti/Tv=20.00 | filtering |
 | 18 | **校验器路径须由 Stage 0 写入 `run.params.json`**（`verifier_path`）——阶段脚本在 `{RUN_DIR}/scripts/`，与仓库无相对关系，相对路径定位不到 | params-propose/全部 |
@@ -427,9 +479,11 @@ done
 | 22 | **BAM 索引有四种合法命名，判据必须都认** —— `foo.bam.bai`（`samtools index foo.bam`）、`foo.bai`（GATK/Picard `--CREATE_INDEX true`，`.bam` 整个换成 `.bai`）、`foo.bam.csi` 与 `foo.csi`（`samtools index -c`）。samtools 与 GATK 四种都认（实测）；只认一种会把 GATK 真实产出的索引判成"缺失"，**健康数据被拦**（实测：ApplyBQSR 产出 `S1.sorted.markdup.BQSR.bai`，旧校验器报缺 `...bam.bai`，rc=1） | 全部 BAM 阶段 |
 | 23 | **索引判级按"下游是否真的需要"定，不要一律 hard** —— BQSR BAM 索引：HaplotypeCaller 无它直接 rc=2（实测 `A USER ERROR ... not indexed`）→ hard；markdup BAM 索引：`gatk MarkDuplicates` 的 `CREATE_INDEX` **默认 false**、下游读它也不需要索引 → warn。一律 hard 会在标准命令下稳定拦下健康数据 | markdup/全部 |
 | 24 | **GATK 里 `--CREATE_INDEX`（Picard 风格）与 `--create-output-bam-index`（walker 风格）是两套参数** —— MarkDuplicates 只认前者且默认 false；ApplyBQSR/HaplotypeCaller 等 walker 只认后者且默认 true（实测：对 ApplyBQSR 传 `--CREATE_INDEX` 报 `not a recognized option`）。写参数前用 `gatk <Tool> --help` 确认，勿跨工具照抄 | 全部 |
-| 25 | **`samtools idxstats` 读的是索引，不是 BAM** —— 重跑 / `--resume` 跳过 index / 覆写产物时，索引停在上一轮，idxstats 便拿**旧值**作答：0 reads 的空 BAM 报出上一轮 reads 数，`read_count`/`mapped_ratio`/`mapped_rate` 三条判据同时被骗过、门禁全绿放行（实测）。校验器的 `{label}.index_stale` 判据采信 samtools 自己的 `[W::hts_idx_load3] ... older than ...` 警告并回退全量计数。**改产物后必须重建索引** | 全部 BAM 阶段 |
+| 25 | **`samtools idxstats` 读的是索引（派生数据），不是 BAM 本体** —— 索引与数据**离线**，三种形态都会让它说出与本体不符的话：①**陈旧**（重跑 / `--resume` 跳过 index / 覆写产物 → 索引停在上一轮）：0 reads 的空 BAM 报出上一轮 reads 数；②**外来**（索引 mtime 不比数据旧，如从别处拷来/换过产物）：连 samtools 的 `older than` 警告都不打，静默给错值；③**漏计**（GPU 后端 `pbrun applybqsr` 写出的 `.bai` 在中小输入上系统性漏计：10/200/300 reads 全报 0，1000→971、53296→53215）。**总条数对得上、拆分对不上**是最隐蔽的一种（守卫只比总数时会整条漏过）。故：**判定一律读本体**（`samtools view -c -F 4` 取 mapped、`view -c -f 4` 取 unmapped、`view -c` 取 total），索引只作旁证（分歧时登记 `index_drift`/`index_split_drift` 告警）。⚠️ 取 mapped **不要改用 `flagstat`/`stats`**：它们的 mapped 只算 primary（实测 1150→1000），会让真实 WGS 的比对率系统性虚低、**拦下健康数据**；`view -c -F 4` 与 idxstats 语义一致（实测同为 1150）。**改产物后仍应重建索引**（带 `-L`/区间的下游按索引取数） | 全部 BAM 阶段 |
 | 26 | **GATK walker 自动写 `.tbi`/`.bai`，不要再手工 `tabix`** —— `--create-output-variant-index` / `--create-output-bam-index` 默认均为 true（实测 HaplotypeCaller、SelectVariants、VariantFiltration 都直接产出 `.tbi`）。手工补 `tabix -p vcf` 会因索引已存在而 **rc=1**，配合阶段脚本的 `set -euo pipefail` 会**死在门禁之前**：健康数据既不写 `.done` 也不写 `.failed`，编排层误判成"已中断"。真要用就加 `-f` | 全部 VCF 阶段 |
 | 27 | **`pbrun fq2bam` 必须传 `--read-group-sm "${sample}"`** —— 不传则自动生成写死常量读组 `SM:sample`，所有样本同名：Stage 1 `readgroup`(hard) 必拦，且该 SM 继承进 GVCF 样本列使 Stage 3 `samples`/`identity`(hard) 连锁失败。parabricks 是 GPU 就绪时的默认后端 | align-sort/全部 |
+| 28 | **阶段脚本开工必须 `rm -f` 自己的陈旧 `.done`**（写 `.pid` 之前）—— 重跑一个曾成功过的阶段时，上一轮的 `.done` 与本轮存活的 pid 并存，而四态判定的 `.done` 分支若排在 pid 存活之前，正跑着的阶段被报成 `✅ 已完成`（实测：`nohup sleep` + 陈旧 .done → 误报"已完成"，去掉 .done → 正确报"运行中"）。**与成功路径清 `.failed` 是同一个设计的两半**（见 #19）：成功清 `.failed`、开工清 `.done`，磁盘上才只留一个真实状态。⚠️ 只清**本阶段自己的** `"${DONE_FILE}"`，别 `rm -f .done/*.done` 抹掉其它阶段 | 全部 |
+| 29 | **四态判序：`.failed` → pid 存活 → `.done`** —— pid 存活**必须早于** `.done`。旧版本生成的脚本没有 #28 的开工清理，判序是这些脚本唯一的防线；`.done` 先判时陈旧标记直接盖过真实的"运行中" | 编排层 |
 
 ## 自然语言触发
 

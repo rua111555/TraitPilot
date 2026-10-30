@@ -83,7 +83,11 @@ RUN_DIR="..."                 # 从 gwas-pipeline 生成
 LOG_FILE="${RUN_DIR}/logs/00_format_convert.log"
 DONE_FILE="${RUN_DIR}/.done/00_format_convert.done"
 PID_FILE="${RUN_DIR}/.pid/00_format_convert.pid"
-mkdir -p "${LOG_DIR}" "${DONE_DIR}" "${PID_DIR}"
+mkdir -p "$(dirname "${LOG_FILE}")" "$(dirname "${DONE_FILE}")" "$(dirname "${PID_FILE}")"
+# ⚠️ 开工先清掉本阶段自己的陈旧 .done：重跑一个曾成功过的阶段时，上一轮的 .done
+#    与本轮存活的 pid 并存，状态判定只看到 .done 就报「已完成」，用户据此推进下一
+#    阶段，而本阶段还在写同一个产物。（只清本阶段自己的，别抹掉其它阶段。）
+rm -f "${DONE_FILE}"
 echo $$ > "${PID_FILE}"
 trap 'rm -f "${PID_FILE}"' EXIT
 
@@ -92,12 +96,16 @@ PLINK="$(command -v plink || { echo "✗ 找不到 plink —— 请激活 conda 
 # ⚠ vcftools 常缺失：优先直接用 plink --vcf --make-bed 替代（见「↑ 直接 VCF → PLINK bed」）
 VCFTOOLS="$(command -v vcftools || echo '')"
 
+# 输入/输出前缀（由 gwas-pipeline 生成脚本时替换为实际值）
+IN_VCF_GZ="..."               # 原始 VCF(.gz) 路径
+PREFIX="..."                  # 输出前缀（不带扩展名），如 cohort
+
 # gz VCF → ped/map
 ${VCFTOOLS} --gzvcf "${IN_VCF_GZ}" --plink --out "${PREFIX}"
 
 # 数量核对
 n_map=$(wc -l < "${PREFIX}.map"); n_ped=$(wc -l < "${PREFIX}.ped")
-log_info "SNPs: ${n_map}, individuals: ${n_ped}"
+echo "SNPs: ${n_map}, individuals: ${n_ped}"
 
 date > "${DONE_FILE}"
 ```

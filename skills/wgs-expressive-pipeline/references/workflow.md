@@ -111,7 +111,10 @@ skills/
 
 ```bash
 RUN_DIR="${RUN_DIR:-$GENO_DIR/temp/runs/{run_id}}"   # 实际值来自 run.params.json 的 run_dir
+# ⚠️ 空目录防护不可省：无匹配时 bash 不展开 glob，字面量 `*.sh` 会进循环体报出一行
+#    `⬜ * 未开始`，读者以为"有个阶段还没开始"（与下面 .done 的 glob 同源）。
 for stage_script in "${RUN_DIR}"/scripts/*.sh; do
+    [ -e "${stage_script}" ] || continue
     stage_name=$(basename "${stage_script}" .sh)
     log_file="${RUN_DIR}/logs/${stage_name}.log"
     pid_file="${RUN_DIR}/.pid/${stage_name}.pid"
@@ -119,18 +122,22 @@ for stage_script in "${RUN_DIR}"/scripts/*.sh; do
     failed_file="${RUN_DIR}/.failed/${stage_name}.failed"
 
     # ⚠️ .failed 必须最先判：校验未通过时没有 .done，但也不该被当成「已中断」
+    # ⚠️ pid 存活必须排在 .done **之前**：陈旧 .done（上一轮成功留下的）与本轮存活进程
+    #    并存时，.done 先判会把"正在跑"报成「已完成」，用户据此推进下一阶段（实测复现）。
     if [ -f "${failed_file}" ]; then echo "❌ ${stage_name} 校验未通过（读 .failed 看原因）"
-    elif [ -f "${done_file}" ]; then echo "✅ ${stage_name} 已完成"
     elif [ -f "${pid_file}" ] && kill -0 "$(cat "${pid_file}")" 2>/dev/null; then echo "🕐 ${stage_name} 运行中"
+    elif [ -f "${done_file}" ]; then echo "✅ ${stage_name} 已完成"
     elif [ -f "${log_file}" ]; then echo "⚠️ ${stage_name} 已中断"
     else echo "⬜ ${stage_name} 未开始"
     fi
 done
 ```
 
-> 四态判定：`.failed`（校验未通过）→ `.done`（已完成且通过校验）→ 运行中 → 未开始/已中断。
+> 四态判定：`.failed`（校验未通过）→ **运行中（pid 存活）** → `.done`（已完成且通过校验）→ 未开始/已中断。
 > `.failed` 优先级最高，因为它的存在意味着**这一阶段的数据不可信**，必须停下来修，
-> 而不是继续推进。
+> 而不是继续推进。pid 存活排在 `.done` 之前：`.done` 可能是**上一轮**留下的陈旧标记，
+> 而存活的进程说明本轮还在写 —— 两者并存时报「运行中」才是真话。配套地，阶段脚本
+> **开工即 `rm -f` 自己的 `.done`**（成功路径清 `.failed`，开工清 `.done`，两半都做）。
 
 ## 阶段结果校验（结果值门禁）
 
@@ -173,9 +180,12 @@ done
 
 **声明通路**：Stage 0 在 `run.params.json` 里写 `"min_variants": N`（校验器读回使用，
 与 `verifier_path` 同范式），或直接给校验器传 `--min-variants N`（优先级更高）。
+**INDEL 侧另有 `"min_variants_indel": N`**（两者量级差约一个数量级，必须分开声明；
+见 params-propose 的字段说明）。
 ⚠️ 只有 CLI 开关**不算**通路：阶段脚本由 LLM 现场生成，不会有人把该参数写进命令行，
-判据便恒停在 warn —— 本项目称之为"纸面具备"。写了该键却无法生效（非正整数）时
-校验器判 **hard**，不静默降级。
+判据便恒停在 warn —— 本项目称之为"纸面具备"。写了该键却无法生效（`"1M"`/负数/小数/
+`false`/`0.0`）时校验器判 **hard**，不静默降级；写整数 `0` 则是**文档定义的"显式不做"**，
+与键不存在同行为（warn 明说未判）。
 
 判据分两级：`hard` 未过 → 不写 `.done`（写 `.failed` 并 `exit 1`）；`warn` 未过 → 仍写
 `.done`，但告警写进 `.verify/<stage>.json`，编排层汇报时应带出（如重复率偏高、Ti/Tv 偏移）。

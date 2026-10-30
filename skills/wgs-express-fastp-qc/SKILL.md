@@ -39,8 +39,25 @@ allowed-tools:
 | `{sample_name}.fastp.html` | HTML 可视化报告 |
 | `{sample_name}.fastp.json` | JSON 报告（供 MultiQC 聚合） |
 
-> 清洗后的 FASTQ 直接作为 Stage 1（BWA）的输入，不写回数据库。
+> 清洗后的 FASTQ 供 Stage 1（BWA）消费 —— 但**要由编排层把 `run.params.json` 的
+> `fastq_dir` 指向 `{RUN_DIR}/out/`，它才真的被读到**（仅在 fastp 跑过、且这一键被改过的
+> 运行里成立；见下方契约说明）。清洗后的文件不写回数据库。
 > 数据库中 `fastq_samples` 表的路径始终指向原始 FASTQ 文件。
+>
+> ⚠️ **这半边是"产出方"的声明，必须与消费方（align-sort）的输入契约一致才成立**。
+> 早先这句在 HEAD 上单独存在，而 align-sort 的输入契约写的是**原始** FASTQ
+> （`{sample_number}_1.fq.gz`）—— 两端各说各话（根因 D）：Stage 1 按自己的契约
+> 拿原始 FASTQ 去比对，于是 fastp 明确剔除掉的 read（实测 1400 对里 400 对过短、
+> `-l 36` 丢弃）**又回到了 BAM 里**（2800 vs 应得的 2000），而**两个阶段的门禁
+> 双双放行**：Stage 0.5 只验自己的产物，Stage 1 的 `reads_anchor` 拿到的是另一份
+> 基准，谁也发现不了。
+>
+> 现行契约（两侧已对齐）：Stage 1 的输入由 `run.params.json` 的 `fastq_dir` 决定 ——
+> **默认仍指向原始 FASTQ**（跳过 Stage 0.5 的常规路径）；**跑了 Stage 0.5 时，
+> 编排层把 `fastq_dir` 指向 `{RUN_DIR}/out/` 并把文件名改成
+> `{sample_name}.clean_1.fq.gz` 的形态**（见 align-sort 的「输入契约」）。
+> 两侧任一侧改口径，另一侧必须同步改 —— `tests/test_defect_class_guards.py` 的
+> 交接一致防线会在不一致时报红。
 
 ## 核心原理
 
@@ -104,6 +121,9 @@ DONE_FILE="${RUN_DIR}/.done/00_fastp_qc.done"
 PID_FILE="${RUN_DIR}/.pid/00_fastp_qc.pid"
 
 mkdir -p "${RUN_DIR}/logs" "${RUN_DIR}/.done" "${RUN_DIR}/.pid" "${RUN_DIR}/out"
+# ⚠️ 开工先清掉本阶段自己的陈旧 .done：重跑期间陈旧 .done 与存活 pid 并存时，
+#    四态判定的 .done 分支优先于 pid 存活检查，会把"正在跑"误报成"已完成"（实测复现）。
+rm -f "${DONE_FILE}"
 echo $$ > "${PID_FILE}"
 trap 'rm -f "${PID_FILE}"' EXIT
 
@@ -135,9 +155,33 @@ FASTP="$(command -v fastp || { echo "✗ 找不到 fastp —— 请激活 conda 
 ### 逐样本处理
 
 ```bash
-# ─── 从数据库获取样本信息 ───
-# samples 由编排层从 --samples 参数传入
-# 实际运行时从 run.params.json 读取 sample_numbers 和 sample_names
+# ─── 从 run.params.json 获取样本信息 ───
+# ⚠️ 键名是 `samples` 与 `sample_names`（Stage 0 的 schema 就这两个）。
+#    早期这里写的是 `sample_numbers` —— **该键在 run.params.json 里根本不存在**
+#    （全仓唯一出处是 db_query.py 的一个函数形参名），于是 `${sample_numbers[$i]}`
+#    在 `set -u` 下命中 `unbound variable`；更隐蔽的是**数组为空时不报错**，
+#    循环体一次都不执行、脚本直奔收尾，产物一个没有、却要靠门禁才发现。
+#    两个数组都从 run.params.json 读回，索引一一对应（schema 保证同序同长）。
+sample_numbers=()   # 数值编号（= run.params.json 的 samples）
+sample_names=()     # 目录/文件名用的样本名（= 同名键）
+while IFS=$'\t' read -r sn name; do
+    sample_numbers+=("${sn}"); sample_names+=("${name}")
+done < <(python -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+nums=[str(x) for x in (d.get("samples") or [])]
+names=[str(x) for x in (d.get("sample_names") or [])]
+for a,b in zip(nums,names): print(f"{a}\t{b}")' "${RUN_DIR}/run.params.json")
+
+# 样本名单为空 → 不写 .done（与其它阶段同一条兜底；此处必须先判，
+# 否则下面的循环一次都不跑，产物一个没有却"成功"走到收尾）
+if [ "${#sample_names[@]}" -eq 0 ]; then
+    echo "[ERROR] run.params.json 的 samples/sample_names 为空 —— 不写 .done" >&2
+    mkdir -p "${RUN_DIR}/.failed"
+    { echo "stage=00_fastp_qc"; echo "time=$(date '+%F %T')"
+      echo "reason=run.params.json 的 samples/sample_names 为空（或两键长度不一致）"
+    } > "${RUN_DIR}/.failed/00_fastp_qc.failed"
+    exit 1
+fi
 
 THREADS=8   # 从 run.params.json 的 parallelism 读取
 
@@ -164,7 +208,7 @@ for i in "${!sample_numbers[@]}"; do
     #    clean FASTQ 被完整覆盖重写 —— 正是我们想要的（半截文件本来就该丢弃）。
     #    一般原则：**resume 判存在性的产物集，必须是门禁要求集的超集** ——
     #    否则"产物残缺 + 重跑"会卡死在"跳过 → 门禁不过 → 再跳过"之间。
-    if [ -f "${O1}" ] && [ -f "${O2}" ] && [ -f "${JSON}" ]; then
+    if [ -s "${O1}" ] && [ -s "${O2}" ] && [ -s "${JSON}" ]; then
         log_info "Clean FASTQ + report exist, skipping sample ${name}: ${O1}"
         continue
     fi
@@ -315,7 +359,11 @@ print(f"dup rate: {r['duplication']['rate']:.2%}")  # 诊断用
 6. ✅ SESSION-SAFE 保护（`.done` + `.pid`）
 7. ✅ **写 `.done` 前过校验门禁**：`stage_verify.py --stage 00_fastp_qc`（清洗后 FASTQ 非空、JSON 可解析、reads>0），未过则写 `.failed` + `exit 1`
 8. ✅ resume 模式支持（输出文件存在性检查）
-9. ✅ 清洗后输出命名与下游 Stage 1 期望的 BWA 输入一致
+9. ✅ 清洗后输出命名与下游 Stage 1 期望的 BWA 输入一致 —— **本项不是自证的**：
+   Stage 1 的输入由 `run.params.json` 的 `fastq_dir` 决定（见上方「输出」段的
+   契约说明），编排层跑 Stage 0.5 时须把 `fastq_dir` 指向 `{RUN_DIR}/out/`。
+   只写这一句"名字一致"而不动 `fastq_dir`，Stage 1 仍会按原路径拿到**原始** FASTQ
+   （两个门禁都发现不了，实测见 align-sort「输入契约」段）。
 
 ## 产出汇报
 

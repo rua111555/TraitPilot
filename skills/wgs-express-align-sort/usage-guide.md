@@ -51,6 +51,7 @@ inside the `PBRUN()` docker wrapper (rendered by params-propose):
 
 ```bash
 # $1 = host GPU index; container sees only that card → pbrun uses --num-gpus 1
+#     (only exception: genotypegvcf rejects the flag — see parabricks-setup.md §4.1)
 PBRUN "${GPU_IDX}" fq2bam \
     --ref "${REF_FASTA}" \
     --in-fq "${R1}" "${R2}" \

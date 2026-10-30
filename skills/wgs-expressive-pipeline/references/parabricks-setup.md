@@ -160,7 +160,11 @@ PBRUN() {
 ```
 
 **关键正确性约定**：
-1. **`--gpus device=<宿主卡号>`** 只把那一张卡暴露进容器 → **容器内 pbrun 用 `--num-gpus 1`**
+1. **`--gpus device=<宿主卡号>`** 只把那一张卡暴露进容器 → **容器内 pbrun 默认 `--num-gpus 1`**
+   （⚠️ **例外只有一个：`genotypegvcf` 不接受该参数** —— 加上即 `rc=2` `unrecognized arguments`
+   且零产物；本表 §4.1 那一行是唯一要另写的。别按兄弟工具类推：其余
+   `fq2bam/haplotypecaller/markdup/bqsr/applybqsr` 都接受，实测 clara-parabricks 4.3.2-1
+   `pbrun <tool> -h` 的 `--num-gpus` 命中数分别为 `1/1/1/1/1/0`）
    （4.3.x **没有** `--gpu` 参数：写 `--gpu 0` 会与 `--gpuwrite/--gpusort/--gpusort` 前缀歧义报错
    `ambiguous option`；更不要写 `--gpu <宿主卡号>`，会选错/越界）
 2. 输出/临时文件目录必须在 `PB_MOUNTS` 已挂载的路径下；`-w "$(pwd)"` 保证相对路径落在宿主对应目录
@@ -179,7 +183,7 @@ PBRUN() {
 | `fq2bam` | `--num-gpus 1` | `--num-cpu N` | `--ref` `--in-fq R1 R2` `--out-bam`；**默认内含 markdup+BQSR**；24GB 卡加 `--low-memory --bwa-nstreams 1` |
 | `haplotypecaller` | `--num-gpus 1` | `--num-htvc-threads N` | `--ref` `--in-bam` `--out-variants` `--gvcf` |
 | `markdup` | `--num-gpus 1` | `--num-worker-threads N` | **`--ref`（必需，缺则 rc=2）** `--in-bam` `--out-bam` `--out-duplicate-metrics` |
-| `bqsr` | `--num-gpus 1` | 以 `--help` 为准 | `--ref` `--in-bam` **`--knownSites`**（驼峰，非 `--known-sites`）`--out-recal-file` |
+| `bqsr` | `--num-gpus 1` | 以 `--help` 为准 | `--ref` `--in-bam` **`--knownSites`**（驼峰，非 `--known-sites`）`--out-recal-file`；**无 `--out-bam`**（bqsr 只产出校正表，一步到 BAM 是 `applybqsr` 的事 —— 早期把它记到了 bqsr 头上） |
 | `applybqsr` | `--num-gpus 1` | 以 `--help` 为准 | `--ref` `--in-bam` `--in-recal-file` `--out-bam` |
 | `genotypegvcf` | **（不接受 `--num-gpus`）** | `--num-threads N` | `--ref` `--in-gvcf` `--out-vcf`（4.3.x 联合分型工具，替代 GATK GenotypeGVCFs；**无** `genotypecaller`）。⚠ **本行曾写 `--num-gpus 1`，实测是错的**：`pbrun genotypegvcf` 是唯一不接受该参数的子命令，加上即 `rc=2` `unrecognized arguments` 且零产物 |
 

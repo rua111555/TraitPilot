@@ -119,7 +119,13 @@ nohup bash "${SCRIPT_PATH}" > "${RUN_DIR}/nohup.out" 2>&1 &
 **场景 B — 对话框关闭后恢复**：用户说「推进 GWAS」→ 状态检查：
 
 ```bash
-for f in "${RUN_DIR}"/.done/*.done; do echo "✅ $(basename "$f")"; done   # 已完成
+# ⚠️ 空目录下 `"${RUN_DIR}"/.done/*.done` 不展开，会原样传给 basename → 输出一行
+#    `✅ *.done`（字面量），读者据此以为"有个阶段完成了"。全仓未启用 nullglob，
+#    故用 `-e` 判存在；写成 `shopt -s nullglob` 也一样有效（但只作用于当前 shell）。
+for f in "${RUN_DIR}"/.done/*.done; do
+    [ -e "$f" ] || continue          # 无匹配时 glob 保留字面量，跳过它
+    echo "✅ $(basename "$f")"
+done
 # 未完成的 phase 从输出的 *.done 缺失项推出 → 生成下一阶段脚本
 ```
 

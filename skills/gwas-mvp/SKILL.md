@@ -124,7 +124,16 @@ LOG_FILE="${RUN_DIR}/logs/03_mvp.log"
 DONE_FILE="${RUN_DIR}/.done/03_mvp.done"
 PID_FILE="${RUN_DIR}/.pid/03_mvp.pid"
 mkdir -p "$(dirname "${LOG_FILE}")" "$(dirname "${DONE_FILE}")" "$(dirname "${PID_FILE}")"
+# ⚠️ 开工先清掉本阶段自己的陈旧 .done：重跑一个曾成功过的阶段时，上一轮的 .done
+#    与本轮存活的 pid 并存，状态判定只看到 .done 就报「已完成」，用户据此推进下一
+#    阶段，而本阶段还在写同一个产物。（只清本阶段自己的，别抹掉其它阶段。）
+rm -f "${DONE_FILE}"
 echo $$ > "${PID_FILE}"; trap 'rm -f "${PID_FILE}"' EXIT
+
+# 输入/输出占位（由 gwas-pipeline 生成脚本时替换为实际值）
+PREFIX="..."                  # PLINK 前缀（不带扩展名），与上游阶段一致
+PHE_TXT="..."                 # 表型文件（tab 分隔 + 表头；第一列样本 ID）
+C_TXT="..."                   # 协变量文件（第一列样本 ID）
 
 # R 脚本：MVP.Data → MVP() 循环；见上文「核心流程」
 Rscript mvp_assoc.R "${PREFIX}" "${PHE_TXT}" "${C_TXT}"

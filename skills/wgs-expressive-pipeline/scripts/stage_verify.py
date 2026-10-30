@@ -32,7 +32,14 @@
   缺失的工具判 **hard**（fail-closed）：工具不在就无从验证，放行等于把"没验证过"当成
   "验证过"——那正是本机制要消灭的静默错误换了个层级。缺失与"数据有问题"是两回事，
   文案会明确区分（见 `Report.need_tool`）：这是**环境问题**，装上后重跑本阶段即可。
-- **读索引的检查优先**：`samtools idxstats` 走索引，秒级；避免在大 BAM 上做全量扫描。
+- **判据读本体，不读派生数据**：BAM 的 reads 数（total/mapped/unmapped）一律由
+  `samtools view -c` 全量遍历本体数出；索引只作**交叉验证的旁证**（分歧时登记
+  `index_drift` / `index_split_drift` 告警），不参与任何判定。代价是大 BAM 上每样本
+  多一遍全量读（实测 2M reads/65MB ≈ 0.4s，30×WGS 约数十秒/样本）——刻意取舍，
+  见 `check_bam` 4a 段的理由：索引是**离线于数据**的派生文件，陈旧/外来/漏计三种
+  形态都会让它说出与本体不符的话，而两个方向（放过坏数据、拦下好数据）都比慢贵得多。
+  历史教训：早期这里写的是"读索引的检查优先…避免全量扫描"，那条优化正是
+  `read_count`/`mapped_ratio`/`mapped_rate` 三条判据同时被陈旧索引骗过的成因。
 - **位点数下限由调用方显式声明**（`--min-variants`）：上文的"变异数异常少"是本机制
   要防的头号失效，但**没有**普适的默认下限（取决于参考基因组大小、队列大小、深度、
   物种）。故未声明时登记一条 **warn** 明说"未做该判定"（不静默通过、也不误拦），
@@ -45,9 +52,23 @@ stdout 人类可读报告 + `{RUN_DIR}/.verify/{stage}.json`（机器可读，�
 
 用法（由阶段脚本在写 .done 前调用）
 -----------------------------------
-    conda run -n Agent python <repo>/skills/wgs-expressive-pipeline/scripts/stage_verify.py \
+本脚本**不直接从交互式 shell 调用**，而是由阶段脚本的收尾门禁段调用，而阶段脚本本身
+已经跑在 `conda run -n Agent bash` 里。故这里**不要**再套一层 `conda run`：
+
+    # 阶段脚本内部（VERIFIER 由 run.params.json 的 verifier_path 解析而来）
+    python "${VERIFIER}" \
         --stage 01_bwa_sort --run-dir "${RUN_DIR}" \
-        --samples "sample1,sample2" --json
+        --samples "${SAMPLES_CSV}" --json
+
+⚠️ 在阶段脚本里写 `conda run -n Agent python "${VERIFIER}" ...` 会以 **rc=127** 失败：
+`conda run` 把 PATH 收窄成 `envs/Agent/bin` + 系统目录，而该环境里**没有任何 conda
+可执行文件**（实测 `ls envs/Agent/bin | grep conda` 只匹配到 `x86_64-conda-linux-gnu-ld`）。
+校验器根本没启动 → `.verify/*.json` 未产出 → 数据再健康也走失败分支。
+（从**交互式** shell 直接跑本脚本时相反：那时 PATH 里有 conda，`conda run` 才需要 ——
+但那是 `db_query.py` / `phenotype_extract.py` 一类独立工具的用法，不是本脚本。）
+
+需要人工核对某次运行的结果时，读 `.verify/<stage>.json` 即可，
+不必重新调用校验器（重跑会覆盖本轮报告，见 `main()` 里对旧报告的说明）。
 """
 from __future__ import annotations
 
@@ -107,6 +128,17 @@ class Report:
         # 必须真的写出来：早期版本里 Stage 2 会读 prev["read_totals"]，但没有任何地方
         # 写过这个键 —— 那条守恒检查于是永远静默跳过（声称存在、从不生效）。
         self.read_totals: dict[str, int] = {}
+        # 每样本的 **read 段数** —— 供下游做**外部锚**（见 verify_align 的 reads_anchor）。
+        #
+        # ⚠️ 与 read_totals 的区别是本质的，两者**不可互换**：
+        #   · read_totals   = BAM 里的**全部记录数**（含 secondary/supplementary），
+        #                     用于相邻两阶段之间的"reads 守恒"；
+        #   · primary_totals = **每段 read 恰好一条**的那个数（BAM 取 primary 记录，
+        #                     FASTQ 侧就是实测条数）—— 只有它具有"与上游输入可比"的语义。
+        # 实测（bwa mem 0.7.19，6000 段输入）：全部记录 6300、primary 6000 —— 拿 read_totals
+        # 去跟 FASTQ 对账会**系统性多出** supplementary，健康数据反被拦下。
+        # 故两者分开命名、分开落盘，从变量名上杜绝混用（同 check_bam 里 idx_* 的做法）。
+        self.primary_totals: dict[str, int] = {}
 
     def add(self, name, level, passed, detail="", skipped=False):
         self.checks.append(Check(name, level, passed, detail, skipped))
@@ -156,6 +188,8 @@ class Report:
             "warnings": [c.name for c in self.warnings],
             # 供下一阶段用 --prev-reads-file 做 reads 守恒比较
             "read_totals": dict(self.read_totals),
+            # 供下一阶段做**外部锚**（每段 read 一条的那个数，见 __init__ 的说明）
+            "primary_totals": dict(self.primary_totals),
             "checks": [c.as_dict() for c in self.checks],
         }
 
@@ -291,7 +325,16 @@ STAGES_NEEDING_VARIANT_FLOOR = {"03_haplotypecaller", "04_joint_genotyping",
 
 def check_bam(rep, bam, label, *, min_reads=1, expect_rg=None,
               expect_sorted=None, check_index=True, index_level="hard"):
-    """对单个 BAM 做结构+内容检查。返回 (总 reads 数 或 None)。
+    """对单个 BAM 做结构+内容检查。返回 `(总记录数, primary 数)`；取不到时为 None 分量。
+
+    ⚠️ 返回**两个数**而不是一个，是因为它们语义不同、**不可互换**（见 Report.__init__
+    里 read_totals / primary_totals 的说明）：
+      · 总记录数 = 全部 alignment 记录（含 secondary/supplementary），用于相邻阶段的
+        "reads 守恒"；
+      · primary 数 = **每段 read 恰好一条**的那个数，用于与**上游输入**（FASTQ）对账。
+    实测 bwa mem：6000 段输入 → 6300 条记录 = 6000 primary + 300 supplementary。
+    拿前者去跟 FASTQ 比会系统性多出一截，健康数据反被拦下。
+    文件缺失/无 samtools 时整体返回 None（调用方据此判"没产出"）。
 
     `index_level`：`"hard"` / `"warn"` / `None`（不判）。
       · 下游**需要**该索引才跑得动 → hard（如 BQSR BAM：HaplotypeCaller
@@ -366,7 +409,12 @@ def check_bam(rep, bam, label, *, min_reads=1, expect_rg=None,
     idx = bam_index(bam)
     total = None
     mapped = unmapped = None
+    # ⚠️ idx_* 三个变量**只用于"分歧诊断"**（下面 index_drift / index_split_drift），
+    #    **绝不参与判定**。判定值一律来自 4a 段的本体遍历。
+    #    早先把索引值直接赋给 mapped/unmapped 去判 mapped_ratio，正是本次要根除的
+    #    缺陷（见 (b) 段）；这两个命名分开就是为了从变量名上杜绝再次混用。
     idx_says = None
+    idx_mapped = idx_unmapped = None
     idx_stale = False
     if check_index and idx:
         rc, out, err = run([sam, "idxstats", bam])
@@ -377,11 +425,11 @@ def check_bam(rep, bam, label, *, min_reads=1, expect_rg=None,
                     f"索引与数据不匹配（重跑时索引步骤被跳过？）。**不可据此判定 "
                     f"reads 数**；已改用全量计数复核。重新 `samtools index` 即可修复")
         if rc == 0 and not idx_stale:
-            mapped = sum(int(l.split("\t")[2]) for l in out.splitlines()
-                         if l.count("\t") >= 2)
-            unmapped = sum(int(l.split("\t")[3]) for l in out.splitlines()
-                           if l.count("\t") >= 3)
-            idx_says = mapped + unmapped
+            idx_mapped = sum(int(l.split("\t")[2]) for l in out.splitlines()
+                             if l.count("\t") >= 2)
+            idx_unmapped = sum(int(l.split("\t")[3]) for l in out.splitlines()
+                               if l.count("\t") >= 3)
+            idx_says = idx_mapped + idx_unmapped
 
     # 4a) **真读 BAM 本体** —— 唯一可信的计数来源，顺带就是"中段损坏"的判据。
     #
@@ -394,10 +442,149 @@ def check_bam(rep, bam, label, *, min_reads=1, expect_rg=None,
     #    这正是本模块自认的头号防守对象（"坏 BAM 传导到下游"）的完整缺口，
     #    且此前在**任何**测试/探针里都没有"应拦而未拦"的阴性对照。
     #    全量 `view -c`（而非只抽首块）：中段损坏只有读到那一块才发现。
-    body_rc, body_out, body_err = run([sam, "view", "-c", "-@1", bam], timeout=1800)
+    body_rc, body_out, body_err = run([sam, "view", "-c", "-F", "4", "-@1", bam],
+                                      timeout=1800)
+    # ⚠️ `-F 4`：**同一遍遍历里只数"非 unmapped"**，total 由它加上 unmapped 得出。
+    #    为什么不能继续用 `view -c`（不带 -F）+ 另一遍取 mapped：
+    #      · `-F 4` 把 flag=4（segment unmapped）**排除**在计数之外，
+    #        故本值是 mapped；unmapped 需另取。
+    #      · 实测（2M reads / 65MB）：`view -c` 356ms、`view -c -F 4` 427ms，
+    #        两遍共 806ms；而 `view | awk` 单遍两个数要 994ms（awk 比 samtools
+    #        的 C 循环慢）。故**两遍 samtools 反而更快**，且语义与 idxstats 一致。
+    #    语义必须与 idxstats 对齐（否则替换后会误判）：实测两者对含
+    #    secondary/supplementary 的 BAM 给出**同一个** mapped（1150/1150）；
+    #    而 `flagstat`/`stats` 的 mapped 只算 primary（1000），拿来替换会让
+    #    真实 WGS BAM 的比对率系统性虚低 —— 那是"拦下好数据"，本判据的另一个禁忌。
     if body_rc == 0 and body_out.strip().isdigit():
-        body_total = int(body_out.strip())
+        body_mapped = int(body_out.strip())
+        unm_rc, unm_out, unm_err = run([sam, "view", "-c", "-f", "4", "-@1", bam],
+                                       timeout=1800)
+        if unm_rc == 0 and unm_out.strip().isdigit():
+            body_unmapped = int(unm_out.strip())
+            mapped, unmapped = body_mapped, body_unmapped
+            body_total = body_mapped + body_unmapped
+        else:
+            # 两遍口径必须自洽：第二遍失败就不能报 mapped/unmapped
+            # （宁可"未做该判定"登记在案，也不要报一对来源不同步的数）
+            body_total = None
+            # 清空以防万一（当前 idxstats 段只写 idx_* 三个变量、不碰这两个，
+            # 但留着这一行，将来若有人再把索引值赋进来就会立刻失效而非静默混用）
+            mapped = unmapped = None
+        body_ok = body_total is not None
+    else:
+        body_total = None
+        body_ok = False
+        mapped = unmapped = None
+
+    # 4a-2) **primary 计数** —— 供 Stage 1 的 `reads_anchor`（见 verify_align）。
+    #
+    # ⚠️ 为什么需要它、以及为什么不能用上面那个 `total`：
+    #    `total` 是**全部记录数**（含 secondary/supplementary）。实测 bwa mem 0.7.19：
+    #    6000 段 read 输入 → 6300 条记录（6000 primary + 300 supplementary）。
+    #    做"与上游输入对账"时必须用**每段 read 恰好一条**的数，否则健康数据会
+    #    因 supplementary 而系统性多出一截，反被拦下（本判据的另一个禁忌）。
+    #
+    #    实测确认 `-F 0x900`（排除 secondary 0x100 与 supplementary 0x800）就是它：
+    #    真实 bwa mem 输出 6300 条记录 → primary 6000 == 输入 6000；
+    #    合成夹具（700 primary-mapped/100 primary-unmapped/50 sec/30 supp/20 sec-unmapped
+    #    /10 supp-unmapped = 910 条）→ primary 800 == 700+100 ✅；
+    #    含 QC-fail（0x200）的夹具 → primary 170 == view -c 170（QC-fail **不**被排除，
+    #    与 `view -c` 口径一致）✅；病态 reads（0 长度/极短/全 N/低复杂度）下仍恒等 ✅。
+    #    也实测过 `samtools flagstat` 的 `primary` 与之**逐项相同**，但本判据沿用
+    #    `view -c` —— 与本文件其余计数同一条 idiom（少一个需要跟随 samtools 版本
+    #    的输出格式解析器；`flagstat -O tsv` 虽可机读，但没必要为此多引入一种取数方式）。
+    primary = None
+    if body_ok:
+        pr_rc, pr_out, _ = run([sam, "view", "-c", "-F", "0x900", "-@1", bam],
+                               timeout=1800)
+        if pr_rc == 0 and pr_out.strip().isdigit():
+            primary = int(pr_out.strip())
+
+    if body_ok:
         total = body_total
+        # 4b) **本体重建索引** —— 唯一能发现「坐标乱序」的判据（本仓第六次自查 F18 残余）。
+        #
+        # ⚠️ 为什么 2) 的 `@HD SO:coordinate` 不够：SO 是**头部自称**，与本体无关。
+        #    实测（40000 条、126 个 BGZF 块、交换两个等长数据块）：
+        #      · 文件字节数不变、quickcheck rc=0、`view -c`=40000、idxstats=40000、
+        #        @HD 仍写 SO:coordinate —— 上面所有判据全绿、门禁 `✅ 全部检查通过` rc=0；
+        #      · 而本体里 chr1 的坐标从 999993 跳回 988415（0.3% 的记录错位）——
+        #        正因如此，下游 HaplotypeCaller / GATK 走索引按区读会**拿到错的数据**。
+        #    只有"拿本体重建一次索引"能发现它：`samtools index` 拒绝该文件
+        #    （`[E::hts_idx_push] Unsorted positions`，三次重复逐字相同）。
+        #
+        # ⚠️ 这一条同时推翻了 `docs/test-evidence.md` 的一条**已登记边界**：
+        #    那里写「samtools 拒绝给乱序 BAM 建索引，故'乱序且带索引'在现实中不存在」。
+        #    前半句对（samtools 确实拒绝），后半句错 —— 拒绝只发生在**你试图建索引**时：
+        #    块交换（以及任何"字节数不变、头尾不动"的就地篡改）之后把**原有 .bai 留着**，
+        #    索引就在、乱序也在，且 2)/4a)/索引分歧三条判据全部看不见。该边界已作废。
+        #
+        # 为什么读本体重建而不是"读既有索引"：既有索引是派生数据（同 4a 段的理由），
+        #    它记的是**建它那时**的偏移；本体后来乱序了它照样自洽。必须重算。
+        #
+        # 为什么写 `/dev/null`：本判据只要 samtools 的**判定**，不要产物；
+        #    既避免与既有 .bai 命名冲突、也避免在近乎写满的根分区上落文件（实测可用）。
+        #
+        # ⚠️ **两级重建**（.bai → 失败且是"坐标超出 bai 上限"时再试 -c/CSI）——
+        #    否则本判据会**拦下健康数据**：实测 contig 长 600Mbp、坐标在 550Mbp 之后的
+        #    健康 BAM，默认 `.bai` 重建 rc=1（`cannot be stored in a bai index. Try using
+        #    a csi index` / `Numerical result out of range`），而 `-c` rc=0。
+        #    这不是臆想的边角：本文件 `bam_index()` 认 `.csi` 的理由就是"长 contig 场景"，
+        #    即**本仓库已知并支持**这类参考。只试 .bai 等于把一条既有支持路径判死。
+        #    区分办法：只有 stderr 命中 bai 上限签名时才降级重试；乱序的签名是
+        #    `Unsorted positions`，**两级都会失败**（实测），不会被重试放过。
+        #
+        # 代价：每样本多一遍全量遍历（实测 2M reads/19.7MB 为 357ms，与 `view -c` 同量级）
+        #    —— 同 4a 段：这是刻意取舍。且**假阳性面已实测为零**：全 unmapped、
+        #    空 BAM、5000 条并列同坐标、真实 bwa mem 输出（含 supplementary）、
+        #    多 contig 含**零记录 contig**（GRCh38 常态）、头部无 SO 但有序、
+        #    真实 `gatk MarkDuplicates` 输出 —— 七种健康形态重建索引一律 rc=0。
+        _err = ""
+        _tried = ".bai"
+        idx_rc, _, idx_err = run([sam, "index", "-o", os.devnull, bam], timeout=1800)
+        if idx_rc != 0:
+            # 只有「坐标超出 .bai 表示范围」才降级——其余失败（乱序、写不出去）应当直接报出
+            if re.search(r"cannot be stored in a bai index|Try using a csi index|"
+                         r"Numerical result out of range", idx_err or ""):
+                idx_rc, _, idx_err = run([sam, "index", "-c", "-o", os.devnull, bam],
+                                         timeout=1800)
+                _tried = ".bai 与 -c 两级"
+        if idx_rc != 0:
+            # ⚠️ 必须把「内容乱序」与「环境写不进去」分开：两者的 rc 都是 1，
+            #    但文案指向完全不同的排查方向，混在一起会让人去修错的地方。
+            #    实测签名：内容问题 = `failed to create index for "x.bam"`；
+            #    路径问题 = `failed to create or **write** index "/proc/x/y.bai"`。
+            _err = (idx_err or "").strip()
+            if "failed to create or write index" in _err:
+                rep.add(f"{label}.body_indexable", "hard", False,
+                        f"**未能重建索引：索引文件写不出去**（`samtools index` rc={idx_rc}）——"
+                        f"这是**环境问题**（磁盘满/无写权限），不是数据问题："
+                        f"{_err[:200]}。**本条判据未能生效**，"
+                        f"修好写权限或清理空间后重跑本阶段")
+            elif "cannot be indexed" in _err or "Unsorted positions" in _err:
+                # ⚠️ 文案里的重建档位必须如实反映**实际试过什么**：早期这里写死了
+                #    "`.bai` 与 `-c` 两级重建都失败"，而那只有在 bai 上限签名触发降级时
+                #    才成立 —— 直接因乱序失败时根本没试过 CSI。变异验证（去掉降级）
+                #    时这条文案当场自相矛盾（说"两级都失败"而实际只试了一级），
+                #    错误的自述会把排查引向"是不是 CSI 也不支持"这种不存在的问题。
+                rep.add(f"{label}.body_indexable", "hard", False,
+                        f"**BAM 本体的坐标是乱序的**（`samtools index` 拒绝该文件，"
+                        f"{_tried} 重建失败，rc={idx_rc}）：{_err[:240]}。"
+                        f"⚠️ 头部却自称 `@HD SO:coordinate`，且 quickcheck、全量计数、"
+                        f"idxstats 全部通过 —— 这正是「乱序但带索引」这一形态"
+                        f"（字节数不变的就地篡改：块交换/局部覆写）。"
+                        f"下游 GATK 走索引按区读取会**拿到错的数据**（不是报错，是静默取错）。"
+                        f"请重跑该样本的比对与排序，不要复用这份 BAM")
+            else:
+                # 既不是写不进去、也不是乱序 —— 判据未能得出结论，必须留痕而非静默放过
+                rep.add(f"{label}.body_indexable", "hard", False,
+                        f"**按本体重建索引失败，但失败原因不是已识别的形态**"
+                        f"（rc={idx_rc}）：{_err[:240]}。"
+                        f"**无法判定本体是否坐标有序** —— 该形态未经实测，"
+                        f"请连同这条信息反馈；在此之前不放行")
+        else:
+            rep.add(f"{label}.body_indexable", "hard", True,
+                    f"按本体重建索引成功（坐标有序）—— 头部自称的 SO 与本体一致")
         if idx_says is not None and idx_says != body_total:
             # 索引与本体分歧：本体是事实，但分歧本身必须报出来 ——
             # 漏计的索引（GPU 后端常见）该被当成坏产物暴露，而不是静默采信。
@@ -407,10 +594,26 @@ def check_bam(rep, bam, label, *, min_reads=1, expect_rg=None,
                     f"{os.path.basename(idx)} 与 {os.path.basename(bam)} 不一致。"
                     f"**以本体为准**（下游 HC 无 -L 时全量读取）。"
                     f"`samtools index -f` 重建即可消除")
+        elif (mapped is not None and idx_mapped is not None
+              and (idx_mapped, idx_unmapped) != (mapped, unmapped)):
+            # **总条数对得上、拆分对不上** —— 比"总数分歧"更隐蔽的索引损坏形态，
+            # 也是本判据此前被绕过的那条缝：早期守卫只比总条数（idx_says == total），
+            # 于是这种索引被当成事实照用，两个方向都错过（见 (b) 段的两个实例）。
+            # 判 warn 的理由同 index_drift：BAM 本体完好、无 -L 的下游可用，
+            # 但索引确实与数据不是一回事 —— 带 -L/区间的下游会按错的偏移取数。
+            rep.add(f"{label}.index_split_drift", "warn", False,
+                    f"索引与 BAM 本体**总条数都是 {body_total}，但拆分不同**："
+                    f"索引 mapped={idx_mapped}/unmapped={idx_unmapped}，"
+                    f"本体 mapped={mapped}/unmapped={unmapped}。"
+                    f"判定**一律采用本体**；该索引已与数据脱节"
+                    f"（覆写 BAM 而未重建 .bai 的典型形态），`samtools index -f` 重建即可消除")
         rep.add(f"{label}.read_count", "hard", total >= min_reads,
                 (f"mapped={mapped} unmapped={unmapped} total={total}"
-                 if idx_says == body_total else
-                 f"total={body_total}（全量计数；索引报 {idx_says} 条，不一致）")
+                 f"（均取自 BAM 本体）"
+                 + ("" if idx_says in (None, total) else
+                    f"；索引报 {idx_says} 条，不一致")
+                 if mapped is not None else
+                 f"total={body_total}（全量计数；索引报 {idx_says} 条）")
                 + ("" if total >= min_reads else "；**空 BAM**（比对失败但脚本照跑）"))
         rep.add(f"{label}.body_readable", "hard", True,
                 f"BAM 本体可全量读取（{body_total} 条）")
@@ -449,18 +652,42 @@ def check_bam(rep, bam, label, *, min_reads=1, expect_rg=None,
     #     50/50 全 unmapped 和 5000/5000 一样说明参考选错。故拆出来单判。
     #     只有 `mapped_rate`（比对率是否 ≥90%，一个统计性判断）保留 total >= 100 门槛。
     #
-    # (b) **索引不可信时不判，但必须留痕**。mapped/unmapped 只能来自 idxstats，
-    #     而索引与本体已分歧（漏计/陈旧）时这两个数就是错的 —— 实测 Parabricks
-    #     applybqsr 的索引在 200 reads 输入上报 0，若照它判会得出 mapped=0/total=200
-    #     → "全 unmapped"→ **硬拦健康数据**。故此时不判，但登记一条明说"未做该判定"
-    #     （同 idx_stale 分支既有的做法：跳过必须留痕，报告不能出现"全绿无话"的假象）。
-    idx_trustworthy = idx_says is not None and total is not None and idx_says == total
-    if idx_trustworthy:
-        if mapped == 0:
+    # (b) **mapped/unmapped 也从本体取**（本仓第五次自查 F03/F25/F27）。
+    #     早期这两条判据的**拆分**仍整段来自 `idxstats`，守卫只比**总条数**
+    #     （`idx_says == total`）。于是「BAM 被覆写而 .bai 未重建、且新旧条数**恰好
+    #     相同**」时索引的旧拆分被当成事实照用，两个方向都会错：
+    #       · 假阳性 —— 健康 200 条全 mapped + 总数同为 200 的外来索引（拆分
+    #         mapped=0/unmapped=200）→ `[FAIL] mapped=0/200 没有任何 read 比对上`
+    #         硬拦健康数据，还叫用户去查"参考基因组是否选错"。
+    #       · 假阴性 —— 真值 200 条全 unmapped + 总数同为 200 的索引（拆分成
+    #         mapped=200）→ `[PASS] mapped=200/200（100.0%）`，全 unmapped 放行 ——
+    #         正是本判据的**头号防守对象**。
+    #     根因是同一个：判据读派生数据（索引）而非本体。故 `mapped`/`unmapped`
+    #     现由上面 `view -c -F 4` / `-f 4` 两遍从 BAM 本体数出，索引降级为旁证。
+    #
+    #     代价：每样本多一遍全量遍历（实测 2M reads/65MB 为 427ms；真实 30×WGS
+    #     样本约数十秒/样本）。这是刻意取舍 —— "放过坏数据"与"拦下好数据"都比
+    #     慢一点贵得多（同 4a 段的理由）。
+    body_has_split = mapped is not None and unmapped is not None
+    if body_has_split:
+        # 本体口径可信 → 无条件判，不再有任何"因索引不可信而跳过"的分支
+        if mapped == 0 and total > 0:
             rep.add(f"{label}.mapped_ratio", "hard", False,
                     f"mapped=0/{total}；**没有任何 read 比对上** —— 查参考基因组是否"
                     f"选错（物种/版本/contig 命名），而非查数据质量。"
-                    f"下游会产出「几乎没有变异」的 GVCF，与真的低变异样本无法区分")
+                    f"下游会产出「几乎没有变异」的 GVCF，与真的低变异样本无法区分"
+                    f"（此数取自 BAM 本体，非索引）")
+        elif total == 0:
+            # ⚠️ 空 BAM **不能**进上面那一支：mapped=0/total=0 也满足 `mapped == 0`，
+            #    但成因是"压根没 reads"，不是"参考选错"。照上面报会叫用户去查参考
+            #    基因组 —— 一个**误导性诊断**（本判据的另一个禁忌：不能只判错，
+            #    还要指对方向）。这条本判据**不登记**：read_count 已判 hard 失败，
+            #    此处只需说明"为什么不判"，避免报告出现"全绿无话"的假象。
+            #    （HEAD 版本靠 `and total` 守卫做到这点，改写时漏掉了，回归当场抓到。）
+            rep.add(f"{label}.mapped_ratio", "warn", False,
+                    "BAM 本体为空（total=0）—— **未判「全部 read 都没比对上」**："
+                    "没有 reads 可谈比对率，成因是「比对没产出」而非「参考选错」。"
+                    "见 read_count 的硬性失败")
         elif total >= 100:
             rate = mapped / total
             rep.add(f"{label}.mapped_ratio", "hard", True,
@@ -477,49 +704,50 @@ def check_bam(rep, bam, label, *, min_reads=1, expect_rg=None,
                     f"**未做「比对率是否偏低」判定**（小样本的比率无统计意义）。"
                     f"注意：`mapped == 0` 的判定不受此门槛影响，已单独判过")
     else:
-        # 索引缺失/陈旧/与本体分歧 → mapped/unmapped 无从取得（或不可信），
-        # 上面那条判据**整条不登记**。不能就此静默：`read_count`/`body_readable`
-        # 只能证明"有 reads、读得动"，证明不了"比上了"。
-        # （重建索引后重跑本校验即可恢复完整判定。）
-        if mapped == 0 and total:
-            # 索引说"一条都没比上"，但它本身就不可信（与本体分歧）——
-            # 这是**误拦健康数据**的高危形态（实测 GPU 后端的 .bai 漏计），
-            # 故明确说明"不据此判定"，而不是让它变成一个 hard 失败。
-            rep.add(f"{label}.mapped_ratio", "warn", False,
-                    f"索引报 mapped=0/{total}，但**该索引与 BAM 本体不一致**"
-                    f"（见 index_drift），mapped/unmapped 拆分不可信 —— "
-                    f"**未据此判「全部 read 都没比对上」**（照它判会误拦健康数据："
-                    f"GPU 后端 applybqsr 写出的 .bai 有系统性漏计）。"
-                    f"`samtools index -f` 重建后重跑本校验")
-        else:
-            rep.add(f"{label}.mapped_ratio", "warn", False,
-                    "索引不可用或与数据不一致，无法用 idxstats 拆分 mapped/unmapped —— "
-                    "**未做「全部 read 都没比对上」判定**。重建索引后重跑本校验")
-    return total
+        # 取不到本体拆分（第二遍遍历失败，见 4a）—— 此时**不判，但必须留痕**：
+        # `read_count`/`body_readable` 只能证明"有 reads、读得动"，证明不了"比上了"。
+        # 与早期版本的差别：早期这里是"索引不可信则不判"，现在是"本体取不到才不判"，
+        # 触发面窄得多（索引不可信不再是跳过理由 —— 本体才是判据来源）。
+        rep.add(f"{label}.mapped_ratio", "warn", False,
+                "取不到 BAM 本体的 mapped/unmapped 拆分（第二遍 `view -f 4` 未成功）"
+                "—— **未做「全部 read 都没比对上」判定**。"
+                "该判定不再依赖索引，故重建索引无法恢复它；请确认 samtools 可正常读取该 BAM")
+    return total, primary
 
 
 def check_bam_cohort(rep, samples, bam_of, *, min_reads=1, expect_rg=True,
                      label="bam"):
     """对整队列的 BAM 做检查，并做**样本集合守恒**判定。
 
-    bam_of(sample) -> 期望路径。返回 {sample: total_reads}。
+    bam_of(sample) -> 期望路径。返回 `({sample: 总记录数}, {sample: primary 数})`。
+
+    ⚠️ 两个字典**都要**带出去：调用方需要 `totals` 做相邻阶段的 reads 守恒，
+    也需要 `primaries` 做与上游 FASTQ 的对账（见 Report.__init__ 的两者之别）。
+    早期只有前者，于是"与上游输入对账"这一步根本没有数据可用。
     """
     totals = {}
+    primaries = {}
     missing = []
     for s in samples:
         b = bam_of(s)
-        t = check_bam(rep, b, f"{label}[{s}]", min_reads=min_reads,
-                      expect_rg=(s if expect_rg else None),
-                      expect_sorted=True)
+        got = check_bam(rep, b, f"{label}[{s}]", min_reads=min_reads,
+                        expect_rg=(s if expect_rg else None),
+                        expect_sorted=True)
+        if got is None:
+            missing.append(s)
+            continue
+        t, pr = got
         if t is None:
             missing.append(s)
         else:
             totals[s] = t
+            if pr is not None:
+                primaries[s] = pr
     if samples:
         rep.add("cohort_sample_set", "hard", not missing,
                 f"{len(samples) - len(missing)}/{len(samples)} 个样本产出完整"
                 + (f"；缺失/损坏: {missing[:8]}" if missing else ""))
-    return totals
+    return totals, primaries
 
 
 # ============================ VCF 检查 ============================
@@ -608,16 +836,71 @@ def check_vcf(rep, vcf, label, *, expect_index=True, expect_gvcf=False,
                 rc2, out2, err2 = run([bcf, "view", "-H", "-r", win, vcf], timeout=300)
                 n_win = sum(1 for l in out2.splitlines() if l.strip())
                 usable = rc2 == 0 and n_win >= 1
-                rep.add(f"{label}.index", "hard", usable,
-                        (f"{os.path.basename(idx)}；按区读取 {win} 返回 {n_win} 行（可用）"
-                         if usable else
-                         f"{os.path.basename(idx)} **文件在但不可用** —— "
-                         f"按区读取 {win} 返回 {n_win} 行、rc={rc2}"
-                         f"（全量扫描同文件有 {n_var} 条）。"
-                         f"{(err2 or '').strip()[:160]}"
-                         f"→ 索引与数据不匹配（外来拷贝 / 覆写产物后未重建）。"
-                         f"下游 GATK -L、bcftools -r、tabix 会**静默**拿到空结果。"
-                         f"`bcftools index -f` 或 `tabix -f -p vcf` 重建即可"))
+                # ─── F02：**索引覆盖的条数**必须与全量扫描一致 ───
+                #
+                # 上面那个窗口探测**只落在首条记录的窗口**里，于是漏掉一整类形态：
+                # 「索引是在文件还短的时候建的，之后文件被写长而索引没重建」——
+                # 实测（本仓 fixture）：先在 60 条时建 .tbi，再覆写成 3000 条而不重建，
+                # 则首窗口 `chr1:100-1100` 照样返回 11 行（rc=0）→ 旧判据判"索引可用"，
+                # 而**尾部**窗口 `chr1:299000-300000` 静默返回 **0 行、rc=0**。
+                # 下游 GATK -L 对后半段染色体正是这样静默拿到空结果。
+                # 只探测单个窗口，等于用"开头能读"推断"整份都能读" ——
+                # 与本仓反复出现的"判据看了一个角落就当全部"同型。
+                #
+                # 用 `bcftools index -n` 直接问索引"你覆盖多少条"，与全量扫描对账：
+                # 实测七种形态（健康 .tbi / 健康 .csi / 部分覆盖陈旧 / 无索引 /
+                # 外来索引 / 空 VCF / 坏 .tbi）下，**只有**后三种不合格形态给出不一致
+                # 或 rc≠0，健康与空 VCF 都精确相等（500==500、0==0）。
+                # 代价：一次秒级统计，不需要再遍历数据。
+                n_idx_rc, n_idx_out, n_idx_err = run([bcf, "index", "-n", vcf],
+                                                     timeout=300)
+                covered = None
+                if n_idx_rc == 0 and n_idx_out.strip().isdigit():
+                    covered = int(n_idx_out.strip())
+                cov_ok = None if covered is None else (covered == n_var)
+                if cov_ok is False:
+                    # 用**真实**的末条记录坐标写文案（别用推算的：记录间距未知，
+                    # 推算出来的位置可能根本不在数据里，把用户引到错的地方）。
+                    last = [l for l in out.splitlines() if l.strip()][-1].split("\t")
+                    last_pos = (f"{last[0]}:{last[1]}" if len(last) >= 2
+                                and last[1].isdigit() else "(末条记录)")
+                    rep.add(f"{label}.index_coverage", "hard", False,
+                            f"{os.path.basename(idx)} **只覆盖 {covered} 条，"
+                            f"而文件里有 {n_var} 条** —— 索引是在文件更短时建的、"
+                            f"之后数据被写长而未重建。按区读取**前段正常、后段静默返回 "
+                            f"0 行且 rc=0**（实测：首窗口 `{win}` 能读，末条记录附近 "
+                            f"`{last_pos}` 返回 0 行），"
+                            f"下游 GATK -L / bcftools -r 取后半段染色体时**不会报错**，"
+                            f"只是拿到空结果。`bcftools index -f` 或 `tabix -f -p vcf` "
+                            f"重建即可")
+                elif cov_ok is None:
+                    # 问不到条数（索引读不了 / 版本不支持 -n）——**不据此判**，
+                    # 但也不能静默：下面窗口探测的结果照常登记，这里只留痕。
+                    rep.add(f"{label}.index_coverage", "warn", False,
+                            f"`bcftools index -n` 未能给出索引覆盖条数"
+                            f"（rc={n_idx_rc}；{(n_idx_err or '').strip()[:120]}）—— "
+                            f"**未做「索引覆盖条数是否与文件一致」判定**"
+                            f"（该形态靠下面的按区读取探测兜底）")
+                # 下面这条 index 判据的文案必须**按实际情形**选，不能二分：
+                # 「可用性」与「覆盖条数」是两个独立的结论，四种组合都要说实话。
+                if not usable:
+                    det = (f"{os.path.basename(idx)} **文件在但不可用** —— "
+                           f"按区读取 {win} 返回 {n_win} 行、rc={rc2}"
+                           f"（全量扫描同文件有 {n_var} 条）。"
+                           f"{(err2 or '').strip()[:160]}"
+                           f"→ 索引与数据不匹配（外来拷贝 / 覆写产物后未重建）。"
+                           f"下游 GATK -L、bcftools -r、tabix 会**静默**拿到空结果。"
+                           f"`bcftools index -f` 或 `tabix -f -p vcf` 重建即可")
+                elif cov_ok:
+                    det = (f"{os.path.basename(idx)}；按区读取 {win} 返回 {n_win} 行"
+                           f"（可用）、索引覆盖 {covered} 条与全量一致")
+                elif cov_ok is None:
+                    det = (f"{os.path.basename(idx)}；按区读取 {win} 返回 {n_win} 行"
+                           f"（可用）；**索引覆盖条数未能核对**（见 index_coverage）")
+                else:
+                    det = (f"{os.path.basename(idx)}；按区读取 {win} 返回 {n_win} 行"
+                           f"（可用）；**但覆盖条数不符**——见 index_coverage")
+                rep.add(f"{label}.index", "hard", usable, det)
 
     # 样本名（bcf -l 更快；退化为解析 #CHROM 行）
     smps = None
@@ -710,7 +993,9 @@ def check_vcf(rep, vcf, label, *, expect_index=True, expect_gvcf=False,
                 "头部声明 ##ALT=<ID=NON_REF>（确为 GVCF）" if has_decl else
                 "**头部缺少 ##ALT=<ID=NON_REF> 声明** —— 不是 GVCF，"
                 "Stage 4 CombineGVCFs 会失败"
-                "（HaplotypeCaller 漏加 -ERC GVCF，或 pbrun 漏加 --gvcf）")
+                "（HaplotypeCaller 漏加 -ERC GVCF，或 pbrun 漏加 --gvcf）。"
+                "**重跑本阶段不会改变它** —— 产物是内容不合格而非缺失，"
+                "resume 会因它存在而跳过；先清掉 out/ 下该样本的产物再重跑")
 
     return n_var, smps
 
@@ -747,11 +1032,25 @@ def _resolve_min_variants(args):
         return 0, None, None          # 键不存在 = 真未声明
 
     raw = params["min_variants"]
-    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+    # ── `0` = **显式不做此判定**（文档明文定义，与"类型写错"不同类）──
+    # params-propose/SKILL.md 教的就是写 0（其 schema 字面量默认值即 `0`，并逐字说明
+    # "用户明确不做此判定时写 0（= 未声明，校验器登记一条 warn 明说'未做该判定'）"）。
+    # 而早先这里把 `raw <= 0` 一并判 hard —— 于是**照文档生成的默认 run.params.json**
+    # 让 Stage 3/4/5 在健康数据上永远写不出 .done：文档教 A、代码判 B，两端各说各话
+    # （根因 D）。修法是把文档已定义的语义**实现**出来：0 走"未声明"通路（warn 明说
+    # 未做该判定），负数/小数/字符串/bool/null 仍是畸形（想开却没生效 → fail-closed）。
+    # ⚠️ 两个陷阱都要挡住，判据必须写成"**整数** 0"而不是"等于 0"：
+    #    · `False == 0` 为真（bool 是类型写错，不是豁免）
+    #    · `0.0 == 0` 也为真（float 同为类型写错）
+    #    故豁免条件是 `isinstance(raw, int) and not isinstance(raw, bool) and raw == 0`，
+    #    其余一切"等于 0 但不是整数 0"的形态都落进下面的畸形分支。
+    if isinstance(raw, int) and not isinstance(raw, bool) and raw == 0:
+        return 0, None, None
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
         return 0, None, (f"{p} 的 min_variants={raw!r} 不是正整数 —— "
                          f"写这个键即表示要开'变异数异常少'判定，却无法生效。"
                          f"请改成正整数（按参考基因组大小/队列规模推算），"
-                         f"或删掉该键以明确表示不做此判定")
+                         f"或写 0 / 删掉该键以明确表示不做此判定")
     return raw, f"{p} 的 min_variants", None
 
 
@@ -792,10 +1091,16 @@ def _resolve_min_variants_indel(args, snp_floor):
         raw = params["min_variants_indel"]
         if not isinstance(raw, bool) and isinstance(raw, int) and raw > 0:
             return raw, f"{p} 的 min_variants_indel", None, None
+        # `0` = **显式不做此判定**，与 SNP 侧 `min_variants: 0` 同构（见
+        # _resolve_min_variants 的说明）。两键的三分语义必须一致：
+        #   正整数 = 开判定 / 整数 0 = 显式不做 / 其它（含 false / 0.0 / 负数） = 畸形。
+        # ⚠️ 豁免条件写成"**整数** 0"而非"等于 0"（`False == 0` 与 `0.0 == 0` 都为真）。
+        if isinstance(raw, int) and not isinstance(raw, bool) and raw == 0:
+            return 0, None, None, None
         return 0, None, None, (
             f"{p} 的 min_variants_indel={raw!r} 不是正整数 —— "
             f"写这个键即表示要开 INDEL 的'变异数异常少'判定，却无法生效。"
-            f"请改成正整数（按 INDEL 量级推算），或删掉该键以明确表示不做此判定")
+            f"请改成正整数（按 INDEL 量级推算），或写 0 / 删掉该键以明确表示不做此判定")
     if snp_floor > 0:
         return 0, None, (
             f"只声明了 min_variants={snp_floor}（该值按 **SNP** 量级给出），"
@@ -980,6 +1285,16 @@ def verify_fastp(args, rep):
                     f"R1/R2 各 {n1} 条，配对守恒" if n1 == n2 else
                     f"**R1/R2 条数不等**（R1 {n1} 条、R2 {n2} 条，差 {abs(n1 - n2)}）—— "
                     f"两者不是同一次运行的同一对产物（旧文件未清、或两次运行混合）")
+        # ─── 记进 primary_totals → 供 Stage 1 做**外部锚**（见 _anchor_from_fastq）───
+        # ⚠️ 这里写的是"**每段 read 一条**"的数，即两份 clean FASTQ 的实测条数之和
+        #    （PE 下 R1/R2 各算一段），而**不是** `read_totals`（那是 BAM 记录数，含
+        #    secondary/supplementary，与 FASTQ 无可比性）。两者语义不同、不可互换，
+        #    理由与实测见 Report.__init__。
+        # ⚠️ 只在**两份都数出来**时才记：单端（len(actual)==1）时"每段 read 一条"的
+        #    总数无从谈起，且本管线是 PE 契约（见上面的 single_end 硬性判据）——
+        #    宁可让 Stage 1 登记"没有基准"，也不要写一个语义错误的数。
+        if len(actual) == 2:
+            rep.primary_totals[s] = sum(actual.values())
         j = os.path.join(args.run_dir, "out", f"{s}.fastp.json")
         if not have(j):
             # hard 而非 warn：本阶段的输出契约里就有它（供 MultiQC 聚合），
@@ -1002,16 +1317,81 @@ def verify_fastp(args, rep):
         bf = (r.get("summary") or {}).get("before_filtering") or {}
         reads = af.get("total_reads")
         reads_before = bf.get("total_reads")
-        if type(reads) is not int or reads <= 0:
+
+        # ─── F01：`reads` / `keep_rate` 不再由 JSON **自证** ───
+        #
+        # 早期这两条只读 `summary`，而 `summary` 是同一份 JSON 的另一处 ——
+        # 相当于拿文件跟它自己对齐。实测（fastp 1.1.0，本仓 bench）：
+        # 把 `after_filtering.total_reads` 改成 900000、`before_filtering` 改成 4000
+        # （per-mate 键与两份 clean FASTQ 全部保持真值 1000/1000），旧实现报
+        #     [PASS] report[s].reads: 清洗后 900000 reads
+        #     [PASS] report[s].keep_rate: 保留率 22500.0%（阈值 ≥80%）
+        # 且 `✅ 全部检查通过` rc=0 —— 两条判据同时被同一处篡改骗过，
+        # 而 `matches_clean_*`（拿 per-mate 键与文件对账）**照样通过**，
+        # 谁也拦不住：报告里写着"清洗后 90 万条"，实际 BWA 只跑 2000 条。
+        #
+        # 修法与 `count_fastq_reads` 同源：**拿本体（两份 clean FASTQ 的实测条数）
+        # 做基准**，JSON 的 `summary` 降级为被核对的一方。
+        # 为什么基准可以用 per-mate 键之和：实测 fastp 1.1.0 九种配置
+        # （默认/-A/-l/-D/-5 -3/-u -U/--unpaired1/2/-c/-Y/-g）下三者恒等 ——
+        # `after_filtering.total_reads` == `read1_after_filtering` + `read2_after_filtering`
+        # == clean_1 实际条数 + clean_2 实际条数（`--unpaired1/2` 分流的 read 在
+        # 三处**都不计**：实测 1000 对里 250 条 R1 过短 → clean 各 750、
+        # unpaired2=250，而 after 报 1500 = 750+750）。故三处互为独立副本，
+        # 可交叉验证；此处取**文件实测**为准，JSON 的两处都作为对账对象。
+        fastq_total = (sum(actual.values()) if len(actual) == 2 else
+                       (next(iter(actual.values())) if len(actual) == 1 else None))
+
+        if fastq_total is None:
+            # 拿不到本体基准（文件缺失/损坏/形态错，已由上面各条 hard 报出）——
+            # 此时**不判**，但必须留痕：不能因为"没基准"就让这条判据静默消失。
+            rep.add(f"report[{s}].reads", "warn", False,
+                    f"json 报 after_filtering.total_reads={reads!r}，但 clean FASTQ 的"
+                    f"实测条数取不到（见上面各条失败）—— **未做「JSON 读数与产物一致」"
+                    f"判定**（无基准可对账，不是文件与报告一致）")
+        elif type(reads) is not int or reads <= 0:
             rep.add(f"report[{s}].reads", "hard", False,
-                    f"after_filtering.total_reads={reads!r}（清洗后无 read）")
+                    f"after_filtering.total_reads={reads!r}（清洗后无 read）；"
+                    f"而两份 clean FASTQ 实际数出 {fastq_total} 条 —— 报告与产物的"
+                    f"差异本身就是证据（fastp 写 JSON 后才失败？或 JSON 属另一轮）")
         else:
-            rep.add(f"report[{s}].reads", "hard", True, f"清洗后 {reads} reads")
+            # ⚠️ 判 **hard**：这不再是"报告好不好看"的问题。JSON 是给人看 QC 的、
+            #    FASTQ 是给 BWA 跑的，两者不一致时，人看到的数字与实际跑的数据
+            #    不是一回事 —— 正是本判据要防的"排查时被带偏"。
+            #    且**重跑不会自动修好它**：必须查清哪一份不对。
+            same = reads == fastq_total
+            rep.add(f"report[{s}].reads", "hard", same,
+                    f"清洗后 {reads} reads（JSON 与两份 clean FASTQ 实测 {fastq_total} "
+                    f"条一致）" if same else
+                    f"**JSON 的 summary 与产物不一致**：JSON 说清洗后 {reads} reads，"
+                    f"两份 clean FASTQ 实测共 {fastq_total} 条。fastp 1.1.0 实测"
+                    f"（九种配置）三者恒等，故此差异说明这份 JSON 不属于本轮产物"
+                    f"（旧 JSON 配新 FASTQ）或已被改写。"
+                    f"**人和 QC 报告看 JSON、BWA 跑 FASTQ** —— 不一致时排查会被彻底带偏")
+            # 保留率：**分母也必须是同一来源**，否则两个来源的数相除可以得出
+            # 任何值（旧实现里 900000/4000 就报出 22500% —— 一个**算术上不可能**
+            # 的保留率，却以 `[PASS] 保留率 22500.0%（阈值 ≥80%）` 呈现）。
             if type(reads_before) is int and reads_before > 0:
                 keep = reads / reads_before
-                rep.add(f"report[{s}].keep_rate", "warn", keep >= 0.8,
-                        f"保留率 {keep:.1%}（阈值 ≥80%）" +
-                        ("" if keep >= 0.8 else "；过滤过猛，可能丢真实信号"))
+                # `keep > 1` 是**结构上不可能**的：fastp 只会丢弃/原样保留/裁短，
+                # 从不凭空造 read。实测 fastp 1.1.0 九种配置下 after ≤ before 恒成立
+                # （比值 1.000 或 0.666）。故 >1 说明分子分母不是同一轮的数 ——
+                # 判 hard 而非"保留率很高，真好"。
+                # ⚠️ 必须在算比率**之前**拦：一旦算出 22500% 这种数，"分母/分子
+                #    来自不同轮次"这个事实就被一个貌似正常的比率掩盖了。
+                rep.add(f"report[{s}].keep_rate", "warn" if keep <= 1.0 else "hard",
+                        keep >= 0.8 and keep <= 1.0,
+                        f"保留率 {keep:.1%}（阈值 ≥80%）"
+                        + ("" if keep >= 0.8 else "；过滤过猛，可能丢真实信号")
+                        if keep <= 1.0 else
+                        f"**保留率 {keep:.1%} > 100%，算术上不可能** —— fastp 只会"
+                        f"丢弃/裁短 read，不会凭空增加。说明 before({reads_before}) "
+                        f"与 after({reads}) 不是同一次运行的数（JSON 被改写或跨轮次拼接）")
+            else:
+                # 分母取不到时**不静默**：旧实现在这里整条不登记（读者以为判过了）。
+                rep.add(f"report[{s}].keep_rate", "warn", False,
+                        f"before_filtering.total_reads={reads_before!r} 取不到或非正 —— "
+                        f"**未做「保留率是否过低」判定**（无分母即无比率）")
         # ─── 与 FASTQ 实际读数**逐端对账**（防"混轮次产物"的主力判据）───
         #
         # ⚠️ 为什么必须有这条：上面每一条判据都只看 FASTQ **自己**
@@ -1068,18 +1448,168 @@ def verify_fastp(args, rep):
                     f"否则 resume 会因产物齐全而跳过")
 
 
+def _anchor_from_fastq(rep, args, primaries):
+    """Stage 1 的**外部锚**：把 BAM 的 primary 数与 Stage 0.5 数出的 FASTQ 条数对账。
+
+    为什么需要"外部"锚：见 `verify_align` 里的长注释 —— BGZF 块边界截断会把一个
+    完好 BAM 变成**完全合法但更短**的 BAM，BAM 内部的一切判据（quickcheck、
+    全量计数、idxstats、本体重建索引）**全部通过**。唯一能发现它的是文件之外的基准。
+
+    基准的来路：`--prev-reads-file` 指向 Stage 0.5 的报告，其 `primary_totals[s]`
+    是 `count_fastq_reads` 逐端数出、并与该样本 fastp JSON 对过账的 clean FASTQ 条数。
+
+    ⚠️ 三种"锚做不成"的情形必须**各自登记**，不能一律静默跳过 —— 否则这条判据会在
+    未跑 Stage 0.5 的运行里"看起来存在、从不生效"（本项目的核心约定，同 Stage 2
+    的 reads_conservation）。
+
+    ⚠️ 未实测项（不要在此处假定）：parabricks `fq2bam` 后端下"每段 read 恰好一条
+    primary"是否同样成立，**本机没有该镜像、无法验证**（无 pbrun、无 NGC 镜像，
+    且根分区仅剩 4GB）。已实测的是 bwa mem 0.7.19-r1273（含 supplementary/病态 reads）
+    与 gatk MarkDuplicates 之后。若 fq2bam 的产出契约与此不同，此判据会拦下该后端的
+    健康数据 —— 故失败文案里明确点出这一可能，让人能立刻分辨而不是去瞎查数据。
+    """
+    if not primaries:
+        # 本侧无数据（primary 计数没取到）——上面的 primary_totals_recorded 已说明原因
+        rep.add("reads_anchor", "warn", False,
+                "取不到任何样本的 BAM primary 计数 —— **未做「BAM 是否覆盖了全部"
+                "输入 read」判定**（本侧没有可对账的数，不是对上了）")
+        return
+    if not args.prev_reads_file:
+        rep.add("reads_anchor", "warn", False,
+                "未提供 --prev-reads-file —— **未做「BAM 是否覆盖了全部输入 read」"
+                "判定**。这条判据是唯一能发现「合法但更短」的 BAM 的（BGZF 块边界"
+                "截断后贴回 EOF 块；其余判据全部看不见它）。阶段脚本应传 "
+                '--prev-reads-file "${RUN_DIR}/.verify/00_fastp_qc.json"；'
+                "若本运行未跑 Stage 0.5（它是可选阶段），则没有 FASTQ 侧基准，属预期")
+        return
+    if not os.path.isfile(args.prev_reads_file):
+        rep.add("reads_anchor", "warn", False,
+                f"前一阶段报告不存在: {args.prev_reads_file} —— **未做外部锚对账**。"
+                f"若本运行未跑 Stage 0.5（可选阶段），属预期；"
+                f"若跑过，则该报告缺失意味着锚判据静默失效，请检查 Stage 0.5 是否过门禁")
+        return
+    try:
+        prev = json.load(open(args.prev_reads_file))
+    except Exception as e:                                    # noqa: BLE001
+        rep.add("reads_anchor", "warn", False,
+                f"{os.path.basename(args.prev_reads_file)} 无法解析（{e}）—— "
+                f"**未做外部锚对账**")
+        return
+    prev_p = prev.get("primary_totals") or {}
+    if not prev_p:
+        rep.add("reads_anchor", "warn", False,
+                f"{os.path.basename(args.prev_reads_file)} 里没有 primary_totals 记录"
+                f"（该报告由旧版校验器产出？）—— **未做外部锚对账**")
+        return
+
+    bad, no_ref = [], []
+    for s in sorted(primaries):
+        ref = prev_p.get(s)
+        if ref is None:
+            no_ref.append(s)
+        elif primaries[s] != ref:
+            bad.append((s, primaries[s], ref))
+    if bad:
+        lines = "；".join(f"{s}: BAM {p} 条 vs FASTQ {r} 条（差 {p - r:+d}）"
+                          for s, p, r in bad[:6])
+        short = [s for s, p, r in bad if p < r]
+        rep.add("reads_anchor", "hard", False,
+                f"**BAM 与上游 FASTQ 的 read 数对不上**：{lines}"
+                + (f"（共 {len(bad)} 个样本）" if len(bad) > 6 else "") + "。"
+                f"BWA 对**每一条输入的 read 段**恰好产出一条 primary alignment，"
+                f"故 primary 数应恒等于 clean FASTQ 条数 —— 已实测：6000 段输入 → "
+                f"6000 primary（另有 300 条 supplementary，共 6300 条记录；"
+                f"supplementary 不算 primary，故不参与本比较）。"
+                + (f"本条方向上 **BAM 比 FASTQ 少**（{'、'.join(short[:6])}）——"
+                   f"最可能是一份**合法但更短**的 BAM（BGZF 块边界截断后贴回 EOF 块："
+                   f"quickcheck、全量计数、idxstats、坐标有序**全部通过**，"
+                   f"只有本判据能发现），必须重跑该样本的比对。"
+                   if short else
+                   f"本条方向上 **BAM 比 FASTQ 多** —— BWA 不会凭空造出 read，"
+                   f"说明两者不属于同一轮（FASTQ 被替换/截断，或 BAM 来自另一份输入）。")
+                + "另一种可能是本阶段消费的**不是** Stage 0.5 的产物"
+                  "（用了原始 FASTQ，而 clean_*.fq.gz 是另一轮的）："
+                  "本管线 Stage 1 的输入由 run.params.json 的 `fastq_dir` 决定 —— "
+                  "跑了 Stage 0.5 时应指向 `{RUN_DIR}/out/`（消费 `{sample_name}.clean_1/2.fq.gz`），"
+                  "未跑（可选阶段）时指向原始 FASTQ 目录。"
+                  "**本条判据的前提是前者**：只有 BAM 与 clean FASTQ 同源时两个数才可比；"
+                  "若本运行未跑 Stage 0.5，则不该给本阶段传 --prev-reads-file"
+                  "（没有基准时判据会如实登记「未做该判定」而非失败）。"
+                  "若本阶段用的是 parabricks fq2bam 后端，请一并反馈 —— "
+                  "该后端下这条不变式**尚未实测**，可能是它本身的产出契约不同")
+
+    # 样本在 BAM 侧有、但 Stage 0.5 报告里没有 —— 基准缺一个样本，
+    # 该样本就"看起来对上了"，必须点名（同 index_coverage 的思路：覆盖不到就说清）
+    if no_ref:
+        rep.add("reads_anchor", "warn", bool(bad) is False and False,
+                f"以下样本在 {os.path.basename(args.prev_reads_file)} 里没有基准数，"
+                f"**未做外部锚对账**: {no_ref[:8]}"
+                f"（Stage 0.5 当时没跑这个样本？）")
+    if not bad and not no_ref:
+        rep.add("reads_anchor", "hard", True,
+                f"{len(primaries)} 个样本的 primary 数与 clean FASTQ 实测条数**逐一相等**"
+                f"（BAM 覆盖了全部输入 read）")
+
+
 @stage("01_bwa_sort")
 def verify_align(args, rep):
     """Stage 1：BWA 比对 + 排序。核心判据是「BAM 非空且样本齐」。"""
-    totals = check_bam_cohort(
+    totals, primaries = check_bam_cohort(
         rep, args.samples,
         lambda s: os.path.join(args.run_dir, "out", f"{s}.sorted.bam"),
         min_reads=1, expect_rg=True, label="bam")
     # 记进报告 → 供 Stage 2 的 --prev-reads-file 做守恒比较
     rep.read_totals.update(totals)
+    rep.primary_totals.update(primaries)
     if totals:
         rep.add("read_totals_recorded", "hard", True,
                 f"已记录 {len(totals)} 个样本的 reads 数（供下一阶段守恒比较）")
+        if primaries:
+            rep.add("primary_totals_recorded", "hard", True,
+                    f"已记录 {len(primaries)} 个样本的 primary 数（供下一阶段做"
+                    f"与 FASTQ 的**外部锚**比较）")
+        else:
+            # 有 totals 却没有 primaries —— 说明 primary 那趟取数没成功。
+            # 不能静默：下游的锚判据会因此失去基准（"声称存在、从不生效"）。
+            rep.add("primary_totals_recorded", "warn", False,
+                    "BAM 的 primary 计数取不到（`view -c -F 0x900` 未成功）——"
+                    "报告里不会记录 primary_totals，下一阶段的 reads_anchor 判据"
+                    "将无基准可对账")
+
+    # ─── F18 残余：**外部锚** —— 唯一能发现「合法但更短」的 BAM 的判据 ───
+    #
+    # ⚠️ 为什么上面所有 BAM 内部判据都发现不了它（实测复现）：
+    #    BGZF/gzip **不自描述块数**。把一个完好 BAM 在某条 BGZF 块边界截断、
+    #    再把 28 字节的 BGZF EOF 块贴回去（这一步让 quickcheck 满意）、最后按
+    #    **截断后的本体**重建索引，得到的是一份**完全合法、但更短**的 BAM：
+    #      · 40000 条 → 截到 11585/19949/27989 条（30%/50%/70%）三种都试过；
+    #      · quickcheck rc=0、`view -c` rc=0、索引自洽、idxstats 与本体一致、
+    #        头部 SO:coordinate、坐标严格有序（`samtools index` 也 rc=0）——
+    #        **每一个 BAM 内部判据都通过**，门禁 `✅ 全部检查通过` rc=0。
+    #    这不是"损坏"：从 BGZF 的角度它就是一份好文件，只是**少了尾巴**。
+    #    任何"读这个文件本身"的判据都无法发现它 —— 必须有**文件之外**的基准。
+    #
+    # 基准从哪来：Stage 0.5 数出的 clean FASTQ 实测条数（`verify_fastp` 里
+    #    `count_fastq_reads` 的结果，落盘在 `--prev-reads-file` 的 checks 明细里）。
+    #    BWA 对**每一条输入的 read 段**恰好产出一条 primary alignment
+    #    —— 实测（bwa mem 0.7.19-r1273）：6000 段输入 → 6000 primary（+300 supplementary
+    #    共 6300 条记录）；病态 reads（0 长度/极短/全 N/低复杂度）下仍恒等；
+    #    `gatk MarkDuplicates` 之后仍恒等（6000）。故 `primary == FASTQ 条数`
+    #    是一条**结构性**不变式，不是经验阈值。
+    #
+    # 为什么判 hard：这是"数据丢了"而非"数据不好看"。截断掉的 read 永远不会
+    #    出现在下游变异里，而**没有任何别的环节会报错** —— 报告全绿、GVCF 照常产出、
+    #    只是那部分基因组的证据凭空消失。这正是本项目头号防守对象
+    #    （"坏数据传导到下游且无人察觉"）的最纯粹形态。
+    #
+    # ⚠️ 与前一条 body_indexable 的分工：那条抓**乱序**（顺序错了，条数没少），
+    #    这条抓**缺失**（顺序对，条数少了）。两者互不覆盖，实测各自独立。
+    #
+    # ⚠️ 基准取不到时**不判，但必须留痕**（本项目"纸面具备"的核心约定）：
+    #    Stage 0.5 是可选的，没跑它就没有 clean FASTQ；此时锚无从谈起。
+    #    三种"没做成"（没传/没文件/没记录）各自说明，不能一律静默跳过 ——
+    #    否则这条判据在"没跑 fastp"的路径上会看起来存在、从不生效。
+    _anchor_from_fastq(rep, args, primaries)
 
 
 @stage("02_markdup_bqsr")
@@ -1121,7 +1651,13 @@ def verify_markdup(args, rep):
                     f"{{sample}}.sorted.markdup.BQSR.bam"
                     + ("（parabricks 下亦然：fq2bam 的产出契约是 .sorted.bam，"
                        "BQSR BAM 仍由本阶段产出）"
-                       if len(missing) == len(args.samples) else ""))
+                       if len(missing) == len(args.samples) else "")
+                    # ⚠️ 必须说清"重跑不会自愈"：若 out/ 下留着 **0 字节/截断**的
+                    #    BQSR BAM，resume 的 `-s` 会判它不存在而重跑（自愈）；
+                    #    但若产物非空却不合格（缺索引等），resume 会跳过、门禁又拦
+                    #    → 重跑逐字相同。**重跑前必须清掉该样本在 out/ 下的产物**。
+                    + f"。**重跑本阶段不会改变它** —— 先清掉 out/ 下该样本的"
+                    f"残缺产物（resume 只判存在，产物在就会跳过）再重跑")
         if not got:
             continue
         cohorts_present = len(got)
@@ -1138,11 +1674,16 @@ def verify_markdup(args, rep):
             t = check_bam(rep, p, f"{tag}[{s}]", min_reads=1,
                           expect_rg=None, expect_sorted=True,
                           index_level="hard" if tag == "bqsr" else "warn")
-            if t is not None:
-                totals[s] = t
+            # ⚠️ check_bam 现在返回 (总记录数, primary)。这里只要前者（reads 守恒
+            #    是在**相邻阶段之间**比，两边同口径即可）；primary 是给 Stage 1 与
+            #    FASTQ 对账用的，Stage 2 的上游是 BAM 而不是 FASTQ。
+            if t is not None and t[0] is not None:
+                totals[s] = t[0]
     if args.samples and not totals:
         rep.add("bqsr_output", "hard", False,
-                "没有任何 BQSR/markdup BAM 产出 —— Stage 2 实际未完成")
+                "没有任何 BQSR/markdup BAM 产出 —— Stage 2 实际未完成。"
+                "**重跑本阶段不会改变它** —— 先清掉 out/ 下该样本的残缺产物"
+                "（resume 只判存在，产物在就会跳过）再重跑")
     rep.read_totals.update(totals)
     # 与 Stage 1 守恒（reads 数不应因 markdup/BQSR 显著变化）
     #
@@ -1258,7 +1799,10 @@ def verify_hc(args, rep):
     if args.samples:
         rep.add("gvcf_coverage", "hard", n_ok == len(args.samples),
                 f"{n_ok}/{len(args.samples)} 个样本产出可用 GVCF"
-                + ("" if n_ok == len(args.samples) else "；Stage 4 需要全部样本的 GVCF"))
+                + ("" if n_ok == len(args.samples) else
+                   "；Stage 4 需要全部样本的 GVCF。**重跑本阶段不会改变它** —— "
+                   "先清掉 out/ 下该样本的残缺产物（resume 只判存在，产物在就会跳过）"
+                   "再重跑"))
 
 
 @stage("04_joint_genotyping")

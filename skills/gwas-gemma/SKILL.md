@@ -100,9 +100,17 @@ LOG_FILE="${RUN_DIR}/logs/02_gemma.log"
 DONE_FILE="${RUN_DIR}/.done/02_gemma.done"
 PID_FILE="${RUN_DIR}/.pid/02_gemma.pid"
 mkdir -p "$(dirname "${LOG_FILE}")" "$(dirname "${DONE_FILE}")" "$(dirname "${PID_FILE}")" "${RUN_DIR}/out"
+# ⚠️ 开工先清掉本阶段自己的陈旧 .done：重跑一个曾成功过的阶段时，上一轮的 .done
+#    与本轮存活的 pid 并存，状态判定只看到 .done 就报「已完成」，用户据此推进下一
+#    阶段，而本阶段还在写同一个产物。（只清本阶段自己的，别抹掉其它阶段。）
+rm -f "${DONE_FILE}"
 echo $$ > "${PID_FILE}"; trap 'rm -f "${PID_FILE}"' EXIT
 
 GEMMA="$(command -v gemma || find / -maxdepth 4 -name 'gemma*' -type f 2>/dev/null | head -1)"
+
+# 输入/输出占位（由 gwas-pipeline 生成脚本时替换为实际值）
+PREFIX="..."                  # PLINK 前缀（不带扩展名），与上游阶段一致
+COVAR_TXT="..."               # 协变量文件（FID IID + 各列，无表头）
 BFILE="${PREFIX}.3.snp"
 
 # ─── 亲缘 ───

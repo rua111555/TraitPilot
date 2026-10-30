@@ -119,10 +119,17 @@ LOG_FILE="${RUN_DIR}/logs/00.5_qc_filter.log"
 DONE_FILE="${RUN_DIR}/.done/00.5_qc_filter.done"
 PID_FILE="${RUN_DIR}/.pid/00.5_qc_filter.pid"
 mkdir -p "$(dirname "${LOG_FILE}")" "$(dirname "${DONE_FILE}")" "$(dirname "${PID_FILE}")"
+# ⚠️ 开工先清掉本阶段自己的陈旧 .done：重跑一个曾成功过的阶段时，上一轮的 .done
+#    与本轮存活的 pid 并存，状态判定只看到 .done 就报「已完成」，用户据此推进下一
+#    阶段，而本阶段还在写同一个产物。（只清本阶段自己的，别抹掉其它阶段。）
+rm -f "${DONE_FILE}"
 echo $$ > "${PID_FILE}"
 trap 'rm -f "${PID_FILE}"' EXIT
 
 PLINK="$(command -v plink || { echo "✗ 找不到 plink —— 请激活 conda 环境 Agent" >&2; exit 1; })"
+
+# 输入/输出占位（由 gwas-pipeline 生成脚本时替换为实际值）
+PREFIX="..."                  # 上游（S0）产出的 PLINK 前缀，不带扩展名
 PED_NAME="${PREFIX}"          # 无扩展名；--file 会找 ${PED_NAME}.ped/.map
 
 # ─── QC 报告 ───

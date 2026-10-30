@@ -11,6 +11,7 @@
 跑法：
     /home/chenyuxi/anaconda3/envs/Agent/bin/python -m pytest tests/test_phenotype_validate.py -q
 """
+import json
 import math
 import os
 import sys
@@ -22,10 +23,27 @@ PHENO_SCRIPTS = os.path.join(ROOT, "skills", "phenotype-extract", "scripts")
 sys.path.insert(0, PHENO_SCRIPTS)
 
 from validate import (  # noqa: E402
-    GateReport, PhenotypeError, check_value, validate_batch, value_bounds,
+    GateReport, PhenotypeError, check_value, degenerate_witness, validate_batch,
+    value_bounds,
 )
 
 PCOL = "IMF_预测_%"
+
+# 「完全声明的插件」：值域 + 退化值见证列的豁免。
+# ⚠️ 为什么需要一个常量：门禁对**未声明**的判据一律降级为 warn 并明说"未做该判定"
+#    （`value_range` / `degenerate_witness` 同一处置 —— 让缺口在报告里看得见，而不是
+#    发一张空头 PASS）。于是"干净批次无告警"的断言必须建在一个**声明完整**的 task 上：
+#    用裸 `{"validate": {"value_range": [0.0, 100.0]}}` 时报告里会多出一条
+#    "未做退化值判定"，那是**设计如此**，不是缺陷。
+#    本表型（IMF）确有退化形态，真实的 IMF 插件声明的是见证列而非豁免 ——
+#    这里用 null 只是因为本文件的 fixture 没有面积列；见证列本身的判据
+#    由下面 F15 那一组用例覆盖。
+DECLARED = {"validate": {"value_range": [0.0, 100.0], "degenerate_witness": None}}
+
+# 与 IMF 插件**真实**声明一致（见证列 = 脂肪面积_px）—— F15 那一组用它。
+DECLARED_FOR_IMF = {"validate": {"value_range": [0.0, 100.0],
+                                 "degenerate_witness": {"column": "脂肪面积_px",
+                                                        "value": 0}}}
 
 
 def rows_of(values, *, status="ok", ref=None):
@@ -66,8 +84,7 @@ def test_normal_batch_passes():
     n = 20
     vals = normal(n)
     ref = [v + 0.001 * ((-1) ** i) for i, v in enumerate(vals)]   # 与预测强相关
-    rep = validate_batch(rows_of(vals, ref=ref), PCOL,
-                         {"validate": {"value_range": [0.0, 100.0]}})
+    rep = validate_batch(rows_of(vals, ref=ref), PCOL, DECLARED)
     assert not rep.blocked, rep.render()
     assert not rep.warnings, rep.render()
 
@@ -234,9 +251,7 @@ def test_nir_agreement_passes_when_correlated():
     """预测与参照强相关时不应告警。"""
     vals = [1.0 + 0.1 * i for i in range(20)]
     ref = [1.0 + 0.1 * i + 0.01 * ((-1) ** i) for i in range(20)]
-    rep = validate_batch(rows_of(vals, ref=ref), PCOL,
-                         {"validate": {"value_range": [0.0, 100.0]}},
-                         min_nir_r=0.6)
+    rep = validate_batch(rows_of(vals, ref=ref), PCOL, DECLARED, min_nir_r=0.6)
     assert not rep.blocked
     assert not rep.warnings, rep.render()
 
@@ -680,3 +695,203 @@ def test_imf_accepts_normal_frame_with_background():
     assert 0.0 < extra["ROI覆盖率_%"] < 100.0, extra
     assert abs(value - 100.0 * 400 / extra["组织面积_px"]) < 1e-6, (
         f"value={value} 与 ROI/脂肪面积不自洽：{extra}")
+
+
+# ============ F15 残余（第二轮审计）：ROI 不满幅的退化图 + 门禁不读 extra 列 ============
+# 上面两条判据都建在 **ROI** 上（面积为 0 / 覆盖整幅），于是"ROI 抠得完全正常、
+# 但分割结果全 0"这一形态整条落空。实测（真模型 + 真图库 162 张）：
+#   · 把真图 et3 的目标区过曝吹白 → ROI 覆盖率 71.7441%，与健康 et3 **完全相同**，
+#     落在真值批次 47.95%~81.86% 区间**之内** → 前两条判据都看不到它；
+#     meat_px=229581（正常）、fat_px=0 → ratio=0.0（落在 [0,100] 内）、状态 ok；
+#   · 门禁 6 条判据全 PASS、rc=0、warnings 为空，`0.0` 照写进两个 GWAS 文件。
+# **任何覆盖率阈值都救不了**：退化图与健康图的覆盖率区间重叠，阈值要么放过它、
+# 要么拦下健康图 —— 这是本质，不是标定没做好。
+# 故判**分子为 0**：IMF% = 100·fat_px/meat_px，分母非 0 时分子为 0 ⟺ 结果恰为 0.0。
+# 标定（真图 162 张，非模拟）：脂肪面积_px min=799、等于 0 的 **0 张**（零误伤）。
+def test_imf_rejects_zero_fat_pixels_within_healthy_roi():
+    """★ROI 抠取正常但分割结果全 0 ⇒ 抛错，不得产出 0.0%。
+
+    与 `test_imf_rejects_frame_filled_foreground` 的区别：那张是"ROI 铺满画幅"，
+    这张是"ROI 与健康图**一模一样**"。后者才是真正难抓的形态 —— 它证明判据必须
+    落在**分子**上，落在 ROI 上的任何量（面积、覆盖率）都区分不开。
+    """
+    np = pytest.importorskip("numpy")
+    from phenotypes.imf import compute_imf
+
+    img = np.full((64, 64, 3), 20, dtype=np.uint8)     # 深底板
+    img[8:56, 8:56] = 200                              # 目标占 75% —— 与阳性用例同一形状
+    seg = np.zeros((64, 64), dtype=int)                # 但分割结果一个脂肪像素都没有
+    ctx = {"img": img, "seg": seg, "sample": "sample0", "thresh": 30, "mappings": {}}
+    with pytest.raises(PhenotypeError) as ei:
+        compute_imf(ctx)
+    msg = str(ei.value)
+    assert "脂肪像素数为 0" in msg, msg
+    # 报错必须带上"ROI 其实是正常的"这一事实 —— 否则读者会去查抠图参数（查错方向）。
+    # ⚠️ 断言必须**真的在判覆盖率的数值**：写成 `A and B or "%" in msg` 时，
+    # `or` 让整个条件恒真（`%` 到处都是）—— 一条永远通过的断言正是「纸面具备」。
+    assert "ROI 抠取正常" in msg, msg
+    assert "56.05%" in msg, f"没把 ROI 覆盖率报出来（读者无从判断抠图是否正常）：{msg}"
+
+
+def test_imf_declares_degenerate_witness():
+    """插件必须把"分子为 0"这条判据**声明**给门禁。
+
+    理由：`compute` 里的 `raise` 只管得住**本次运行**。明细 CSV 一旦落盘就能被
+    独立复核、被搬运、被下游消费 —— 那条路径上插件不参与（`validate.py` 作为
+    独立 CLI 在 GWAS 入口校验一份**已存在**的 CSV 时正是如此），raise 管不到。
+    实测：修复前，一份含 `脂肪面积_px=0`、值 0.0、状态 ok 的明细 CSV 混在 20 个
+    健康样本里走 CLI 独立复核 → 6 条判据全 PASS、rc=0、零告警
+    （`grep -c '脂肪面积_px' validate.py` = 0 —— 没有一条判据读 extra 列）。
+    """
+    np = pytest.importorskip("numpy")
+    from phenotypes.imf import TASK
+
+    assert degenerate_witness(TASK) == ("脂肪面积_px", 0.0), (
+        f"IMF 未把退化见证列声明给门禁：{TASK.get('validate')}")
+
+
+def _witness_rows(n_ok=20, *, fat=4000, value=None):
+    """造明细行：带 `脂肪面积_px` 见证列（主脚本会把 extra 列一并写入 CSV）。"""
+    rows = []
+    for i in range(n_ok):
+        rows.append({"Taxa": f"h{i}", "状态": "ok",
+                     PCOL: (2.0 + 0.07 * i if value is None else value(i)),
+                     "脂肪面积_px": (fat + 10 * i if callable(fat) else fat),
+                     "组织面积_px": 200000, "ROI覆盖率_%": 60.0 + i})
+    return rows
+
+
+def test_gate_blocks_degenerate_witness_row():
+    """★门禁必须拦下见证列为退化值的行 —— 这是"门外那条路径"唯一的守卫。
+
+    一行 `脂肪面积_px=0` + 值 0.0 + 状态 ok 混在 20 个健康样本里：`value_range`
+    说 0.0 合法、`not_constant` 说整批 std>0、`fail_rate` 说零失败 —— 在**结构上**
+    都看不见它。只有去读那个见证列才拦得住。
+    """
+    rows = _witness_rows()
+    rows.insert(0, {"Taxa": "et6", "状态": "ok", PCOL: 0.0,
+                    "脂肪面积_px": 0, "组织面积_px": 229581,
+                    "ROI覆盖率_%": 71.7441})       # 与健康 et3 的覆盖率完全相同
+    rep = validate_batch(rows, PCOL, DECLARED_FOR_IMF)
+    assert rep.blocked, rep.render()
+    assert "degenerate_witness" in [c.name for c in rep.hard_failures], rep.render()
+    detail = [c.detail for c in rep.hard_failures
+              if c.name == "degenerate_witness"][0]
+    assert "et6" in detail, f"拦下了但没点名是哪一行：{detail}"
+
+
+def test_gate_degenerate_witness_passes_healthy_batch():
+    """阴性对照：同一批数据去掉退化行必须放行。
+
+    没有这条，上面那条可能被"凡值 0 就拦"的实现蒙混过关 —— 而 IMF 恰好可以合法
+    取 0.0（真没脂肪），那会拦下真实数据。实测真图库 162 张里没有一张 fat_px=0。
+    """
+    rep = validate_batch(_witness_rows(), PCOL, DECLARED_FOR_IMF)
+    assert not rep.blocked, rep.render()
+    c = [c for c in rep.checks if c.name == "degenerate_witness"]
+    assert c and c[0].passed and c[0].level == "hard", (
+        f"健康批次应判 PASS：{[x.render() for x in c]}")
+
+
+def test_gate_degenerate_witness_level_follows_declaration():
+    """分级沿用 `value_range`/`nir_agreement` 的范式：**声明了才 hard**。
+
+    未声明 → warn 且 `passed=False`（明说"未做该判定"）；显式 null → 一条通过的
+    豁免。"忘带声明"与"确无此形态"必须在报告里可分辨 —— 这正是本项目反复出现的
+    「纸面具备」形态：沉默被读成没问题。
+    """
+    rows = _witness_rows()
+    rows.insert(0, {"Taxa": "et6", "状态": "ok", PCOL: 0.0, "脂肪面积_px": 0,
+                    "组织面积_px": 229581, "ROI覆盖率_%": 71.7441})
+
+    # (a) 插件未声明 → 明说未判（warn），而不是静默通过；也**不得**因此拦下
+    rep = validate_batch(rows, PCOL, {"validate": {"value_range": [0.0, 100.0]}})
+    c = [x for x in rep.checks if x.name == "degenerate_witness"]
+    assert c and c[0].level == "warn" and not c[0].passed, (
+        f"未声明时应登记为「未做该判定」：{[x.render() for x in c]}")
+    assert "未做退化值判定" in c[0].detail, c[0].detail
+
+    # (b) 显式 null 豁免 → 一条**通过**的登记（与"忘了声明"可分辨）
+    rep = validate_batch(rows, PCOL,
+                         {"validate": {"value_range": [0.0, 100.0],
+                                       "degenerate_witness": None}})
+    c = [x for x in rep.checks if x.name == "degenerate_witness"][0]
+    assert c.passed and "豁免" in c.detail, c.render()
+
+    # (c) 声明了但见证列不在 CSV（裁剪过的导出）→ 明说未判，不是"没有退化行"
+    trim = [{k: v for k, v in r.items() if k != "脂肪面积_px"} for r in rows]
+    rep = validate_batch(trim, PCOL, DECLARED_FOR_IMF)
+    c = [x for x in rep.checks if x.name == "degenerate_witness"][0]
+    assert not c.passed and "见证列" in c.detail, c.render()
+    assert not rep.blocked, "列缺失应明说未判，而不是当作有退化行拦下"
+
+
+def test_gate_degenerate_witness_declaration_malformed_is_reported():
+    """声明不可解析（如 `"degenerate_witness": 123`）→ 明说未判。
+
+    这种声明是「**想开却没生效**」—— 与"没开"一样必须在报告里看得见，
+    不能当成已判。与 `value_bounds` 对畸形声明的容忍一致（返回 None，不炸）。
+    """
+    assert degenerate_witness({"validate": {"degenerate_witness": 123}}) is None
+    assert degenerate_witness({"validate": {"degenerate_witness": {"value": 0}}}) is None
+    assert degenerate_witness({"validate": {"degenerate_witness": ""}}) is None
+    # 裸列名简写 → 退化触发值取 0（与 value_bounds 容忍顶层简写同一约定）
+    assert degenerate_witness({"validate": {"degenerate_witness": "脂肪面积_px"}}) \
+        == ("脂肪面积_px", 0.0)
+    assert degenerate_witness({"degenerate_witness": "脂肪面积_px"}) \
+        == ("脂肪面积_px", 0.0)
+
+    rep = validate_batch(_witness_rows(), PCOL,
+                         {"validate": {"degenerate_witness": 123}})
+    c = [x for x in rep.checks if x.name == "degenerate_witness"][0]
+    assert not c.passed and "无法解析" in c.detail, c.render()
+
+
+def test_validate_cli_passes_witness_declaration():
+    """独立复核路径：CLI 必须能把见证列声明透传给门禁。
+
+    这是"同一个断点的两端"的第二端 —— 插件不参与，声明只能由命令行重述。
+    ⚠️ 关键在**忘带参数**时的行为：不能退化成"确无此形态"（那会把"忘了传"
+    静默升级成"检查过了"），而必须是"未做该判定"。
+    """
+    import subprocess
+    import tempfile
+
+    script = os.path.join(PHENO_SCRIPTS, "validate.py")
+    with tempfile.TemporaryDirectory() as tmp:
+        csv = os.path.join(tmp, "imf_phenotype.csv")
+        import csv as _csv
+        fields = ["Taxa", "状态", PCOL, "脂肪面积_px"]
+        with open(csv, "w", newline="", encoding="utf-8-sig") as f:
+            w = _csv.writer(f)
+            w.writerow(fields)
+            w.writerow(["et6", "ok", 0.0, 0])              # 退化行
+            for i in range(20):
+                w.writerow([f"h{i}", "ok", round(2.0 + 0.07 * i, 4), 4000 + 10 * i])
+
+        def run(*extra):
+            return subprocess.run(
+                [sys.executable, script, "--csv", csv, "--col", PCOL,
+                 "--range", "0", "100", "--json", *extra],
+                capture_output=True, text=True)
+
+        # (a) 重述见证列 → 拦下（rc=1）
+        r = run("--witness", "脂肪面积_px:0")
+        assert r.returncode == 1, f"rc={r.returncode}\n{r.stdout}\n{r.stderr}"
+        out = json.loads(r.stdout)
+        assert "degenerate_witness" in out["hard_failures"], out["hard_failures"]
+
+        # (b) **忘带** → 明说未判（warn），**不得**静默通过也**不得**当成豁免
+        r = run()
+        out = json.loads(r.stdout)
+        assert r.returncode == 0, f"忘带参数不该拦下：rc={r.returncode}"
+        assert "degenerate_witness" in out["warnings"], (
+            f"忘带 --witness 时必须留下「未做该判定」：{out['warnings']}")
+
+        # (c) 显式豁免 → 连告警都不留
+        r = run("--no-witness")
+        out = json.loads(r.stdout)
+        assert "degenerate_witness" not in out["warnings"], (
+            f"--no-witness 应清掉未判告警：{out['warnings']}")
+        assert r.returncode == 0
+

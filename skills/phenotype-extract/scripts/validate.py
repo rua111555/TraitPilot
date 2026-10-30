@@ -12,6 +12,11 @@
     · value_range    值必须落在插件声明的物理值域内（如 IMF ∈ [0,100]）
                      —— **插件未声明值域时降级为 warn** 并明说"未做该判定"（见 check_value_range）
     · 值本身不得是 NaN/Inf（"ok" 行却拿不到数 = 逻辑错误）
+    · degenerate_witness  **见证列**（extra 落盘的面积/计数列）等于插件声明的退化值时，
+                     该行判为「算不出来」而非「测出来是 0」（**插件声明即 hard**）——
+                     面积比值型表型在分子为 0 时会产出一个**落在合法值域内**的退化常数
+                     （如 IMF=0.0%），逐样本 `value_range` 与整批 `not_constant` 在结构上
+                     都看不见它。插件未声明时同样降级为 warn 并明说"未做该判定"
 
   整批级
     · fail_rate          失败样本占比不得超过阈值（默认 5%）
@@ -138,6 +143,34 @@ def value_bounds(task):
         return None
 
 
+def degenerate_witness(task):
+    """从 TASK 读取插件声明的「退化值见证列」，返回 ``(列名, 退化触发值)`` 或 None。
+
+    声明形式（``validate`` 子字典内，与 ``value_range`` 同级；列名也可简写成裸字符串，
+    退化触发值取 0，与 ``value_bounds`` 对简写的容忍一致）::
+
+        "validate": {"value_range": [0.0, 100.0],
+                     "degenerate_witness": {"column": "脂肪面积_px", "value": 0}}
+
+    含义：**该列等于这个值时，表型值不是测量结果，而是「算不出来」时产出的退化常数。**
+    读不出合法声明一律返回 None —— 调用方据此**明说未判**，而不是当作"没问题"。
+    """
+    spec = (task.get("validate") or {}).get(
+        "degenerate_witness", task.get("degenerate_witness"))
+    if isinstance(spec, str):
+        spec = {"column": spec, "value": 0}
+    if not isinstance(spec, dict):
+        return None
+    col = spec.get("column")
+    if not isinstance(col, str) or not col.strip():
+        return None
+    try:
+        at = float(spec.get("value", 0))
+    except (TypeError, ValueError):
+        return None
+    return col, at
+
+
 def check_value(value, rng):
     """返回 (是否通过, 说明)。rng 为 None 时不判值域。"""
     if value is None:
@@ -227,6 +260,90 @@ def validate_batch(rows, pcol, task=None, *, max_fail_rate=0.05,
                 "value_range", "hard", not bad,
                 f"{len(oks) - len(bad)}/{len(oks)} 个成功样本的值在合法范围"
                 + (f"；越界: {'; '.join(bad[:5])}" if bad else ""))
+
+    # ---- 1b. 退化值见证列（同属单样本级）----
+    #
+    # ⚠️ 本判据补的是**同一静默形态的另一半**（第二轮审计 F15 残余，2026-10-28）：
+    #    插件侧现在会在「分子为 0」时抛错（imf.py），但那只管得住**本次运行**。
+    #    明细 CSV 一旦落盘，就成了可以**独立**被复核、被搬运、被下游消费的东西 ——
+    #    而 `validate.py` 作为独立 CLI 在 GWAS 入口重新校验一份**已存在**的 CSV 时
+    #    （这正是本模块 docstring 声明的第二端），插件根本没参与，抛错那条路径不存在。
+    #    实测：一份含 `脂肪面积_px=0`、值 0.0、状态 ok 的明细 CSV，混在 20 个健康样本里
+    #    走 CLI —— 6 条判据全 PASS、rc=0、无告警，因为**没有一条判据读 extra 列**
+    #    （`grep -c '脂肪面积_px\|组织面积_px' validate.py` = 0）。
+    #    退化行的值 0.0 落在 [0,100] 内，`value_range`（逐样本）与 `not_constant`
+    #    （整批 std>0）在结构上都不可能看见它 —— 除非有人去读那个"见证列"。
+    #
+    #    为什么见证列是**精确**判据而不是近似阈值：真图库 162 张实测
+    #    `脂肪面积_px min=799`、等于 0 的**0 张**（零误伤），两张退化图均为 0 ——
+    #    分子为 0 ⟺ 结果恰为 0.0，两者**等价**，不存在"真没脂肪"与"分割失败"的
+    #    区分空间，而 0.0 这个数把两者混在一起，事后无从分辨。
+    #    ⚠️ 审计原建议的合取式（`fat_px == 0` **同时** `meat_px` 逼近全图）反而会漏掉
+    #    本形态：那张过曝图 ROI 覆盖率 71.74%（与健康 et3 完全相同、落在真值批次
+    #    47.95%~81.86% 区间内），"逼近全图"根本不成立。故只判分子。
+    #
+    #    分级（沿用 nir_agreement 的范式：声明的验收标准 = hard，没声明 = warn）：
+    #      · 插件**声明了**见证列且列在 CSV 里 → **hard**（声明即作者的验收标准）
+    #      · 声明了但列不在（裁剪过的导出）／前提不满足 → 明说未判（warn）
+    #      · **未**声明 → 明说未判（warn），不留"没出现 = 没问题"的读数空间
+    #      · 显式声明 null → 记一条**通过**的豁免（作者已判定本表型无此形态）
+    #
+    #    ⚠️ 为什么未声明也报 warn（而不是静默略过）：与 `value_range` 未声明同一处置。
+    #    读者无法从"报告里没有这一行"分辨"本表型没有这种形态"与"作者忘了声明"，
+    #    而后者正是这个缺陷类的复发形态。豁免出口给的是**显式 null**，不是沉默。
+    _vspec = task.get("validate") or {}
+    _declared = ("degenerate_witness" in _vspec) or ("degenerate_witness" in task)
+    _wit = degenerate_witness(task)
+    if not _declared:
+        report.add(
+            "degenerate_witness", "warn", False,
+            "**未做退化值判定** —— 插件未声明 `validate.degenerate_witness`。本判据要防"
+            "的形态：面积比值型表型在「分子为 0」时产出一个**落在合法值域内**的退化常数"
+            "（如 IMF=0.0%），逐样本值域与整批非常数都看不见它。若本表型有这种形态，"
+            '请在 TASK 里声明见证列，如 "degenerate_witness": '
+            '{"column": "脂肪面积_px", "value": 0}；若确无此形态，显式写 null 表示豁免')
+    elif _vspec.get("degenerate_witness", task.get("degenerate_witness")) is None:
+        report.add(
+            "degenerate_witness", "warn", True,
+            "插件**显式声明本表型无退化值形态**（`degenerate_witness: null`，豁免本判定）")
+    elif _wit is None:
+        report.add(
+            "degenerate_witness", "warn", False,
+            "**未做退化值判定** —— `validate.degenerate_witness` 声明无法解析（需要 "
+            '{"column": <列名>, "value": <退化触发值>}，或裸列名字符串）。'
+            "这种声明是「想开却没生效」，必须被看见，不能当作已判")
+    elif not rng_ready:
+        report.add(
+            "degenerate_witness", "warn", False,
+            "**未做退化值判定** —— " + (
+                "CSV 里没有 `状态` 列，无法区分「推理成功」与「失败样本」"
+                "（失败样本的值本就不参与判定）" if (total and pcol in df.columns) else
+                f"CSV 里没有 `{pcol}` 列"))
+    elif _wit[0] not in df.columns:
+        report.add(
+            "degenerate_witness", "warn", False,
+            f"**未做退化值判定** —— CSV 里没有见证列 `{_wit[0]}`。该列由提取主脚本随 extra "
+            f"一并写入明细表；裁剪过的导出（如 `Taxa,<trait>` 两列）会丢掉它。"
+            f"注意这不是「没有退化行」：本判据**什么也没断言**")
+    else:
+        _wcol, _wat = _wit
+        _oks = df[df["状态"] == "ok"]
+        _bad = []
+        for _, r in _oks.iterrows():
+            wv = pd.to_numeric(pd.Series([r[_wcol]]), errors="coerce").iloc[0]
+            if pd.isna(wv) or float(wv) != _wat:
+                continue
+            pv = pd.to_numeric(pd.Series([r[pcol]]), errors="coerce").iloc[0]
+            _bad.append(f"{r['Taxa']}({_wcol}={_wat:g} → {pcol}="
+                        f"{'NaN' if pd.isna(pv) else format(float(pv), '.4g')} 是退化常数)")
+        report.add(
+            "degenerate_witness", "hard", not _bad,
+            f"{len(_oks) - len(_bad)}/{len(_oks)} 个成功样本的 `{_wcol}` 不在退化值 "
+            f"{_wat:g} 上"
+            + (f"；**退化行 {len(_bad)} 个**: {'; '.join(_bad[:5])}"
+               + ("…" if len(_bad) > 5 else "")
+               + "。这些行的表型值不是测量结果，而是「算不出来」时的退化常数 —— "
+                 "写进 GWAS 后与真实值无法分辨" if _bad else ""))
 
     # ---- 2. 失败率 ----
     # ⚠️ 与 value_range 同一形态的**假 PASS**（第二轮审计实测）：早期这里写的是
@@ -396,6 +513,12 @@ def _cli():
     ap.add_argument("--col", required=True, help="表型值列名，如 IMF_预测_%")
     ap.add_argument("--range", nargs=2, type=float, default=None, metavar=("LO", "HI"),
                     help="值域（不给则只做整批检查）")
+    ap.add_argument("--witness", default=None, metavar="COL[:VALUE]",
+                    help="退化值见证列（如 `脂肪面积_px:0`）：该列等于 VALUE（默认 0）"
+                         "即判为退化行，hard 拦截。由插件 TASK 的 "
+                         "validate.degenerate_witness 声明；独立复核一份 CSV 时在此重述")
+    ap.add_argument("--no-witness", action="store_true",
+                    help="显式声明「本表型无退化值形态」，豁免该判定（不留未判告警）")
     ap.add_argument("--min-samples", type=int, default=1)
     ap.add_argument("--max-fail-rate", type=float, default=0.05)
     ap.add_argument("--min-nir-r", type=float, default=None)
@@ -413,7 +536,21 @@ def _cli():
         print(json.dumps(msg, ensure_ascii=False) if args.json else f"[err] {msg['error']}")
         return 1
 
-    task = {"validate": {"value_range": args.range}} if args.range else {}
+    # ⚠️ 独立复核一份**已产出**的 CSV 时，插件的 TASK 不参与 —— 上面两条声明
+    #    必须由调用方在命令行重述（这正是「同一个断点的两端」的第二端）。
+    #    只给 `--range` 而漏掉 `--witness` 时，退化值判定会以"未声明 → 明说未判"出现，
+    #    不会被静默略过。
+    #    ⚠️ 两个参数都**没给**时不得往 task 里放 `degenerate_witness` 键：那会被
+    #    `degenerate_witness()` 读成"作者显式声明本表型无此形态"（== null，判为
+    #    **通过**的豁免）—— 于是"忘带参数"被静默升级成"确无此形态"，正是本判据
+    #    要防的那种"沉默被读成没问题"。豁免必须来自**明说**（--no-witness）。
+    val = {"value_range": args.range}
+    if args.no_witness:
+        val["degenerate_witness"] = None          # 明说豁免
+    elif args.witness:
+        col, _, at = args.witness.partition(":")
+        val["degenerate_witness"] = {"column": col.strip(), "value": (at.strip() or 0)}
+    task = {"validate": val}
     rep = validate_batch(df.to_dict("records"), args.col, task,
                          max_fail_rate=args.max_fail_rate,
                          min_samples=args.min_samples,

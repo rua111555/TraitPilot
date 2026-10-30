@@ -116,7 +116,13 @@ for i in "${!samples[@]}"; do
     sample="${samples[$i]}"
     
     # resume 检查
-    if [ -f "${BQSR_BAM}" ]; then
+    # ⚠️ **必须用 `-s`（非空）而不是 `-f`**：门禁的 `have()` 判"存在"是
+    #    `isfile ∧ 大小 > 0`，**0 字节算不存在**。用 `-f` 时，0 字节/截断的
+    #    BQSR BAM 会让 resume 打印 skipping、直接跳到收尾；而收尾门禁的
+    #    `bqsr.coverage` / `bqsr_output`（hard）照样 FAIL → **重跑逐字相同、
+    #    永久卡死**（实测：0 字节 BQSR BAM 三次重跑输出完全一致）。
+    #    resume 判存在性的严格度必须 **≥** 门禁对该产物的存在判据。
+    if [ -s "${BQSR_BAM}" ]; then
         log_info "BQSR BAM exists, skipping: ${BQSR_BAM}"
         continue
     fi
@@ -269,7 +275,7 @@ rm -f "${RUN_DIR}/.failed/02_markdup_bqsr.failed"   # 清掉上一轮的陈旧�
 
 ```bash
 # 统一 PBRUN() docker wrapper（由 wgs-express-params-propose 在脚本头部展开，见其「PBRUN wrapper」）
-# 每样本: PBRUN <宿主GPU索引> <pbrun 子命令> ... ；容器内只暴露 1 张卡 → pbrun 用 --num-gpus 1
+# 每样本: PBRUN <宿主GPU索引> <pbrun 子命令> ... ；容器内只暴露 1 张卡 → pbrun 用 --num-gpus 1（⚠️ 唯一例外：genotypegvcf 不接受该参数，见 parabricks-setup.md §4.1）
 ```
 
 ### markdup + BQSR 标准用法

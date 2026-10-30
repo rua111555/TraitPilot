@@ -76,7 +76,8 @@ PairHMM 是 HaplotypeCaller 的核心计算瓶颈，使用了 AVX-512 向量化�
 - 不允许人为设定低于该值的上限
 - 如果 `threads_per_sample` × 并发样本数 > 总线程的 80%，可适当降低并发数而非降低单样本线程数
 - **⚠️ 上述规则仅适用于 `compute_backend=gatk-cpu`**。Parabricks 模式下 PairHMM 在 GPU
-  上并行，**不设置 `--native-pair-hmm-threads`**，改用 `pbrun ... --num-gpus 1 --num-cpu N`
+  上并行，**不设置 `--native-pair-hmm-threads`**，改用 `pbrun haplotypecaller --num-gpus 1 --num-cpu N`
+  （该子命令**接受** `--num-gpus`；别把这条推广到 `genotypegvcf` —— 那是唯一不接受的）
 
 ### 关键认知
 
@@ -96,7 +97,14 @@ FAILED=0           # ⚠️ 必须在并发池之前初始化：下面用 FAILED
 for i in "${!samples[@]}"; do
     sample="${samples[$i]}"
     
-    if [ -f "${GVCF}" ] && [ -f "${GVCF}.tbi" ]; then
+    # ⚠️ **必须用 `-s`（非空）而不是 `-f`**：门禁的 `have()` 判"存在"是
+    #    `isfile ∧ 大小 > 0`，**0 字节算不存在**。用 `-f` 时，0 字节 GVCF
+    #    （连同真 `.tbi`）会让 resume 打印 skipping，而门禁的
+    #    `gvcf[s].exists` / `gvcf_coverage`（hard）照样 FAIL → 重跑逐字相同、
+    #    永久卡死（实测）。**内容级**问题（普通 VCF 冒充 GVCF、外来 .tbi、
+    #    截断 GVCF）`-s` 覆盖不到 —— 那类要靠门禁拦下后**先清掉 out/ 下该样本
+    #    的产物再跑**（见门禁失败文案）。
+    if [ -s "${GVCF}" ] && [ -s "${GVCF}.tbi" ]; then
         log_info "GVCF exists, skipping: ${GVCF}"
         continue
     fi
@@ -267,7 +275,7 @@ rm -f "${RUN_DIR}/.failed/03_haplotypecaller.failed"   # 清掉上一轮的陈�
 
 ```bash
 # 统一 PBRUN() docker wrapper（由 wgs-express-params-propose 在脚本头部展开，见其「PBRUN wrapper」）
-# 每样本: PBRUN <宿主GPU索引> <pbrun 子命令> ... ；容器内只暴露 1 张卡 → pbrun 用 --num-gpus 1
+# 每样本: PBRUN <宿主GPU索引> <pbrun 子命令> ... ；容器内只暴露 1 张卡 → pbrun 用 --num-gpus 1（⚠️ 唯一例外：genotypegvcf 不接受该参数，见 parabricks-setup.md §4.1）
 ```
 
 ### haplotypecaller GVCF 标准用法（逐样本绑 1 卡）

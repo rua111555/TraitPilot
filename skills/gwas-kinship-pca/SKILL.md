@@ -131,9 +131,16 @@ LOG_FILE="${RUN_DIR}/logs/01_kinship_pca.log"
 DONE_FILE="${RUN_DIR}/.done/01_kinship_pca.done"
 PID_FILE="${RUN_DIR}/.pid/01_kinship_pca.pid"
 mkdir -p "$(dirname "${LOG_FILE}")" "$(dirname "${DONE_FILE}")" "$(dirname "${PID_FILE}")"
+# ⚠️ 开工先清掉本阶段自己的陈旧 .done：重跑一个曾成功过的阶段时，上一轮的 .done
+#    与本轮存活的 pid 并存，状态判定只看到 .done 就报「已完成」，用户据此推进下一
+#    阶段，而本阶段还在写同一个产物。（只清本阶段自己的，别抹掉其它阶段。）
+rm -f "${DONE_FILE}"
 echo $$ > "${PID_FILE}"; trap 'rm -f "${PID_FILE}"' EXIT
 
 GCTA="$(command -v gcta64)"             # 独立二进制，按实际路径检测
+
+# 输入/输出占位（由 gwas-pipeline 生成脚本时替换为实际值）
+PREFIX="..."                  # 过滤后 PLINK 前缀（S0.5 产物，不带扩展名）
 BFILE="${PREFIX}.wy1.snp"
 
 # ─── GRM ───

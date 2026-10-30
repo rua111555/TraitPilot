@@ -93,14 +93,16 @@ gatk GenotypeGVCFs --java-options "-Xmx${JAVA_XMX}" \
 
 ```bash
 # 如果合并后的 GVCF 已存在，跳过 CombineGVCFs
-if [ -f "${COMBINED_GVCF}" ]; then
+# ⚠️ 用 `-s`（非空）而不是 `-f`：门禁的 `have()` 判"存在"是"非空"，
+#    0 字节产物会让 resume 跳过、而门禁照样 hard FAIL（重跑无法自愈、永久卡死）。
+if [ -s "${COMBINED_GVCF}" ]; then
     log_info "Combined GVCF exists, skipping CombineGVCFs"
 else
     # CombineGVCFs 命令 ...
 fi
 
 # 如果最终 VCF 已存在，跳过 GenotypeGVCFs
-if [ -f "${JOINT_VCF}" ]; then
+if [ -s "${JOINT_VCF}" ]; then
     log_info "Joint VCF exists, skipping GenotypeGVCFs"
 else
     # GenotypeGVCFs 命令 ...

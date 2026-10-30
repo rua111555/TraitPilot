@@ -124,6 +124,10 @@ LOG_FILE="${RUN_DIR}/logs/05_ld_block.log"
 DONE_FILE="${RUN_DIR}/.done/05_ld_block.done"
 PID_FILE="${RUN_DIR}/.pid/05_ld_block.pid"
 mkdir -p "$(dirname "${LOG_FILE}")" "$(dirname "${DONE_FILE}")" "$(dirname "${PID_FILE}")"
+# ⚠️ 开工先清掉本阶段自己的陈旧 .done：重跑一个曾成功过的阶段时，上一轮的 .done
+#    与本轮存活的 pid 并存，状态判定只看到 .done 就报「已完成」，用户据此推进下一
+#    阶段，而本阶段还在写同一个产物。（只清本阶段自己的，别抹掉其它阶段。）
+rm -f "${DONE_FILE}"
 echo $$ > "${PID_FILE}"; trap 'rm -f "${PID_FILE}"' EXIT
 
 LDBLOCK="$(command -v LDBlockShow || find "$HOME" /opt /usr/local -maxdepth 5 -name LDBlockShow -type f 2>/dev/null | head -1)"
@@ -131,7 +135,22 @@ SHOWSVG="$(command -v ShowLDSVG || printf '%s/../../ShowLDSVG' "$(dirname "${LDB
 
 # ⚠ LDBlockShow 需新版 libstdc++（详见错误预防 5.5）。仅当系统库过旧时才前插 conda lib，
 #   新机器系统库够新则不动 LD_LIBRARY_PATH（避免遮蔽更新的库）：
-sk_ensure_ld_path   # 定义见 skills/_shared/env.sh；或在脚本内联该函数
+#   该函数**定义在** skills/_shared/env.sh（本块不自带），故必须显式 source ——
+#   直接调用会以 rc=127（`sk_ensure_ld_path: command not found`）死在收尾门禁之前。
+#   路径按仓库布局解析：从仓库根执行即为下面这行；脚本在别处跑时改用绝对路径。
+source skills/_shared/env.sh
+sk_ensure_ld_path
+
+# 输入/输出占位（由 gwas-pipeline 生成脚本时替换为实际值）
+BFILE="..."                   # 区域 PLINK 前缀（plink --extract 后的区域 bfile）
+OUTPREFIX="..."               # 输出前缀（不带扩展名）
+CHR="..."                     # 区域染色体编号（须与 bfile/bim 一致）
+START="..."                   # 区域起点（bp）
+END="..."                     # 区域终点（bp）
+GWAS_PVALUE="..."             # GWAS 结果三列：chr  pos  -log10(p)
+GFF="..."                     # 注释 GFF 文件
+CUTLINE="..."                 # 显著线（-log10 尺度，如 8.4 ≈ 3.92e-9）
+TOPSITE="..."                 # 峰顶位点（须在 -Region 范围内）
 
 # ─── LDBlockShow：区域 + GWAS + GFF ───
 "${LDBLOCK}" -InPlink "${BFILE}" -OutPut "${OUTPREFIX}" \
