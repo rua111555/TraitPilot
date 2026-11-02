@@ -26,6 +26,7 @@ allowed-tools:
 | 阶段 | 子 Skill | 功能 |
 |:----:|----------|------|
 | S0 | `gwas-format-convert` | VCF → PLINK（vcftools `--plink` / plink `--vcf --make-bed`） |
+| **S0.2** | `gwas-pheno-align` | **表型 ↔ 基因型样本对齐**：分档匹配、差异落盘、三种下游格式、**强制用户确认** |
 | S0.5 | `gwas-qc-filter` | 缺失率/MAF/HWE 检查与过滤（`-geno -maf -hwe`）；可选全基因组 LD 衰减（PopLDdecay） |
 | S1 | `gwas-kinship-pca` | GCTA GRM → 亲缘热图 + PCA → 群体结构协变量 |
 | S2 | `gwas-gemma` | GEMMA `-gk 2` 亲缘 + `-lmm 4` 全检验关联 |
@@ -39,6 +40,7 @@ allowed-tools:
 /gwas-pipeline --vcf COHORT.new.snp.filter.vcf.gz --prefix cohort \
                --pheno phe.txt --covar c.txt
   ├── S0:    VCF → PLINK ped/map + bed → 用户审批
+  ├── S0.2:  表型 ↔ 基因型对齐（gwas-pheno-align）→ 展示差异 → **用户确认** → keep.txt
   ├── S0.5:  --missing/--freq 检查 → 读懂分布 → 过滤（-geno 0.2 -maf 0.01 -hwe 1e-6）→ 用户审批
   │         └── （可选）PopLDdecay 全基因组 LD 衰减
   ├── S1:    GCTA --make-grm → R 对称亲缘矩阵 + 热图 → --pca 10 → PC 散点图 → 用户审批
@@ -50,6 +52,7 @@ allowed-tools:
 
 **关键规则**：
 1. 每阶段脚本**必须先生成 → 用户审批 → 才能执行**（不可自动执行）
+1.5 **S0.2 对齐之后必须由用户确认**才允许进入 S0.5：用户没明确答复、或说"再改改"时，不得调用 `approve`；对齐产物被改动后旧审批自动失效（哈希校验）
 2. **逐阶段串行**，一次只跑一个阶段；GEMMA 与 MVP 可二选一或都跑
 3. 每阶段必须消费上一阶段的输出：S0→ped/map；S0.5→过滤 bfile；S1→GRM+PC；S2/S3→关联结果；S4→显著位点；S5→区域基因型
 4. 表型 `--pheno` / 协变量 `--covar` 由用户提供（如 `phenotype-extract` 产出的 IMF 表型文件）
@@ -252,6 +255,7 @@ done
 ```
 {workdir}/
 ├── run.params.json        # 参数（输入/表型/协变量/过滤条件）+ verifier_path 等门禁契约
+├── pheno_align/           # S0.2 对齐产物：keep.txt / pheno_gemma_* / mapping_used.tsv / 报告
 ├── scripts/               # 各阶段脚本 00_format_convert.sh ... 05_ld_block.sh
 ├── logs/                  # 各阶段日志
 ├── .done/                 # 完成标记（**通过结果校验后**才写）
@@ -285,6 +289,7 @@ done
 | 15 | **每阶段脚本收尾必须过门禁**（`gwas_verify.py --stage <stage>`）：未过则写 `.failed` + `exit 1`，**不得**无条件写 `.done`；`.verify/<stage>.json` 是编排层硬门禁的输入 | 全部（已接入：S0 / S0.5） |
 | 16 | **`verifier_path` 必须是绝对路径并写进 `run.params.json`** — 阶段脚本在 `{RUN_DIR}/scripts/`，与仓库无固定相对关系 | 全部 |
 | 17 | **过滤后必须留 `.frq/.lmiss/.hwe`**（`plink --freq --missing --hardy` 一趟出）—— 门禁要靠它们证明 `-maf/-geno/-hwe` 真的生效；缺了就是 fail-closed | qc-filter |
+| 19 | **表型与基因型先对齐再进 QC**：样本名对不上时不要手改、不要猜；用 `gwas-pheno-align` 产出 `keep.txt`，S0.5 用 `plink --keep` 固定分析集；对齐后**必须用户确认** | pheno-align / qc-filter |
 | 18 | **GEMMA 的 `-p` 表型文件是单列值**（按 `.fam` 顺序、无表头）；给成 `FID IID value` 时 GEMMA 不报错但整份结果是 `nan`/`beta=0` —— 门禁会把这种"假成功"拦下 | gemma |
 
 ## 自然语言触发

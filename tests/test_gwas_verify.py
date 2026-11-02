@@ -667,3 +667,61 @@ def test_s5_too_small_region_is_blocked(tmp_path):
                        "--bfile", bf, "--region", "1:1000-1001")
     assert rc == 1
     assert "region.size" in hard(report_of(tmp_path, "05_ld_block"))
+
+
+# --------------------------------------------------------------------------- #
+# S0.2 → S0.5 的交接：keep.txt 决定"预期分析集"
+# --------------------------------------------------------------------------- #
+
+def _write_keep(path, pairs):
+    with open(path, "w", encoding="utf-8") as f:
+        for fid, iid in pairs:
+            f.write(f"{fid}\t{iid}\n")
+    return str(path)
+
+
+def _fam_pairs(prefix):
+    return [tuple(ln.split()[:2]) for ln in
+            open(prefix + ".fam", encoding="utf-8").read().splitlines() if ln.strip()]
+
+
+def test_s05_keep_file_defines_expected_sample_set(tmp_path):
+    """S0.2 的 keep.txt 交给 S0.5：输出样本集必须**正好等于**它。
+
+    这是"表型对齐 → 质控"的交接契约：对齐决定谁有表型，S0.5 用 --keep 固定分析集，
+    门禁再核一遍"输出 == keep"，防止 keep 传了却没生效。
+    """
+    _, in_p = make_bfile(tmp_path)
+    pairs = _fam_pairs(in_p)
+    keep = _write_keep(tmp_path / "keep.txt", pairs[:10])
+    out_p = str(tmp_path / "s0" / "filt_keep")
+    run_plink("--bfile", in_p, "--keep", keep, "-maf", "0.1", "-geno", "0.05",
+              "--make-bed", "--out", out_p, "--silent")
+    qc = out_p + ".qc"
+    run_plink("--bfile", out_p, "--freq", "--missing", "--hardy", "--out", qc, "--silent")
+
+    rc, out = run_verify(tmp_path, *s05_args(out_p, in_p, qc, maf=0.1, geno=0.05),
+                         "--keep-file", keep)
+    assert rc == 0, f"按 keep 取子集被误拦：\n{out}"
+    rep = report_of(tmp_path, "00.5_qc_filter")
+    assert rep["n_samples"] == 10
+    assert "out.expected_samples" in {c["name"] for c in rep["checks"]}
+    assert "samples_conserved" not in (rep.get("hard_failures") or [])
+
+
+def test_s05_keep_file_mismatch_is_blocked(tmp_path):
+    """keep.txt 里多了输出中没有的样本 → S0.5 没按分析集过滤 → hard。"""
+    _, in_p = make_bfile(tmp_path)
+    pairs = _fam_pairs(in_p)
+    keep = _write_keep(tmp_path / "keep.txt", pairs[:10])
+    bad_keep = _write_keep(tmp_path / "bad_keep.txt", pairs[:10] + pairs[10:11])
+    out_p = str(tmp_path / "s0" / "filt_keep")
+    run_plink("--bfile", in_p, "--keep", keep, "-maf", "0.1", "-geno", "0.05",
+              "--make-bed", "--out", out_p, "--silent")
+    qc = out_p + ".qc"
+    run_plink("--bfile", out_p, "--freq", "--missing", "--hardy", "--out", qc, "--silent")
+
+    rc, out = run_verify(tmp_path, *s05_args(out_p, in_p, qc, maf=0.1, geno=0.05),
+                         "--keep-file", bad_keep)
+    assert rc == 1, f"keep 与输出不一致竟然通过：\n{out}"
+    assert "out.expected_samples" in hard(report_of(tmp_path, "00.5_qc_filter"))

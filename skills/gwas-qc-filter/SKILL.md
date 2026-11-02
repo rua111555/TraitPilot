@@ -133,6 +133,7 @@ PLINK="$(command -v plink || { echo "✗ 找不到 plink —— 请激活 conda 
 PREFIX="..."                    # 上游（S0）产出的 PLINK 前缀，不带扩展名
 PED_NAME="${PREFIX}"            # 无扩展名；--file 会找 ${PED_NAME}.ped/.map
 OUT_BFILE="${PREFIX}.wy1.snp"   # 过滤后的 bfile（下游 --bfile 的输入）
+PHENO_KEEP=""                   # S0.2 对齐产出的 keep.txt；**没跑对齐就留空**（默认空）
 
 # 过滤阈值：**同一份声明**既喂给 plink，也喂给门禁 —— 门禁拿它证明参数真的生效。
 GENO=0.2; MAF=0.01; HWE=0.000001
@@ -141,8 +142,16 @@ GENO=0.2; MAF=0.01; HWE=0.000001
 ${PLINK} --file "${PED_NAME}" --missing --freq --out "${PREFIX}.pre"
 
 # ─── 过滤 ───
-${PLINK} --file "${PED_NAME}" -geno "${GENO}" -maf "${MAF}" -hwe "${HWE}" \
-    --make-bed --out "${OUT_BFILE}"
+# ⚠️ 有 keep.txt 就先 `--keep` 把分析集固定下来：S0.2 对齐决定"谁有表型"，
+#    后面所有阶段都只在这批人上做。没有 keep.txt 时保持原行为（不做样本子集）。
+if [ -n "${PHENO_KEEP}" ] && [ -f "${PHENO_KEEP}" ]; then
+    ${PLINK} --file "${PED_NAME}" --keep "${PHENO_KEEP}" \
+        -geno "${GENO}" -maf "${MAF}" -hwe "${HWE}" \
+        --make-bed --out "${OUT_BFILE}"
+else
+    ${PLINK} --file "${PED_NAME}" -geno "${GENO}" -maf "${MAF}" -hwe "${HWE}" \
+        --make-bed --out "${OUT_BFILE}"
+fi
 
 # ─── 过滤后 QC（门禁的判据读它）───
 # ⚠️ 这一段**不可省**。日志里那句 "N variants remaining" 是 plink 的**自报**：参数
@@ -176,7 +185,8 @@ if ! python "${VERIFIER}" \
         --prefix "${OUT_BFILE}" \
         --input-bfile "${PED_NAME}" \
         --qc-prefix "${QC_PREFIX}" \
-        --maf "${MAF}" --geno "${GENO}" --hwe "${HWE}"; then
+        --maf "${MAF}" --geno "${GENO}" --hwe "${HWE}" \
+        --keep-file "${PHENO_KEEP:-}"; then
     mkdir -p "$(dirname "${FAILED_FILE}")"
     {
         echo "stage=00.5_qc_filter"; echo "time=$(date '+%F %T')"

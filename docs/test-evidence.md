@@ -1342,3 +1342,22 @@ GWAS 管线整条无门禁，保持不修，只维持本文档 §11.6 的「已�
 **全量回归：1073 passed**（0.4.0 为 939）。新增四个测试文件共 130 条：
 门禁 31、GWAS 校验器 36、模板集成 60、真工具端到端 3。
 `tools/concurrency/*` 探针未受本批影响（仍为既有通过状态）。
+
+
+### 11.14 第十批（2026-11-02，v0.6.0）：表型-基因型对齐（S0.2）+ 强制审批 + 可移植性
+
+本批新增 `gwas-pheno-align` 技能，把"表型表与基因型样本对不上"这件事做成可复核的一步，
+并打通 `S0.2 → S0.5`（keep.txt）的交接。用户裁定：两边多出来的样本都可以接受（取交集），
+但对应关系不能乱；重复默认拦；匹配率低要人工确认；**对齐后必须用户确认才能继续**。
+
+| 代号 | 现象（实测） | 处置 | 证据 |
+|---|---|---|---|
+| P1 | 表型 161 / 基因型 162；`个体.txt`、Excel、`mvp_pheno.tab` 三份手工对应关系互不一致，`et231` 只在后两者出现 | 分档匹配（映射表 → 精确 → 规范化）+ 两侧未匹配全部落盘；`keep.txt` 取交集 | 真实数据：Excel(161)+fam(162) → 匹配 161、`et231` 独有；`mvp_pheno.tab`(162) → 匹配 162 |
+| P2 | `mvp_pheno.tab` 的 `et231 = 11.5881`，而同列真实范围 0.68~6.06 | 值域判据（3×IQR）只告警，但必须出现在报告里 | 真实数据 → 1 条 `trait[IMF].range` 告警（11.5881） |
+| P3 | 重复个体 / 一对多 / `A12`、`B12` 被 digits-only 撞成 `12` —— "对应关系混乱"但数量上看不出来 | 三类一律 hard；`ambiguous.tsv` 记录；碰撞检测在索引构建时做 | 合成负控各 1 条；**变异**：重复不拦 → `test_duplicate_rows_block_by_default` 红；碰撞不报 → `test_normalization_collision_is_hard` 红 |
+| P4 | "对齐完就直接往下跑"没有任何凭证，事后无法追溯"谁确认的、基于哪份产物" | `approve --note` 写参数与产物哈希；`check` 校验；产物改动 → 审批失效；blocked 不许审批 | `check` 前失败/后通过/篡改 `keep.txt` 再失败；**变异**：不校验产物哈希 → 对应用例红 |
+| P5 | S0.5 传了 `--keep` 但没生效（输出样本集与 keep 不一致）时无人发现 | `gwas_verify.py --keep-file`：输出样本集必须**正好等于** keep（多/少都 hard）+ 输出 ⊆ 输入 | 2 条 keep 交接用例（按 keep 子集通过；keep 多一个样本 → hard） |
+| P6 | 换一台机器：原实现依赖 pandas；GBK 的 CSV 被按 UTF-8 读会得到替换字符；脚本里若出现本机路径别人就跑不了 | 去掉 pandas（标准库 + openpyxl）；GBK 兜底；源码扫描禁止 `/home/`、`/data1`、`anaconda`、`/tmp/`；任意 cwd 可跑 | `test_no_pandas_dependency_and_no_hardcoded_paths`、`test_runs_from_any_working_directory`、`test_gbk_encoded_csv_is_read`；`env -i PATH=/usr/bin:/bin` 下 TSV 正常产出 |
+
+**全量回归：1141 passed**（0.5.0 为 1073）。新增 `tests/test_pheno_align.py` 28 条 +
+`tests/test_gwas_verify.py` 的 keep 交接 2 条。`docs/test-matrix.md` 补 `VERIFY-45`（170 条）。

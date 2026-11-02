@@ -250,7 +250,7 @@ if [ "$CORE_MISS" -gt 0 ]; then
   exit 1
 fi
 printf "\033[32m核心就绪。\033[0m下一步：\n"
-printf "  python3 run.py list        # 应列出 18 个技能\n"
+printf "  python3 run.py list        # 应列出 19 个技能\n"
 printf "  python3 run.py chat -p \"用 gwas-pipeline 说明标准流程，先别跑数据\"\n"
 [ "$STRICT" = 1 ] && [ "$WARN_MISS" -gt 0 ] && exit 1
 exit 0

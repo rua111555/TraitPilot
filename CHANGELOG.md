@@ -12,6 +12,65 @@
 
 ---
 
+## [0.6.0] — 2026-11-02
+
+**主题：给 GWAS 补上「第 0 步」—— 表型与基因型先对齐、差异全部落盘、用户确认后才继续。**
+
+> 为什么是 0.6.0：新增一个技能 + 一个新的管线阶段（S0.2），且 S0.5 的行为有可观察
+> 变化（支持 `--keep` 与 `--keep-file` 门禁）。按「版本号约定」属 `MINOR`。
+
+### 新增技能：`gwas-pheno-align`（GWAS Stage S0.2）
+
+实际项目里，表型文件和基因型数据的样本名**经常对不上**（前缀、大小写、补零、全角、
+空格、`FID_IID`、Excel 把 `001` 读成 `1`……），而"谁对应谁"往往只存在于口述或一份
+手工维护的对应表里。本 skill 把它做成可复核、可复现的一步：
+
+- **分档匹配**（逐行记录规则）：显式映射表 → 精确（IID/FID/`FID_IID`）→ 声明式规范化
+  （trim/全角/大小写/前后缀/补零/dedup-suffix）；**模糊候选只建议，不自动采用**。
+- **两边多出来的样本都接受**（取交集），但**对应关系不能乱**：一对多、重复、
+  归一化碰撞（`A12`/`B12` → `12`）一律 hard，写入 `ambiguous.tsv`。
+- **重复个体默认拦下**；显式 `--dup-policy mean|first|last` 才聚合。
+- **匹配率过低**只标记 `needs_confirmation`（不阻断），报告里醒目提示。
+- **对齐之后强制用户确认**：`approve` 记录参数与产物哈希；下游 `check` 校验，
+  产物改动后旧审批**自动失效**；被 hard 拦下的对齐不允许审批。
+- 产物：`keep.txt`（交集）、`pheno_gemma_<trait>.txt`（**单列、按基因型顺序** ——
+  修复历史"三列表型喂 GEMMA 导致全 nan"的同源问题）、`pheno_mvp.txt`、
+  `covar_mvp.txt`、`mapping_used.tsv`、`unmatched_{pheno,geno}.tsv`、`ambiguous.tsv`、
+  `pheno_aligned.csv`、`align.params.json`、`align.report.json` / `align_report.md`。
+
+### 接线：S0.2 进管线，S0.5 用 keep 固定分析集
+
+- `gwas-pipeline` 新增 S0.2 阶段（S0 之后、S0.5 之前），并写明"对齐后必须用户确认"；
+- `gwas-qc-filter` 模板新增 `PHENO_KEEP`：有 `keep.txt` 就用 `plink --keep` 固定分析集，
+  没有则保持原行为；
+- `gwas_verify.py` 新增 `--keep-file`：S0.5 的输出样本集必须**正好等于** keep（多/少都 hard），
+  并校验输出 ⊆ 输入 —— 防止"keep 传了却没生效"。
+
+### 可移植性（给其他人用）
+
+- **去掉 pandas 依赖**：csv/tsv/txt 用纯标准库读，xlsx 仅需 `openpyxl`（Agent 环境已含，
+  缺失时给出明确安装/转存提示）。测试耗时从 12.8s 降到 3s。
+- **中文 CSV 编码兼容**：UTF-8（含 BOM）→ GB18030 → replace 兜底，避免 GBK 文件被按
+  UTF-8 硬读后 ID 静默损坏。
+- **无本机路径硬编码**：脚本内不出现 `/home/`、`/data1`、`anaconda` 等；新增用例直接扫描
+  源码，未来加回去会当场红。任意工作目录可运行（路径全靠参数传入）。
+- **表格列数校验**：某行列数与表头不一致直接报错（列错位会静默把性状对到错误的人）。
+- 统一技能数量漂移：`requirements.txt`(21)、`environment/check_env.sh` 与
+  `environment/README.md`(18) 全部改为实际值 **19**。
+
+### 测试与证据
+
+- 全量回归 **1141 passed**（0.5.0 为 1073）。新增 `tests/test_pheno_align.py` **28 条**
+  （Excel / CSV / TSV / 空格分隔 / GBK / VCF / fam；归一化、映射表、重复/一对多/碰撞、
+  常量性状、协变量缺值、审批链路、任意 cwd、无 pandas/无硬编码），以及 S0.5 的
+  keep 交接 **2 条**。
+- **真实数据回归**：`IMF表型.xlsx`(161) + `gwas_sub.fam`(162) → 匹配 161、基因型独有
+  `et231`；`mvp_pheno.tab`(162) → 值域告警 `et231 = 11.5881`（同列真实范围 0.68~6.06）。
+- **变异验证 3 条全部指名红**：重复不拦、碰撞不报、不校验产物哈希。
+- `docs/test-matrix.md` 补 `VERIFY-45`，条目 **170**。
+
+---
+
 ## [0.5.0] — 2026-11-02
 
 **主题：把「完成」与「通过」从**承诺**变成**可验证的结论** —— 并把 GWAS 的七个阶段全部接上结果校验。**

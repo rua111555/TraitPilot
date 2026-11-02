@@ -2,7 +2,7 @@
 
 > 本机自研、**自包含**的单 Agent harness：技能放在本仓库 [`skills/`](../skills/)，
 > 配置从本目录 `config.json` 读取——**不依赖 Claude Code**。
-> 自带 18 个技能（WGS / GWAS 两大管线 + 表型提取）。入口在仓库根 `agent/`。
+> 自带 19 个技能（WGS / GWAS 两大管线 + 表型提取 + 表型-基因型对齐）。入口在仓库根 `agent/`。
 >
 > 本文覆盖：安装与凭证、版本号、三种入口、全部命令行参数、环境变量、REPL 命令、Web 前端、
 > 12 个可选 harness 能力、技能机制、端到端示例、故障排查。
@@ -41,7 +41,7 @@ conda run -n Agent python -c "import requests, yaml, flask; print('ok')"   # 确
 > 用哪套解释器都行（`Agent` 环境 / base / 系统 python3 均可），只要装了这三个包。本项目的
 > `start_web.sh` 会优先挑 `Agent` 环境的解释器。
 
-> ⚠️ 这三个包**只够 Agent 本体**（对话 / 读技能 / 执行 Bash）。自带 18 个技能背后还有三套 conda
+> ⚠️ 这三个包**只够 Agent 本体**（对话 / 读技能 / 执行 Bash）。自带 19 个技能背后还有三套 conda
 > 环境（`Agent` / `r-gwas` / `Phenotype`）、若干独立二进制与数据文件。
 > **一键安装**：`bash environment/install.sh`（`--list` 先看规格）；
 > **完整清单**见 [`environment/README.md`](../environment/README.md)；
@@ -121,7 +121,7 @@ cd ~/TraitPilot && python3 run.py list    # 自动探测到仓库根
 
 ```bash
 python3 run.py --version        # 或 python3 -m skill_agent --version
-# TraitPilot 0.5.0
+# TraitPilot 0.6.0
 ```
 
 **版本号的唯一载体是仓库根的 [`VERSION`](../VERSION) 文件** —— `skill_agent.__version__`
@@ -519,10 +519,10 @@ python3 -m skill_agent chat --trace
 · `Read` · `Write` · `Edit` · `Glob` · `Grep`（优先 rg，本机无 rg 时纯 Python 回退）· `TaskOutput`。
 可选挂载：`TodoWrite`（`--todo`）、`Search`/`RepoMap`（`--retrieval`）、插件工具（`--plugin-dir`）。
 
-### 自带技能（18 个）
+### 自带技能（19 个）
 
 - **WGS**：`wgs-expressive-pipeline`（编排） + `wgs-express-server-detect` / `-params-propose` / `-fastp-qc` / `-align-sort` / `-markdup-bqsr` / `-haplotypecaller` / `-joint-genotyping` / `-filtering`
-- **GWAS**：`gwas-pipeline`（编排） + `gwas-format-convert` / `-qc-filter` / `-kinship-pca` / `-gemma` / `-mvp` / `-visualization` / `-ld-block`
+- **GWAS**：`gwas-pipeline`（编排） + `gwas-format-convert` / **`gwas-pheno-align`（S0.2 表型对齐）** / `-qc-filter` / `-kinship-pca` / `-gemma` / `-mvp` / `-visualization` / `-ld-block`
 - **表型**：`phenotype-extract`
 
 ---

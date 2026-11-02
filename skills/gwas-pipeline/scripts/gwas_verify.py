@@ -77,7 +77,7 @@ _PARAM_KEYS = ("prefix", "vcf", "input_bfile", "qc_prefix", "filter",
                "bfile", "grm_prefix", "pca_prefix", "assoc", "kinship", "pheno",
                "trait", "methods", "csv_dir", "map", "source", "sig_file",
                "sig_thresh", "images_dir", "region", "region_gt", "out_prefix",
-               "top_site")
+               "top_site", "keep_file")
 
 # 位点数/样本数下限的"显式不做"语义（与 WGS 的 min_variants 一致）：
 #   正整数 → 判定并 hard；整数 0 → 明确不做（登记 warn 说明）；其它 → 畸形，hard。
@@ -223,6 +223,22 @@ def check_bed(rep, prefix, n_var, n_ind, label="bed"):
             f" → 期望 {expect}" if actual == expect else
             f"**字节数不符**：实际 {actual}，按 {n_var} 位点 × {n_ind} 个体应为 {expect}"
             f"（差 {actual - expect:+d} 字节）—— 抓截断/写了一半的 .bed")
+
+
+def _read_keep_file(path):
+    """读 `keep.txt`（FID IID；也接受只有 IID 的单列）。返回 (set, err)。"""
+    if not have(path):
+        return None, f"keep 文件不存在或为空：{path}"
+    pairs = set()
+    for ln in (_read_lines(path) or []):
+        toks = ln.split()
+        if len(toks) >= 2:
+            pairs.add((toks[0], toks[1]))
+        elif len(toks) == 1:
+            pairs.add((toks[0], toks[0]))
+    if not pairs:
+        return None, f"keep 文件里没有有效样本：{path}"
+    return pairs, None
 
 
 def sample_key(samples):
@@ -594,17 +610,40 @@ def verify_qc_filter(args, rep):
                 f"位点 {in_ds['n_var']} → {ds['n_var']}（过滤只能减少）"
                 if ds["n_var"] <= in_ds["n_var"] else
                 f"**位点数变多了**：{in_ds['n_var']} → {ds['n_var']} —— 输出不是这份输入的过滤结果")
-        # 样本：默认必须一个不丢；只有参数里显式声明 keep/remove 时才是"预期内减少"
+        out_set = set(ds["samples"])
+        in_set = set(in_ds["samples"])
+        keep_ids = None
+        if args.keep_file:
+            keep_ids, kerr = _read_keep_file(args.keep_file)
+            if kerr:
+                rep.add("keep_file", "hard", False, kerr)
+            else:
+                missing = sorted(keep_ids - out_set)
+                extra = sorted(out_set - keep_ids)
+                rep.add("out.expected_samples", "hard", not missing and not extra,
+                        f"输出样本集 == keep.txt 的 {len(keep_ids)} 个样本"
+                        if not missing and not extra else
+                        f"**输出与 keep.txt 不一致**：少 {len(missing)} 个（前 3：{missing[:3]}），"
+                        f"多 {len(extra)} 个（前 3：{extra[:3]}）—— S0.5 没按 S0.2 的分析集过滤")
+                rep.add("samples_subset", "hard", out_set <= in_set,
+                        f"输出样本全部来自输入（{len(out_set)}/{len(in_set)}）"
+                        if out_set <= in_set else
+                        f"**输出里出现了输入没有的样本**：{sorted(out_set - in_set)[:5]}")
+        # 没有 keep 文件时：样本默认必须一个不丢；只有参数显式声明 keep/remove 才是预期内减少
         declared = bool(args.keep or args.remove)
-        same = (ds["n_ind"] == in_ds["n_ind"]
-                and set(ds["samples"]) == set(in_ds["samples"]))
+        same = (ds["n_ind"] == in_ds["n_ind"] and out_set == in_set)
         level = "warn" if declared else "hard"
-        rep.add("samples_conserved", level, same or declared,
-                "样本集与输入完全一致" if same else
-                (f"样本数 {in_ds['n_ind']} → {ds['n_ind']}（参数显式声明了 keep/remove，"
-                 f"属预期）" if declared else
-                 f"**样本集变了**：{in_ds['n_ind']} → {ds['n_ind']}，且 run.params.json "
-                 f"没有声明 keep/remove —— 静默丢样本是最难发现的一类错误"))
+        if keep_ids is not None:
+            # 有 keep 文件时，"样本减少"是 S0.2 的正常结果，由 out.expected_samples 判
+            rep.add("samples_conserved", "warn", True,
+                    f"按 keep.txt 取子集：输入 {in_ds['n_ind']} → 分析 {ds['n_ind']} 个样本")
+        else:
+            rep.add("samples_conserved", level, same or declared,
+                    "样本集与输入完全一致" if same else
+                    (f"样本数 {in_ds['n_ind']} → {ds['n_ind']}（参数显式声明了 keep/remove，"
+                     f"属预期）" if declared else
+                     f"**样本集变了**：{in_ds['n_ind']} → {ds['n_ind']}，且 run.params.json "
+                     f"没有声明 keep/remove —— 静默丢样本是最难发现的一类错误"))
         if in_ds["n_var"] > 0:
             keep_rate = ds["n_var"] / in_ds["n_var"]
             rep.extras["retention"] = round(keep_rate, 4)
@@ -1415,6 +1454,8 @@ def main():
     ap.add_argument("--region-gt", default="", help="S4 的区域基因型文件")
     ap.add_argument("--out-prefix", default="", help="S5 的输出前缀（.svg/.site.gz/.blocks.gz）")
     ap.add_argument("--top-site", default="", help="S5 的峰顶位点（须在上游结果中）")
+    ap.add_argument("--keep-file", default="",
+                    help="S0.5：S0.2 对齐产出的 keep.txt（FID IID）—— 有它时以它为分析集基准")
     ap.add_argument("--json", action="store_true", help="以 JSON 输出到 stdout")
     ap.add_argument("--quiet", action="store_true", help="只在失败时输出")
     args = ap.parse_args()

@@ -15,7 +15,7 @@ skills/<name>/scripts/…         # 可选：脚本
 
 ## 本目录内容
 
-18 个技能，`gwas-*` / `wgs-express-*` / `phenotype-extract`，均为 WGS / GWAS 分析管线。
+19 个技能：`gwas-*`（含 `gwas-pheno-align`）/ `wgs-express-*` / `phenotype-extract`，均为 WGS / GWAS 分析管线。
 
 ## 模型权重（未随仓库分发）
 

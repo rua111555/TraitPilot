@@ -5,11 +5,11 @@
 
 一个**完整、可用、自包含**的单 Agent 系统：技能放在本仓库的 [`skills/`](skills/)，
 API 凭证/配置从本目录的 `config.json` 读取——**不依赖 Claude Code**。
-自带 18 个技能（WGS / GWAS 两大管线 + 表型提取）。
+自带 19 个技能（WGS / GWAS 两大管线 + 表型提取 + 表型-基因型对齐）。
 
 **当前版本**：见 [`VERSION`](VERSION)（唯一载体），变更历史见 [`CHANGELOG.md`](CHANGELOG.md)。
 ```bash
-python3 run.py --version        # → TraitPilot 0.5.0
+python3 run.py --version        # → TraitPilot 0.6.0
 ```
 
 ## 快速开始
@@ -34,7 +34,7 @@ python3 -m skill_agent          # 或 python3 run.py / python3 run.py chat
 
 ## 部署到新机器
 
-`requirements.txt` 只有三个包，**只够 Agent 本体**（对话 / 读技能 / 执行 Bash）。自带 18 个技能
+`requirements.txt` 只有三个包，**只够 Agent 本体**（对话 / 读技能 / 执行 Bash）。自带 19 个技能
 背后还有三套 conda 环境（`Agent` / `r-gwas` / `Phenotype`）、不在 conda 的独立二进制（gemma / gcta64 /
 LDBlockShow / Haploview…）以及数据文件。
 
@@ -215,7 +215,7 @@ agent/                        # 本目录即仓库根，也是「项目根」（
 ├── run.py                  # CLI 入口（等效 python -m skill_agent）
 ├── run_web.py              # Web 入口：python3 run_web.py → http://127.0.0.1:8787
 ├── config.json.example     # 配置模板（复制为 config.json 填 api_key）
-├── skills/                 # 自带技能库（18 个；模型权重 .pth 已 gitignore）
+├── skills/                 # 自带技能库（19 个；模型权重 .pth 已 gitignore）
 ├── requirements.txt        # requests + PyYAML + flask（**仅 Agent 本体**，本机已预装）
 ├── environment/            # 完整部署环境：README.md（清单/指引）+ check_env.sh（自检）+ Agent.yml/r-gwas.yml
 ├── skill_agent/
