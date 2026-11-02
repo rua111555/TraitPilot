@@ -126,18 +126,49 @@ for stage_script in "${RUN_DIR}"/scripts/*.sh; do
     #    并存时，.done 先判会把"正在跑"报成「已完成」，用户据此推进下一阶段（实测复现）。
     if [ -f "${failed_file}" ]; then echo "❌ ${stage_name} 校验未通过（读 .failed 看原因）"
     elif [ -f "${pid_file}" ] && kill -0 "$(cat "${pid_file}")" 2>/dev/null; then echo "🕐 ${stage_name} 运行中"
-    elif [ -f "${done_file}" ]; then echo "✅ ${stage_name} 已完成"
+    elif [ -f "${done_file}" ]; then
+        # ── 硬门禁：`.done` 存在 ≠ 已校验 ──
+        # 与编排层 SKILL.md §2.5 的恢复检查**同一套判据**（missing / stage_mismatch /
+        # blocked / empty → 不采信、不算完成）。两处必须一致：只改一处等于没改，
+        # 因为用户从哪条路径查状态取决于当时对话框开着还是关了。
+        # 为什么要在编排层再核一遍：`.done` 由 LLM 现场生成的脚本写入，
+        # "脚本真的调过校验器"没有运行时证据；旧版本脚本、手工标记、报告被清理
+        # 都会留下孤立的 `.done`。这一段把它从"承诺"变成"硬条件"。
+        verdict=$(python -c 'import json,sys
+p, stage = sys.argv[1], sys.argv[2]
+try:
+    d = json.load(open(p, encoding="utf-8"))
+except Exception:
+    print("missing"); sys.exit(0)
+if d.get("stage") != stage:
+    print("stage_mismatch"); sys.exit(0)
+if d.get("pass") is not True:
+    print("blocked"); sys.exit(0)
+if not (d.get("checks") or []):
+    print("empty"); sys.exit(0)
+print("ok")' "${RUN_DIR}/.verify/${stage_name}.json" "${stage_name}" 2>/dev/null || true)
+        if [ "${verdict}" = "ok" ]; then echo "✅ ${stage_name} 已完成"
+        else echo "⛔ ${stage_name} 有 .done 但校验报告不可采信（${verdict:-取不到}）—— 不算完成，不推进"
+        fi
     elif [ -f "${log_file}" ]; then echo "⚠️ ${stage_name} 已中断"
     else echo "⬜ ${stage_name} 未开始"
     fi
 done
 ```
 
-> 四态判定：`.failed`（校验未通过）→ **运行中（pid 存活）** → `.done`（已完成且通过校验）→ 未开始/已中断。
+> 状态判定：`.failed`（校验未通过）→ **运行中（pid 存活）** → `.done`+报告可采信（已完成且通过校验）
+> → `.done`+报告不可采信（**有标记、未校验，不推进**）→ 未开始/已中断。
 > `.failed` 优先级最高，因为它的存在意味着**这一阶段的数据不可信**，必须停下来修，
 > 而不是继续推进。pid 存活排在 `.done` 之前：`.done` 可能是**上一轮**留下的陈旧标记，
 > 而存活的进程说明本轮还在写 —— 两者并存时报「运行中」才是真话。配套地，阶段脚本
 > **开工即 `rm -f` 自己的 `.done`**（成功路径清 `.failed`，开工清 `.done`，两半都做）。
+>
+> **`.done` 只是必要条件，不是「完成」的证明**：编排层拿到 `.done` 后必须再核
+> `.verify/<stage>.json` —— 存在、可解析、`stage` 与本阶段一致、`pass=true`、`checks` 非空。
+> 缺任一项就归入「有标记、未校验」：**不推进**，先判断该阶段到底跑没跑过（跑过就重跑门禁，
+> 旧版本脚本/手工标记就删掉 `.done` 重跑该阶段）。这个二次核对不是多余的：`.done` 由
+> LLM 现场生成的脚本写入，而"脚本真的调用了校验器"没有任何运行时机制能证明 —— 只守
+> 脚本那一端，等于把门禁交给模板的自觉性。
 
 ## 阶段结果校验（结果值门禁）
 

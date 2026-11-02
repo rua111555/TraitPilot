@@ -1868,11 +1868,29 @@ def test_report_has_discrimination(tmp_path):
 
 
 def test_tool_probe_does_not_hardcode_paths():
-    """仓库硬规则：工具用 command -v 运行时探测，禁止写死本机 conda 绝对路径。"""
-    src = open(os.path.join(SV_PATH, "stage_verify.py"), encoding="utf-8").read()
-    assert "/home/" not in src, "校验器里出现了写死的本机路径"
-    assert "anaconda3" not in src, "校验器里出现了写死的 conda 路径"
-    assert "shutil.which" in src
+    """仓库硬规则：工具用 command -v 运行时探测，禁止写死本机 conda 绝对路径。
+
+    ⚠️ 判据范围从"单个文件"扩到"校验器 + 它的共享骨架"（2026-10-30 抽取
+    `skills/_shared/verify_core.py` 时同步调整）：`tool()`/`shutil.which` 搬进了
+    core，若仍只扫 `stage_verify.py`，这条断言会因为"探测代码不在本文件"而
+    永久变红 —— 更糟的修法是把它删掉或改弱，那等于门禁自己放弃了这条硬规则。
+    故判据改成：**两个文件都不许出现写死路径，探测能力必须存在且真的被接线**。
+    """
+    sv = open(os.path.join(SV_PATH, "stage_verify.py"), encoding="utf-8").read()
+    core_path = os.path.join(ROOT, "skills", "_shared", "verify_core.py")
+    core = open(core_path, encoding="utf-8").read()
+
+    for name, src in (("stage_verify.py", sv), ("verify_core.py", core)):
+        assert "/home/" not in src, f"{name} 里出现了写死的本机路径"
+        assert "anaconda3" not in src, f"{name} 里出现了写死的 conda 路径"
+
+    # 运行时探测必须**真的存在**（否则"工具用 command -v 探测"只是文档口号），
+    # 且校验器必须从 core 接线到它 —— 只断言 core 里有 `shutil.which` 不够：
+    # 把 import 删掉、自己另写一套写死路径的实现，本条会全绿。
+    assert "shutil.which" in core, "共享骨架里缺少运行时工具探测（shutil.which）"
+    assert re.search(r"from verify_core import[\s\S]{0,300}?\btool\b", sv), (
+        "stage_verify 没有从 verify_core 引入 `tool` —— 探测能力的接线断了")
+    assert re.search(r'\btool\("', sv), "校验器里没有任何地方调用 tool(...)"
 
 
 # ==================== A3：PERCENT_DUPLICATION 解析（假阳性解析）====================

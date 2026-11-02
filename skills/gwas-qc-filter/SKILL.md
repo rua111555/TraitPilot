@@ -117,6 +117,7 @@ set -euo pipefail
 RUN_DIR="..."
 LOG_FILE="${RUN_DIR}/logs/00.5_qc_filter.log"
 DONE_FILE="${RUN_DIR}/.done/00.5_qc_filter.done"
+FAILED_FILE="${RUN_DIR}/.failed/00.5_qc_filter.failed"
 PID_FILE="${RUN_DIR}/.pid/00.5_qc_filter.pid"
 mkdir -p "$(dirname "${LOG_FILE}")" "$(dirname "${DONE_FILE}")" "$(dirname "${PID_FILE}")"
 # ⚠️ 开工先清掉本阶段自己的陈旧 .done：重跑一个曾成功过的阶段时，上一轮的 .done
@@ -129,23 +130,91 @@ trap 'rm -f "${PID_FILE}"' EXIT
 PLINK="$(command -v plink || { echo "✗ 找不到 plink —— 请激活 conda 环境 Agent" >&2; exit 1; })"
 
 # 输入/输出占位（由 gwas-pipeline 生成脚本时替换为实际值）
-PREFIX="..."                  # 上游（S0）产出的 PLINK 前缀，不带扩展名
-PED_NAME="${PREFIX}"          # 无扩展名；--file 会找 ${PED_NAME}.ped/.map
+PREFIX="..."                    # 上游（S0）产出的 PLINK 前缀，不带扩展名
+PED_NAME="${PREFIX}"            # 无扩展名；--file 会找 ${PED_NAME}.ped/.map
+OUT_BFILE="${PREFIX}.wy1.snp"   # 过滤后的 bfile（下游 --bfile 的输入）
 
-# ─── QC 报告 ───
-${PLINK} --file "${PED_NAME}" --missing
-${PLINK} --file "${PED_NAME}" --freq --out MAF_check
+# 过滤阈值：**同一份声明**既喂给 plink，也喂给门禁 —— 门禁拿它证明参数真的生效。
+GENO=0.2; MAF=0.01; HWE=0.000001
+
+# ─── 过滤前 QC（看分布、选阈值）───
+${PLINK} --file "${PED_NAME}" --missing --freq --out "${PREFIX}.pre"
 
 # ─── 过滤 ───
-${PLINK} --file "${PED_NAME}" -geno 0.2 -maf 0.01 -hwe 0.000001 \
-    --make-bed --out "${PREFIX}.wy1.snp"
+${PLINK} --file "${PED_NAME}" -geno "${GENO}" -maf "${MAF}" -hwe "${HWE}" \
+    --make-bed --out "${OUT_BFILE}"
 
-# ─── 过滤后复检 ───
-${PLINK} --bfile "${PREFIX}.wy1.snp" --missing --out "${PREFIX}.wy1.snp.missing"
-${PLINK} --bfile "${PREFIX}.wy1.snp" --freq --out "${PREFIX}.wy1.snp.maf"
+# ─── 过滤后 QC（门禁的判据读它）───
+# ⚠️ 这一段**不可省**。日志里那句 "N variants remaining" 是 plink 的**自报**：参数
+#    没传进去时它照样打印一个数字，看起来完全正常。门禁要的是过滤后**自己的实测值**
+#    （.frq 的 min(MAF)、.lmiss 的 max(F_MISS)、.hwe 的 min(P)）—— 只有它能证明
+#    -maf/-geno/-hwe 真的生效了。一趟跑三个分析，成本约一遍 .bed 扫描。
+QC_PREFIX="${OUT_BFILE}.qc"
+${PLINK} --bfile "${OUT_BFILE}" --freq --missing --hardy --out "${QC_PREFIX}"
+
+# ─── 阶段收尾：先校验，再决定写哪个标记 ───
+# 定位校验器：由 gwas-pipeline 生成脚本时写进 run.params.json 的 verifier_path
+#（**绝对路径** —— 本脚本位于 {RUN_DIR}/scripts/，与仓库无固定相对关系）。
+# ⚠️ 末尾 `|| true` 不可省：赋值语句在 `set -e` 下会因命令替换失败当场退出，
+#    下面的兜底就永远到不了（磁盘上既无 .done 也无 .failed）。
+VERIFIER="$(python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("verifier_path",""))' "${RUN_DIR}/run.params.json" 2>/dev/null || true)"
+if [ -z "${VERIFIER}" ] || [ ! -f "${VERIFIER}" ]; then
+    mkdir -p "$(dirname "${FAILED_FILE}")"
+    { echo "stage=00.5_qc_filter"; echo "time=$(date '+%F %T')"
+      echo "reason=校验器未指定或不可读：'${VERIFIER}'（环境问题，非数据问题）"
+      echo "  查 ${RUN_DIR}/run.params.json 的 verifier_path：必须是非空**绝对**路径，且文件还在"
+    } > "${FAILED_FILE}"
+    echo "[FATAL] 定位不到校验器: '${VERIFIER}'" >&2
+    exit 1
+fi
+
+# 删掉旧报告：跑完后它只要存在，就必然是本轮的产物（否则会把上一轮的报告当成本轮结论）
+rm -f "${RUN_DIR}/.verify/00.5_qc_filter.json"
+if ! python "${VERIFIER}" \
+        --stage 00.5_qc_filter \
+        --run-dir "${RUN_DIR}" \
+        --prefix "${OUT_BFILE}" \
+        --input-bfile "${PED_NAME}" \
+        --qc-prefix "${QC_PREFIX}" \
+        --maf "${MAF}" --geno "${GENO}" --hwe "${HWE}"; then
+    mkdir -p "$(dirname "${FAILED_FILE}")"
+    {
+        echo "stage=00.5_qc_filter"; echo "time=$(date '+%F %T')"
+        rep="${RUN_DIR}/.verify/00.5_qc_filter.json"
+        if [ -f "${rep}" ]; then
+            echo "--- 校验报告（本轮）---"; cat "${rep}"
+        else
+            echo "--- 没有本轮校验报告 ---"
+            echo "失败发生在校验器产出报告之前：多为环境问题（位置/解释器/写权限），不是数据问题。"
+        fi
+    } > "${FAILED_FILE}"
+    echo "[ERROR] 阶段校验未通过，不写 .done（编排层不得推进）" >&2
+    exit 1
+fi
 
 date > "${DONE_FILE}"
+rm -f "${RUN_DIR}/.failed/00.5_qc_filter.failed"   # 清掉上一轮的陈旧失败标记
+echo "[DONE] 00.5_qc_filter 校验通过"
 ```
+
+## 阶段结果校验（写 `.done` 前的门禁）
+
+收尾段的 `gwas_verify.py --stage 00.5_qc_filter` 判的是**过滤后的结果值**：
+
+| 判据 | 级别 | 抓什么 |
+|---|---|---|
+| 输出 bfile 三件套 + `.bed` 字节数 == `3 + n_var × ⌈n_ind/4⌉` | hard | 写了一半的 bfile |
+| 位点数 `0 < out ≤ in` | hard | 位点变多（输出不是这份输入的过滤结果）/ 全部滤光 |
+| 样本集 == 输入（除非参数显式声明 `keep`/`remove`） | hard | **静默丢样本** —— 下游关联少人，没有任何环节会报错 |
+| 过滤后 `.frq` 行数 == 位点数，且 `min(MAF) ≥ -maf` | hard | `-maf` 没生效 / `.frq` 是过滤前的陈旧产物 |
+| 过滤后 `.lmiss` 的 `max(F_MISS) ≤ -geno` | hard | `-geno` 没生效 |
+| 过滤后 `.hwe`（只取 `TEST=ALL*`）的 `min(P) ≥ -hwe` | hard | `-hwe` 没生效，或方向写反 |
+| 位点保留率 | warn | 过滤阈值是否过严（用户的判断，不是门禁的判断） |
+| `--min-snps` / `--min-samples` | 声明才 hard | 规模不达预期 |
+
+> **为什么必须读过滤后自己的 `.frq/.lmiss/.hwe`**：plink 日志里的 "N variants remaining"
+> 是**自报**，参数没传进去时它照样打印一个数。门禁要的是实测值 —— 这与 WGS 侧
+> "判据读本体、不读派生数据"是同一条原则。
 
 ## ⚠️ 错误预防清单
 
@@ -159,6 +228,8 @@ date > "${DONE_FILE}"
 | 6 | **位点数下降过快要回查** — 过滤后剩余位点 < 预期 20%，检查 VCF 是否已含过滤标记 | 关联分析功效不足 |
 | 7 | **X 染色体 HWE/MAF 按性染色体验算与常染色体不同** — 需要时分开处理或剔除 | 偏离 HWE 误滤 |
 | 8 | **过滤后必须复检**（missing/MAF 二次报告） | 过滤生效与否无从确认 |
+| 9 | **写 `.done` 前必须过阶段门禁**（`gwas_verify.py --stage 00.5_qc_filter`）：未过则写 `.failed` + `exit 1`，**不得**无条件写 `.done` | 过滤没生效/滤光/丢样本，却一路传到关联结果 |
+| 10 | **过滤后 QC 必须留 `.frq/.lmiss/.hwe` 三份**（`--freq --missing --hardy` 一趟出） | 门禁没有实测值可读 → fail-closed 拦下（这是刻意的，不是误报） |
 
 ## QC 输出汇报
 

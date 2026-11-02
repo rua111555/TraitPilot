@@ -98,6 +98,7 @@ set -euo pipefail
 RUN_DIR="..."
 LOG_FILE="${RUN_DIR}/logs/02_gemma.log"
 DONE_FILE="${RUN_DIR}/.done/02_gemma.done"
+FAILED_FILE="${RUN_DIR}/.failed/02_gemma.failed"
 PID_FILE="${RUN_DIR}/.pid/02_gemma.pid"
 mkdir -p "$(dirname "${LOG_FILE}")" "$(dirname "${DONE_FILE}")" "$(dirname "${PID_FILE}")" "${RUN_DIR}/out"
 # ⚠️ 开工先清掉本阶段自己的陈旧 .done：重跑一个曾成功过的阶段时，上一轮的 .done
@@ -110,23 +111,72 @@ GEMMA="$(command -v gemma || find / -maxdepth 4 -name 'gemma*' -type f 2>/dev/nu
 
 # 输入/输出占位（由 gwas-pipeline 生成脚本时替换为实际值）
 PREFIX="..."                  # PLINK 前缀（不带扩展名），与上游阶段一致
-COVAR_TXT="..."               # 协变量文件（FID IID + 各列，无表头）
+PHE_TXT="..."                 # ⚠️ **单列**表型文件：只有值、按 .fam 顺序、无表头
+COVAR_TXT="..."               # 协变量文件（无表头）；不需要时留空
 BFILE="${PREFIX}.3.snp"
 
+# ⚠️ -gk 2 也要读表型：.fam 的表型列是 -9 时，不给 -p 会以
+#    `ERROR: Enforce failed for number of analyzed individuals equals 0` 失败。
 # ─── 亲缘 ───
-${GEMMA} -bfile "${BFILE}" -gk 2 -o "${PREFIX}.kinship"
-KFILE=$(ls output/${PREFIX}.kinship.s*.txt 2>/dev/null | head -1 || ls output/.${PREFIX}.kinship.s*.txt | head -1)
+${GEMMA} -bfile "${BFILE}" -p "${PHE_TXT}" -gk 2 -o "${PREFIX}.kinship"
+KFILE=$(ls output/${PREFIX}.kinship.s*.txt 2>/dev/null | head -1)
+if [ -z "${KFILE}" ]; then
+    echo "✗ GEMMA 没有产出亲缘矩阵（output/${PREFIX}.kinship.sXX.txt）" >&2
+    exit 1
+fi
 mv "${KFILE}" output/${PREFIX}.kinship.txt
 
 # ─── 关联（-lmm 4 全检验） ───
-${GEMMA} -bfile "${BFILE}" \
+# ⚠️ `-p` 的文件格式是**单列值**（实测：给成 `FID IID value` 三列时 GEMMA **不报错**，
+#    但 vg=ve=0、beta=0、se=0、p_wald=nan —— 整份结果是废的，rc 仍为 0）。
+${GEMMA} -bfile "${BFILE}" -p "${PHE_TXT}" \
     -k output/${PREFIX}.kinship.txt \
-    -c "${COVAR_TXT}" \
+    ${COVAR_TXT:+-c "${COVAR_TXT}"} \
     -lmm 4 -maf 0.05 -miss 0.1 \
     -o ${PREFIX}_GWAS
 
 cp output/${PREFIX}_GWAS.assoc.txt "${RUN_DIR}/out/"
+# ─── 阶段收尾：先校验，再决定写哪个标记 ───
+# 定位校验器：由 gwas-pipeline 生成脚本时写进 run.params.json 的 verifier_path
+#（**绝对路径** —— 本脚本位于 {RUN_DIR}/scripts/，与仓库无固定相对关系）。
+# ⚠️ 末尾 `|| true` 不可省：赋值语句在 `set -e` 下会因命令替换失败当场退出，
+#    下面的兜底就永远到不了（磁盘上既无 .done 也无 .failed）。
+VERIFIER="$(python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("verifier_path",""))' "${RUN_DIR}/run.params.json" 2>/dev/null || true)"
+if [ -z "${VERIFIER}" ] || [ ! -f "${VERIFIER}" ]; then
+    mkdir -p "$(dirname "${FAILED_FILE}")"
+    { echo "stage=02_gemma"; echo "time=$(date '+%F %T')"
+      echo "reason=校验器未指定或不可读：'${VERIFIER}'（环境问题，非数据问题）"
+      echo "  查 ${RUN_DIR}/run.params.json 的 verifier_path：必须是非空**绝对**路径，且文件还在"
+    } > "${FAILED_FILE}"
+    echo "[FATAL] 定位不到校验器: '${VERIFIER}'" >&2
+    exit 1
+fi
+
+# 删掉旧报告：跑完后它只要存在，就必然是本轮的产物（否则会把上一轮的报告当成本轮结论）
+rm -f "${RUN_DIR}/.verify/02_gemma.json"
+if ! python "${VERIFIER}" \
+        --stage 02_gemma \
+        --run-dir "${RUN_DIR}" \
+        --bfile "${BFILE}" \
+        --assoc "${RUN_DIR}/out/${PREFIX}_GWAS.assoc.txt"; then
+    mkdir -p "$(dirname "${FAILED_FILE}")"
+    {
+        echo "stage=02_gemma"; echo "time=$(date '+%F %T')"
+        rep="${RUN_DIR}/.verify/02_gemma.json"
+        if [ -f "${rep}" ]; then
+            echo "--- 校验报告（本轮）---"; cat "${rep}"
+        else
+            echo "--- 没有本轮校验报告 ---"
+            echo "失败发生在校验器产出报告之前：多为环境问题（位置/解释器/写权限），不是数据问题。"
+        fi
+    } > "${FAILED_FILE}"
+    echo "[ERROR] 阶段校验未通过，不写 .done（编排层不得推进）" >&2
+    exit 1
+fi
+
 date > "${DONE_FILE}"
+rm -f "${RUN_DIR}/.failed/02_gemma.failed"   # 清掉上一轮的陈旧失败标记
+echo "[DONE] 02_gemma 校验通过"
 ```
 
 ## ⚠️ 错误预防清单
@@ -139,7 +189,8 @@ date > "${DONE_FILE}"
 | 3 | **`-k` 用 GRM（`-gk`）产物，`-c` 是协变量（FID IID+列）** — 两者是不同文件 | 传错文件报解析错误 |
 | 4 | **协变量文件无表头、第一二列是 FID IID** | GEMMA 解析失败或协变量偏移 |
 | 5 | **表型默认读 `.fam` 第 6 列**；用 `-p` 时同样 FID IID pheno 无表头 | 表型全 NA / -9 无数 |
-| 5.5 | **`-bfile` 的 fam 无表型时必须显式 `-p`（或把表型写入 fam 第 6 列）** — 实测 `plink --make-bed` 生成的 fam 表型列为 `-9`/`No phenotypes present`，GEMMA `-gk` 直接报 `ERROR: Enforce failed for number of analyzed individuals equals 0. in src/param.cpp ProcessCvtPhen`；加 `-p pheno_file`（FID IID value 三列）即解决 | 亲缘/关联一步都跑不了 |
+| 5.5 | **`-bfile` 的 fam 无表型时必须显式 `-p`（或把表型写入 fam 第 6 列）** — 实测 `plink --make-bed` 生成的 fam 表型列为 `-9`，GEMMA `-gk` 直接报 `ERROR: Enforce failed for number of analyzed individuals equals 0. in src/param.cpp ProcessCvtPhen`；加 `-p pheno_file`（**单列值**、按 `.fam` 顺序、无表头）即解决 | 亲缘/关联一步都跑不了 |
+| 5.6 | **`-p` 是单列值文件，不是 `FID IID value` 三列** — 实测给三列/两列时 GEMMA **rc=0、不报错**，但 `vg=ve=0、beta=se=0、p_wald` 全 `nan`，整份结果是废的（历史上那份 `gwas_sub_GWAS.assoc.txt` 就是这么坏的：12563 行、p_wald 全 nan、beta 全 0）。门禁的 `assoc.p_valid` / `assoc.beta` 会把这种结果拦下 | 结果全废，但报告显示"跑完了" |
 | 6 | **`-lmm` 需先有 `-k`（或 `-gk` 先算）** | `No relatedness matrix` 报错 |
 | 7 | **样本数 < 位点数 / 个体极少时到亲缘矩阵奇异** — 加少量 ridge 或检查重复个体 | `Ginv` 求逆失败 |
 | 8 | **多等位/异常 chr 名** — GEMMA 按 `.bim` 第 1 列编号，染色体别名需 `--chr-set` 先统一 | 位点被丢 / 编号错误 |

@@ -1316,3 +1316,29 @@ GWAS 管线整条无门禁，保持不修，只维持本文档 §11.6 的「已�
 | `.recal.table` 缺失降为 warn | parabricks 的 `pbrun bqsr` 一步完成时不产出该文件，属预期；GATK 路径下缺失才说明 BQSR 被跳过。故不作 hard |
 | Stage 2 全无产出判 hard | 经查 Stage 3 消费 `{sample}.sorted.markdup.BQSR.bam`，而 fq2bam 只产出 `{sample}.sorted.bam` → 无论何后端 Stage 2 都必须产出 BQSR BAM，故 `bqsr_output` 保持 hard 正确 |
 | 重复率检查依赖未固定的文件名 | `MARKDUP_METRICS` 变量在 markdup skill 里被引用但**从未定义**文件名，故重复率检查做成"候选名命中才查"的可选判据（warn） |
+
+
+### 11.13 第九批（2026-11-02，v0.5.0）：编排层硬门禁 + GWAS 七阶段校验
+
+本批两类工作，共同点是**把"承诺"变成"可执行判据"**：
+(a) 编排层不再凭 `.done` 认完成，必须再核一份可采信的 `.verify` 报告；
+(b) GWAS 从 S0 扩到 S5，七个数据阶段全部接入结果校验。
+另有三次"真实产物打脸文档"的修复（GEMMA 表型格式、rMVP P 列位置、显著位点清单陈旧），
+每条都先复现、再修、再做变异验证。
+
+| 代号 | 现象（实测） | 处置 | 证据 |
+|---|---|---|---|
+| H1 | 孤立的 `.done`（漏抄收尾段 / 旧版本脚本 / 手工标记）被编排层当作「已完成」并推进 | 编排层硬门禁：`.verify/<stage>.json` 必须存在、可解析、`stage` 匹配、`pass=true`、`checks` 非空；四类不采信（missing / stage_mismatch / blocked / empty） | `tests/test_verify_report_is_hard_gate.py` 31 条（3 站点 × 5 类不可采信 + 阳性 + 判序回归 + `set -e` + 未接入安全阀）；**变异**：把两文件恢复成 0.4.0 → **14 条指名红**，`cp` 复原后 md5 一致；把 GWAS 站点的 `if [ "${verdict}" != "ok" ]` 改 `if false` → 6 条指名红 |
+| H2 | GWAS 只有 S0/S0.5 有校验器：若对全部阶段套硬门禁，S1–S5 会被永久判「未校验」卡死；一律放行又等于假装核过 | 安全阀：`GATED_STAGES` 之外的阶段报「🟡 已完成但未接入校验」；`GATED_STAGES` 与校验器注册表由测试双向同步 | `test_ungated_gwas_stage_is_marked_not_verified`（阶段名用注册表外的未来阶段，避免"已全部接入"后空转）+ `test_gated_stage_list_matches_verifier_registry` |
+| G1 | 历史 GEMMA 产物 `gwas_sub_GWAS.assoc.txt`：12563 行、`p_wald` **全 nan**、`beta/se` **全 0**，当时无人发现 | S2 判据：`p_wald` 可解析 ≥ 90%、`beta` 不得整列 0、结果位点数 ≤ 输入、`##` 元信息对账 | 真实文件 → 2 条 hard 同时红；**根因**：`-p` 必须是**单列值**文件；给 `FID IID value` 三列时 GEMMA rc=0 但 `vg=ve=0`。真 GEMMA 端到端：单列 → 通过；三列 → 被拦（`tests/test_gwas_e2e.py`） |
+| G2 | 历史 `sig_MLM.txt` 167 条，按当前 `IMF.MLM.csv` 重算只有 **82** 条（多出 85 条达不到阈值） | S4 判据：显著位点清单必须能由上游结果按阈值（默认 `0.05/n`）重算出来 | 真实文件 → hard 红；合成负控（`stale=True`）→ 指名红；**变异**：`sig.matches` 恒真 → 指名红 |
+| G3 | 文档把 rMVP 的 P 值写成「第 8 列」；真实 CSV 是 9 列，第 8 列是 **SE**，P 列名是 `IMF.MLM`（第 9 列） | S3 按列名定位（`P.value` 或 `<trait>.<method>`）；修正 5 处文档与作图示例（按列名取） | 真实 `IMF.GLM/MLM/FarmCPU.csv` → 通过；合成负控：P 列不存在 / 方法位点集合不一致 / P 全等；**变异**：`methods.snp_set` 恒真 → 指名红 |
+| G4 | S0 的 `.bed` 截断/写一半：只判"文件存在非空"抓不到 | `.bed` 字节数 == `3 + n_var×⌈n_ind/4⌉`（格式等式，零依赖） | 真实 20000×162 → 820003 字节吻合；截断 7 字节 → `bed.size` 指名红；**变异**：`actual == expect` 改 True → 指名红 |
+| G5 | S0.5「过滤没生效」：`-maf/-geno/-hwe` 参数没传进去，日志照样打印剩余位点数 | 读**过滤后自己的** `.frq/.lmiss/.hwe` 实测值：`min(MAF) ≥ -maf`、`max(F_MISS) ≤ -geno`、`min(P_HWE) ≥ -hwe`；行数 == 位点数（抓陈旧报告） | 未过滤数据声称已过滤 → 3 条 hard（MAF 0 / F_MISS 0.2593 / P 6.328e-09）；真过滤后 18290 位点全绿（0.01 / 0.1975 / 1.012e-06）；**变异**：`qc.maf` 恒真 → 2 条指名红 |
+| G6 | S1 无 gcta64 时模板必失败；GRM/矩阵/热图在回退路径本就产不出 | 模板加 `plink --pca` 回退；回退路径的 GRM/矩阵/图登记「未核对」warn，PCA 数值仍 hard | 真 `plink --pca` 端到端通过；`pca.rows` 少一行 → 指名红；**变异**：`pca.rows` 恒真 → 指名红 |
+| G7 | S5 区域过小时 LDBlockShow 会除零；SVG 可能是错误信息 | 区域位点 ≥ 10、SVG 含 `<svg`、`.site.gz` 非空、`.blocks.gz` 可解压（0 block 只 warn） | 真实 `ld_gwas` 产物（14 位点、0 block）→ 通过 + 1 warn；区域 1 个位点 → 指名红；**变异**：`region.size` 恒真 → 指名红 |
+| R1 | 校验器骨架两份实现会漂移（根因 D 的温床） | 抽 `skills/_shared/verify_core.py`，WGS/GWAS 共用 | **纯搬移证明**：111 条 WGS 用例改前改后全绿；缺 BAM / 缺 samtools 两种场景下旧/新 stdout 与 `.verify/*.json` **逐字节一致** |
+
+**全量回归：1073 passed**（0.4.0 为 939）。新增四个测试文件共 130 条：
+门禁 31、GWAS 校验器 36、模板集成 60、真工具端到端 3。
+`tools/concurrency/*` 探针未受本批影响（仍为既有通过状态）。

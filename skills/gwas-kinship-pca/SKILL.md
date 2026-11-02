@@ -129,6 +129,7 @@ set -euo pipefail
 RUN_DIR="..."
 LOG_FILE="${RUN_DIR}/logs/01_kinship_pca.log"
 DONE_FILE="${RUN_DIR}/.done/01_kinship_pca.done"
+FAILED_FILE="${RUN_DIR}/.failed/01_kinship_pca.failed"
 PID_FILE="${RUN_DIR}/.pid/01_kinship_pca.pid"
 mkdir -p "$(dirname "${LOG_FILE}")" "$(dirname "${DONE_FILE}")" "$(dirname "${PID_FILE}")"
 # ⚠️ 开工先清掉本阶段自己的陈旧 .done：重跑一个曾成功过的阶段时，上一轮的 .done
@@ -137,24 +138,77 @@ mkdir -p "$(dirname "${LOG_FILE}")" "$(dirname "${DONE_FILE}")" "$(dirname "${PI
 rm -f "${DONE_FILE}"
 echo $$ > "${PID_FILE}"; trap 'rm -f "${PID_FILE}"' EXIT
 
-GCTA="$(command -v gcta64)"             # 独立二进制，按实际路径检测
+GCTA="$(command -v gcta64 || true)"     # 独立二进制；缺失时走回退路径（错误预防 #13）
+PLINK="$(command -v plink || { echo "✗ 找不到 plink —— 请激活 conda 环境 Agent" >&2; exit 1; })"
 
 # 输入/输出占位（由 gwas-pipeline 生成脚本时替换为实际值）
 PREFIX="..."                  # 过滤后 PLINK 前缀（S0.5 产物，不带扩展名）
 BFILE="${PREFIX}.wy1.snp"
+KINSHIP_R="..."               # R 脚本：下三角 → 对称矩阵 + 热图（GCTA 路径用）
+PCA_R="..."                   # R 脚本：PCA 散点图（GCTA 路径用）
 
-# ─── GRM ───
-${GCTA} --bfile "${BFILE}" --autosome --make-grm --out "${PREFIX}.3.snp.kinship"
+if [ -n "${GCTA}" ]; then
+    # ─── GRM ───
+    ${GCTA} --bfile "${BFILE}" --autosome --make-grm --out "${PREFIX}.3.snp.kinship"
 
-# ─── R：对称矩阵 + 热图 ───
-Rscript kinship_symm.R "${PREFIX}"
-Rscript kinship_heatmap.R "${PREFIX}"
+    # ─── R：对称矩阵 + 热图 ───
+    Rscript "${KINSHIP_R}" "${PREFIX}"
 
-# ─── PCA ───
-${GCTA} --grm "${PREFIX}.3.snp.kinship" --pca 10 --out "${PREFIX}.10.pca"
-Rscript pca_plot.R "${PREFIX}"
+    # ─── PCA ───
+    ${GCTA} --grm "${PREFIX}.3.snp.kinship" --pca 10 --out "${PREFIX}.10.pca"
+    Rscript "${PCA_R}" "${PREFIX}"
+else
+    # ⚠️ 错误预防 #13：gcta64 缺失时按文档规定的回退路径跑 plink --pca。
+    #    回退**不产出** GRM / 对称亲缘矩阵 / 热图 —— 门禁会如实登记
+    #    「未核对 GRM」「未核对亲缘矩阵」「未核对图」，而不是假装核过。
+    echo "[INFO] 未找到 gcta64 → 回退 plink --pca 10（不产 GRM/亲缘矩阵）" >&2
+    ${PLINK} --bfile "${BFILE}" --pca 10 --out "${PREFIX}.10.pca"
+fi
+
+# ─── 阶段收尾：先校验，再决定写哪个标记 ───
+# 定位校验器：由 gwas-pipeline 生成脚本时写进 run.params.json 的 verifier_path
+#（**绝对路径** —— 本脚本位于 {RUN_DIR}/scripts/，与仓库无固定相对关系）。
+# ⚠️ 末尾 `|| true` 不可省：赋值语句在 `set -e` 下会因命令替换失败当场退出，
+#    下面的兜底就永远到不了（磁盘上既无 .done 也无 .failed）。
+VERIFIER="$(python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("verifier_path",""))' "${RUN_DIR}/run.params.json" 2>/dev/null || true)"
+if [ -z "${VERIFIER}" ] || [ ! -f "${VERIFIER}" ]; then
+    mkdir -p "$(dirname "${FAILED_FILE}")"
+    { echo "stage=01_kinship_pca"; echo "time=$(date '+%F %T')"
+      echo "reason=校验器未指定或不可读：'${VERIFIER}'（环境问题，非数据问题）"
+      echo "  查 ${RUN_DIR}/run.params.json 的 verifier_path：必须是非空**绝对**路径，且文件还在"
+    } > "${FAILED_FILE}"
+    echo "[FATAL] 定位不到校验器: '${VERIFIER}'" >&2
+    exit 1
+fi
+
+# 删掉旧报告：跑完后它只要存在，就必然是本轮的产物（否则会把上一轮的报告当成本轮结论）
+rm -f "${RUN_DIR}/.verify/01_kinship_pca.json"
+if ! python "${VERIFIER}" \
+        --stage 01_kinship_pca \
+        --run-dir "${RUN_DIR}" \
+        --bfile "${BFILE}" \
+        --grm-prefix "${PREFIX}.3.snp.kinship" \
+        --pca-prefix "${PREFIX}.10.pca" \
+        --kinship "${PREFIX}.3.snp.kinship.txt" \
+        --images-dir "${RUN_DIR}/out"; then
+    mkdir -p "$(dirname "${FAILED_FILE}")"
+    {
+        echo "stage=01_kinship_pca"; echo "time=$(date '+%F %T')"
+        rep="${RUN_DIR}/.verify/01_kinship_pca.json"
+        if [ -f "${rep}" ]; then
+            echo "--- 校验报告（本轮）---"; cat "${rep}"
+        else
+            echo "--- 没有本轮校验报告 ---"
+            echo "失败发生在校验器产出报告之前：多为环境问题（位置/解释器/写权限），不是数据问题。"
+        fi
+    } > "${FAILED_FILE}"
+    echo "[ERROR] 阶段校验未通过，不写 .done（编排层不得推进）" >&2
+    exit 1
+fi
 
 date > "${DONE_FILE}"
+rm -f "${RUN_DIR}/.failed/01_kinship_pca.failed"   # 清掉上一轮的陈旧失败标记
+echo "[DONE] 01_kinship_pca 校验通过"
 ```
 
 ## ⚠️ 错误预防清单

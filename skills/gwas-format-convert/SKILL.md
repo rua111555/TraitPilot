@@ -82,6 +82,7 @@ set -euo pipefail
 RUN_DIR="..."                 # 从 gwas-pipeline 生成
 LOG_FILE="${RUN_DIR}/logs/00_format_convert.log"
 DONE_FILE="${RUN_DIR}/.done/00_format_convert.done"
+FAILED_FILE="${RUN_DIR}/.failed/00_format_convert.failed"
 PID_FILE="${RUN_DIR}/.pid/00_format_convert.pid"
 mkdir -p "$(dirname "${LOG_FILE}")" "$(dirname "${DONE_FILE}")" "$(dirname "${PID_FILE}")"
 # ⚠️ 开工先清掉本阶段自己的陈旧 .done：重跑一个曾成功过的阶段时，上一轮的 .done
@@ -101,14 +102,80 @@ IN_VCF_GZ="..."               # 原始 VCF(.gz) 路径
 PREFIX="..."                  # 输出前缀（不带扩展名），如 cohort
 
 # gz VCF → ped/map
-${VCFTOOLS} --gzvcf "${IN_VCF_GZ}" --plink --out "${PREFIX}"
+# ⚠️ 两条路径都写全：vcftools 在很多机器上**没有装**（本机实测就没有），
+#    只写 `${VCFTOOLS} ...` 时变量为空 → 该行变成 ` --gzvcf ...` → 以 127 失败，
+#    而错误发生在**写任何标记之前**，四态判定只会说"已中断"。
+if [ -n "${VCFTOOLS}" ]; then
+    ${VCFTOOLS} --gzvcf "${IN_VCF_GZ}" --plink --out "${PREFIX}"
+else
+    echo "[INFO] 未找到 vcftools，改用 plink --vcf --recode 出 ped/map" >&2
+    ${PLINK} --vcf "${IN_VCF_GZ}" --recode --out "${PREFIX}"
+fi
 
 # 数量核对
 n_map=$(wc -l < "${PREFIX}.map"); n_ped=$(wc -l < "${PREFIX}.ped")
 echo "SNPs: ${n_map}, individuals: ${n_ped}"
 
+# ─── 阶段收尾：先校验，再决定写哪个标记 ───
+# 定位校验器：由 gwas-pipeline 生成脚本时写进 run.params.json 的 verifier_path
+#（**绝对路径** —— 本脚本位于 {RUN_DIR}/scripts/，与仓库无固定相对关系）。
+# ⚠️ 末尾 `|| true` 不可省：赋值语句在 `set -e` 下会因命令替换失败当场退出，
+#    下面的兜底就永远到不了（磁盘上既无 .done 也无 .failed）。
+VERIFIER="$(python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("verifier_path",""))' "${RUN_DIR}/run.params.json" 2>/dev/null || true)"
+if [ -z "${VERIFIER}" ] || [ ! -f "${VERIFIER}" ]; then
+    mkdir -p "$(dirname "${FAILED_FILE}")"
+    { echo "stage=00_format_convert"; echo "time=$(date '+%F %T')"
+      echo "reason=校验器未指定或不可读：'${VERIFIER}'（环境问题，非数据问题）"
+      echo "  查 ${RUN_DIR}/run.params.json 的 verifier_path：必须是非空**绝对**路径，且文件还在"
+    } > "${FAILED_FILE}"
+    echo "[FATAL] 定位不到校验器: '${VERIFIER}'" >&2
+    exit 1
+fi
+
+# 删掉旧报告：跑完后它只要存在，就必然是本轮的产物（否则会把上一轮的报告当成本轮结论）
+rm -f "${RUN_DIR}/.verify/00_format_convert.json"
+if ! python "${VERIFIER}" \
+        --stage 00_format_convert \
+        --run-dir "${RUN_DIR}" \
+        --prefix "${PREFIX}" \
+        --vcf "${IN_VCF_GZ}"; then
+    mkdir -p "$(dirname "${FAILED_FILE}")"
+    {
+        echo "stage=00_format_convert"; echo "time=$(date '+%F %T')"
+        rep="${RUN_DIR}/.verify/00_format_convert.json"
+        if [ -f "${rep}" ]; then
+            echo "--- 校验报告（本轮）---"; cat "${rep}"
+        else
+            echo "--- 没有本轮校验报告 ---"
+            echo "失败发生在校验器产出报告之前：多为环境问题（位置/解释器/写权限），不是数据问题。"
+        fi
+    } > "${FAILED_FILE}"
+    echo "[ERROR] 阶段校验未通过，不写 .done（编排层不得推进）" >&2
+    exit 1
+fi
+
 date > "${DONE_FILE}"
+rm -f "${RUN_DIR}/.failed/00_format_convert.failed"   # 清掉上一轮的陈旧失败标记
+echo "[DONE] 00_format_convert 校验通过"
 ```
+
+## 阶段结果校验（写 `.done` 前的门禁）
+
+收尾段的 `gwas_verify.py --stage 00_format_convert` 判的是**结果值**，不是"命令跑完了"：
+
+| 判据 | 级别 | 抓什么 |
+|---|---|---|
+| `.bed` 字节数 == `3 + n_var × ⌈n_ind/4⌉` | hard | 写了一半 / 被截断的 bfile（不需要任何工具，纯结构等式） |
+| `.bed` 魔数 `6c1b01` | hard | 拿错文件 / 不是 PLINK 1 SNP-major |
+| `.bim`/`.fam` 均 6 列、位点数 > 0、个体数 > 0 | hard | 空数据集、列错位 |
+| FID/IID 不重复 | hard | 下游按 ID 连接时结果串行 |
+| `.fam` 样本集 == 输入 VCF 样本表头 | hard | **转格式时丢了样本**（最隐蔽的一类：结果里少人，没人会报错） |
+| 位点数 vs VCF 记录数 | warn | 多等位拆分/丢弃；差异要能解释 |
+| `--min-snps` / `--min-samples` | 声明才 hard | 规模不达预期 |
+
+> 样本名比对允许几种常见约定（`IID` / `FID` / `FID_IID` / `IID_IID` / `FID:IID`），
+> 但要求**在某个约定下集合完全相等** —— 实测本项目的 GWAS 产物里 `.fam` 是
+> `FID=IID=et10`、VCF 表头是 `et10_et10`，只比 IID 会把 162 个样本全判成"丢了"。
 
 ## ⚠️ 错误预防清单
 
@@ -120,6 +187,7 @@ date > "${DONE_FILE}"
 | 4 | **`--allow-extra-chr`** — 非标准染色体名（`chr7`/`SSC7` / X/Y） | plink 拒绝或丢弃染色体 |
 | 5 | **工具路径** — plink 用 `command -v` 运行时探测（勿写死本机路径）；vcftools 同样检测 | 子 shell 丢 PATH |
 | 6 | **别用 plink2 的 `--export-bed` 参数名混到 plink1.9** | 参数不识别 |
+| 7 | **写 `.done` 前必须过阶段门禁**（`gwas_verify.py --stage 00_format_convert`）：未过则写 `.failed` + `exit 1`，**不得**无条件写 `.done` | 中途错误传到下游且无人察觉（本阶段最常见的形态是"样本丢了但结果是好的"） |
 
 ## QC 输出汇报
 

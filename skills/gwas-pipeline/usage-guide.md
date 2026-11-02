@@ -19,7 +19,7 @@ usage: |
 LLM 接到该请求后逐阶段执行，每阶段：
 1. 调用对应子 skill（读其 SKILL.md）
 2. 依据 `run.params.json` 生成该阶段脚本
-3. 展示给用户→ 审批 → 后台执行 → 查 `.done` → 自动推进
+3. 展示给用户 → 审批 → 后台执行 → 查 `.done` **与 `.verify/<stage>.json`**（硬门禁）→ 自动推进
 
 ## 输入前置条件
 
@@ -55,6 +55,12 @@ VCF ─→ S0 format-convert ─→ .ped/.map ─→ S0.5 qc-filter ─→ .bed/
 | S4 | `04_visualize.sh` | `CMplot/MVP.Report` + P 阈值过滤 + `plink --extract` | `.pdf/.jpg` + `Sig.*.txt` |
 | S5 | `05_ld_block.sh` | `LDBlockShow -InGWAS -InGFF` + `ShowLDSVG` + `Haploview` | `.svg/.png` + Block |
 
+> **阶段结果校验（写 `.done` 前的门禁）**：**7 个数据阶段全部接入**
+> `skills/gwas-pipeline/scripts/gwas_verify.py`（S0 / S0.5 / S1 / S2 / S3 / S4 / S5）。
+> 门禁失败时脚本写 `.failed` 而不写 `.done`，编排层据此停止推进；报告落在
+> `{RUN_DIR}/.verify/<stage>.json`。回退路径（例如没有 gcta64、只跑 `plink --pca`）
+> 不产出的产物会如实登记「未核对」，不会假装核过。
+
 ## 常见配置调整
 
 - **过滤条件**：`--filter "geno=0.1 maf=0.05 hwe=1e-6"`（更严格）；小样本 `maf=0.05`
@@ -70,6 +76,7 @@ command -v plink bcftools tabix Rscript gcta64 gemma   # 工具齐备（缺失�
 Rscript -e 'library(rMVP); library(CMplot)'            # R 包可用
 
 # 每阶段后
+cat {RUN_DIR}/.verify/{stage}.json                       # 门禁报告：pass / hard_failures / warnings
 ls -l {stage 输出}                                       # 输出存在非空
 wc -l < bfile.bim                                       # 位点数符合预期
 head -1 output/{PREFIX}_GWAS.assoc.txt                  # GEMMA 结果表头正确

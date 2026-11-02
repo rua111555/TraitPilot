@@ -315,7 +315,7 @@ log_done "Stage 1 complete (校验通过)"
    **不要在工具调用里 `sleep` 轮询** —— 那会把这一轮一直占住，对话框就不会解放。
 2. 每次检查 `.done` 与 `.failed` 文件（**两者都要看**）
 3. 汇报保持**极简**（一行：`第 X/N 样本 | Y 个 BAM | 无报错`），不加分析过程
-4. `.done` 存在 → 读 `.verify/STAGE.json`，**把 warn 项带进汇报** → 进入下一阶段（生成脚本 → 交用户审批）
+4. `.done` 存在 → **先过硬门禁**：`.verify/STAGE.json` 必须存在、可解析、`stage` 匹配、`pass=true`、`checks` 非空；缺任一项即「有标记但未校验」，**不推进**（见下）→ 过了才读报告、**把 warn 项带进汇报** → 进入下一阶段（生成脚本 → 交用户审批）
 5. `.failed` 存在 → **停止推进**，读失败原因如实报给用户，修复后重新审批该阶段
 6. **`.pid` 进程仍存活 → 判定「运行中」，不得推进**（即使 `.done` 也在）。
    `.done` 可能是**上一轮**留下的陈旧标记：重跑一个曾成功过的阶段时，上一轮的 `.done`
@@ -393,6 +393,40 @@ for stage_script in "${RUN_DIR}"/scripts/*.sh; do
         echo "🕐 ${stage_name} 运行中"; continue
     fi
     if [ -f "${RUN_DIR}/.done/${stage_name}.done" ]; then
+        # ── 硬门禁：`.done` 存在 ≠ 已校验 ──────────────────────────────────
+        # `.done` 只该由阶段脚本**在校验通过后**写 —— 但那是模板的承诺，不是运行时
+        # 能证明的事实。下面四种形态都会让 `.done` 单独存在：
+        #   · 漏抄收尾段的脚本（LLM 现场生成，模板只是模板）
+        #   · **旧版本**生成的脚本写下的 `.done`（没有门禁那一版）
+        #   · 手工 `touch` / 复制目录带来的标记
+        #   · 校验通过了、但报告在传输/清理中被删掉
+        # 故编排层**自己再核一遍**报告，四类一律不采信：
+        #   missing        → 报告不存在或不是合法 JSON
+        #   stage_mismatch → 报告里的 stage 与本阶段不符（拿到了别的阶段的报告）
+        #   blocked        → 报告 pass=false，却写了 .done（标记与报告互相矛盾）
+        #   empty          → checks 为空（一条判据都没跑，等于没校验）
+        # 不采信 → **不推进**，让用户重跑该阶段的门禁，而不是把"没验证过"当"验证过"。
+        # ⚠️ 每个分支的 `sys.exit(0)` 与末尾 `|| true` 都不能省：任何非零退出都会让
+        #    `set -e` 下的整块中途退出（那就成了"报告有问题 → 状态检查本身崩掉"）。
+        verdict=$(python -c 'import json,sys
+p, stage = sys.argv[1], sys.argv[2]
+try:
+    d = json.load(open(p, encoding="utf-8"))
+except Exception:
+    print("missing"); sys.exit(0)
+if d.get("stage") != stage:
+    print("stage_mismatch"); sys.exit(0)
+if d.get("pass") is not True:
+    print("blocked"); sys.exit(0)
+if not (d.get("checks") or []):
+    print("empty"); sys.exit(0)
+print("ok")' "${RUN_DIR}/.verify/${stage_name}.json" "${stage_name}" 2>/dev/null || true)
+        if [ "${verdict}" != "ok" ]; then
+            echo "⛔ ${stage_name} 有 .done 但**校验报告不可采信**（${verdict:-取不到}）——"
+            echo "   不算完成，不推进；重跑该阶段门禁："
+            echo "   stage_verify.py --stage ${stage_name} --run-dir \"${RUN_DIR}\""
+            continue
+        fi
         # 通过校验的阶段：把 warn 项带出来，别让告警被"✅"盖住
         # ⚠️ 不能用 `grep -o '"warnings": \[[^]]*\]'`：.verify/*.json 是 indent=2 的
         #    **多行** JSON，`[` 与 `]` 分处两行，而 grep 不跨行 —— 该模式必然匹配不到，
@@ -413,6 +447,11 @@ done
 ```
 → 已完成（中间步）：读 `.verify/*.json` → 生成下一阶段脚本交审批（带出 warn）
 → 已完成（最后步）：汇报最终产出
+→ **有 `.done` 但报告不可采信**（⛔ missing / stage_mismatch / blocked / empty）：
+  **不算完成、不推进**。先用日志与现有产物判断该阶段是否真的跑过：
+  - 跑过 → 重跑门禁（`stage_verify.py --stage ... --run-dir ...`），过了才写 `.done`；
+  - 没跑过 / 是旧版本脚本 → 删掉这个 `.done`，重新生成并执行该阶段。
+  绝不能因为"标记在"就继续 —— 那正是本门禁要消灭的"没验证过却当成验证过"。
 → **校验未通过**：读 `.failed` 与 `.verify/*.json` 报根因，修复后重审该阶段
 → 运行中：告知进度
 → 已中断：读日志报错，修复后重审
@@ -434,9 +473,15 @@ done
 └── out/                # BAM / VCF 输出
 ```
 
-> 阶段状态的四态判定（场景 B 的恢复检查据此分支）：
+> 阶段状态的判定（场景 B 的恢复检查据此分支）：
 > `.failed` → 校验未通过（**最优先判**）｜`.pid` 且进程活 → 运行中（**排在 `.done` 之前**）｜
-> `.done` → 已完成且校验通过｜其余 → 未开始 / 已中断
+> `.done` **且报告可采信** → 已完成且校验通过｜`.done` **但报告不可采信** → 「有标记、未校验」
+> （**不推进**，重跑门禁或重跑该阶段）｜其余 → 未开始 / 已中断
+>
+> ⚠️ `.done` **不是**「已完成」的充分条件，只是必要条件。它由 LLM 现场生成的阶段脚本写入，
+> 而"脚本真的调用了校验器"没有任何运行时机制能证明 —— 所以编排层必须自己再核一遍
+> `.verify/<stage>.json`（存在 / `stage` 匹配 / `pass=true` / `checks` 非空）。这条与
+> "阶段脚本先校验再写 `.done`"是**两端**：只守一端，另一端漏掉时整条链照样是纸面具备。
 >
 > `.failed` 之所以最优先：它的存在意味着**这一阶段的数据不可信**，必须停下来修，
 > 而不是继续推进。代价是必须有配套的清理 —— 阶段重跑并通过时要在写 `.done` 的同时

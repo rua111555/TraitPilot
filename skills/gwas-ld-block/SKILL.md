@@ -122,6 +122,7 @@ set -euo pipefail
 RUN_DIR="..."
 LOG_FILE="${RUN_DIR}/logs/05_ld_block.log"
 DONE_FILE="${RUN_DIR}/.done/05_ld_block.done"
+FAILED_FILE="${RUN_DIR}/.failed/05_ld_block.failed"
 PID_FILE="${RUN_DIR}/.pid/05_ld_block.pid"
 mkdir -p "$(dirname "${LOG_FILE}")" "$(dirname "${DONE_FILE}")" "$(dirname "${PID_FILE}")"
 # ⚠️ 开工先清掉本阶段自己的陈旧 .done：重跑一个曾成功过的阶段时，上一轮的 .done
@@ -143,6 +144,7 @@ sk_ensure_ld_path
 
 # 输入/输出占位（由 gwas-pipeline 生成脚本时替换为实际值）
 BFILE="..."                   # 区域 PLINK 前缀（plink --extract 后的区域 bfile）
+GWAS_SOURCE="..."     # 上游关联结果（用于核对峰顶位点；可空）
 OUTPREFIX="..."               # 输出前缀（不带扩展名）
 CHR="..."                     # 区域染色体编号（须与 bfile/bim 一致）
 START="..."                   # 区域起点（bp）
@@ -168,7 +170,50 @@ TOPSITE="..."                 # 峰顶位点（须在 -Region 范围内）
 convert -density 150 "${OUTPREFIX}.svg" "${OUTPREFIX}.png"
 
 cp *.{png,svg,pdf} "${RUN_DIR}/out/" 2>/dev/null || true
+# ─── 阶段收尾：先校验，再决定写哪个标记 ───
+# 定位校验器：由 gwas-pipeline 生成脚本时写进 run.params.json 的 verifier_path
+#（**绝对路径** —— 本脚本位于 {RUN_DIR}/scripts/，与仓库无固定相对关系）。
+# ⚠️ 末尾 `|| true` 不可省：赋值语句在 `set -e` 下会因命令替换失败当场退出，
+#    下面的兜底就永远到不了（磁盘上既无 .done 也无 .failed）。
+VERIFIER="$(python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("verifier_path",""))' "${RUN_DIR}/run.params.json" 2>/dev/null || true)"
+if [ -z "${VERIFIER}" ] || [ ! -f "${VERIFIER}" ]; then
+    mkdir -p "$(dirname "${FAILED_FILE}")"
+    { echo "stage=05_ld_block"; echo "time=$(date '+%F %T')"
+      echo "reason=校验器未指定或不可读：'${VERIFIER}'（环境问题，非数据问题）"
+      echo "  查 ${RUN_DIR}/run.params.json 的 verifier_path：必须是非空**绝对**路径，且文件还在"
+    } > "${FAILED_FILE}"
+    echo "[FATAL] 定位不到校验器: '${VERIFIER}'" >&2
+    exit 1
+fi
+
+# 删掉旧报告：跑完后它只要存在，就必然是本轮的产物（否则会把上一轮的报告当成本轮结论）
+rm -f "${RUN_DIR}/.verify/05_ld_block.json"
+if ! python "${VERIFIER}" \
+        --stage 05_ld_block \
+        --run-dir "${RUN_DIR}" \
+        --out-prefix "${OUTPREFIX}" \
+        --region "${CHR}:${START}-${END}" \
+        --bfile "${BFILE}" \
+        --source "${GWAS_SOURCE:-}" \
+        --top-site "${TOPSITE:-}"; then
+    mkdir -p "$(dirname "${FAILED_FILE}")"
+    {
+        echo "stage=05_ld_block"; echo "time=$(date '+%F %T')"
+        rep="${RUN_DIR}/.verify/05_ld_block.json"
+        if [ -f "${rep}" ]; then
+            echo "--- 校验报告（本轮）---"; cat "${rep}"
+        else
+            echo "--- 没有本轮校验报告 ---"
+            echo "失败发生在校验器产出报告之前：多为环境问题（位置/解释器/写权限），不是数据问题。"
+        fi
+    } > "${FAILED_FILE}"
+    echo "[ERROR] 阶段校验未通过，不写 .done（编排层不得推进）" >&2
+    exit 1
+fi
+
 date > "${DONE_FILE}"
+rm -f "${RUN_DIR}/.failed/05_ld_block.failed"   # 清掉上一轮的陈旧失败标记
+echo "[DONE] 05_ld_block 校验通过"
 ```
 
 ## ⚠️ 错误预防清单

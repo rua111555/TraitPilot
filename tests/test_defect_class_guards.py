@@ -250,11 +250,27 @@ def test_resume_guards_are_at_least_as_strict_as_the_gate(rel):
     守卫用 `-f` 时，0 字节/截断产物 → resume 跳过 → 门禁 hard FAIL → 重跑逐字
     相同、永久卡死（实测复现，见 docs/test-evidence.md 的 G03 记录）。
     """
-    have_src = open(os.path.join(SV_PATH, "stage_verify.py"), encoding="utf-8").read()
-    m = re.search(r"def have\(path\):\s*\n\s*return ([^\n]+)", have_src)
-    assert m, "从 stage_verify.py 读不到 have() 的定义 —— 防线在空转（推导源变了）"
-    assert "getsize" in m.group(1) and "> 0" in m.group(1), (
-        f"have() 的实现变了：{m.group(1)!r} —— 若它不再要求「非空」，"
+    # 门禁的"存在"判据 = `have()` = `isfile ∧ 大小 > 0`（0 字节算不存在）。
+    # ⚠️ 2026-10-30 起 `have()` 已抽到 `skills/_shared/verify_core.py`（WGS / GWAS 共用），
+    #    本防线必须从**定义处**推导，否则它会在抽取后对着空文件断言、然后全仓变红 ——
+    #    而最省事的"修法"是把这条断言删掉，那等于门禁自己放弃了这条判据。
+    core_path = os.path.join(SKILLS, "_shared", "verify_core.py")
+    candidates = [core_path, os.path.join(SV_PATH, "stage_verify.py")]
+    impl = None
+    for path in candidates:
+        if not os.path.isfile(path):
+            continue
+        src = open(path, encoding="utf-8").read()
+        i = src.find("def have(path):")
+        if i < 0:
+            continue
+        m = re.search(r"return ([^\n]+)", src[i:i + 1200])
+        if m:
+            impl = (path, m.group(1))
+            break
+    assert impl, "从 verify_core.py / stage_verify.py 都读不到 have() 的定义 —— 防线在空转"
+    assert "getsize" in impl[1] and "> 0" in impl[1], (
+        f"{impl[0]} 里的 have() 实现变了：{impl[1]!r} —— 若它不再要求「非空」，"
         f"本防线的前提（存在=非空）不再成立，需重新裁定 resume 的严格度要求")
 
     text = open(DOCS[rel], encoding="utf-8").read()
@@ -1658,10 +1674,12 @@ def test_every_success_path_clears_stale_failed(rel):
     → 已修好并通过的阶段被报成"校验未通过"（实测复现）。
 
     **作用域**：只覆盖"四态 + 门禁"这条链上的文档（文档里出现 `.failed` / `.verify` /
-    门禁字样）。`gwas-*` 是**另一条流水线**：它不读 `.failed`、不跑 `stage_verify.py`、
-    只写 `.done`（实测 7 个 gwas skill 的 `.failed` 出现次数均为 0）。对它们套用本条
-    判据是**前提错配**而非发现缺陷 —— 那套流水线缺的是"整个门禁"，属于另一件事
-    （已记入 docs/test-evidence.md 的已知边界），不该由这条防线伪装成"已覆盖"。
+    门禁字样）。2026-10-30 起 **GWAS 的 S0 / S0.5 已接入同一条链**（`gwas_verify.py` +
+    `.failed` + `.verify`），故它们也进入本条射程 —— 这是有意的：收尾模板一旦也写
+    `.failed`，就必须同时清陈旧标记，否则重跑通过后两个标记并存、四态判定优先读
+    `.failed`，会把已通过的阶段报成"校验未通过"（WGS 侧实测复现过）。
+    尚未接入门禁的 `gwas-*` 阶段（S1–S5）仍不满足这个前提，套用本条是**前提错配**，
+    应等它们接入时再要求 —— 不该由这条防线伪装成"已覆盖"。
     """
     text = open(DOCS[rel], encoding="utf-8").read()
     if not re.search(r"\.failed|stage_verify|VERIFIER|四态", text):
