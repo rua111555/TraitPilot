@@ -478,3 +478,18 @@ def test_gbk_encoded_csv_is_read(tmp_path):
     assert rc == 0, o
     assert report(out)["n_matched"] == 2
     assert read_lines(out / "keep.txt") == ["F1\tet10", "F2\tet101"]
+
+
+def test_duplicate_iid_is_reported_as_fid_problem_not_normalize(tmp_path):
+    """同一 IID 出现在两个 FID 下：文案必须指向 FID/映射，而不是让用户去收紧规则。"""
+    write_fam(tmp_path / "g.fam", [("F1", "et10"), ("F2", "et10"), ("F3", "et101")])
+    write_pheno(tmp_path / "p.csv", ["Taxa", "IMF"], [["et10", "2.3"], ["et101", "3.2"]])
+    out = tmp_path / "out"
+    rc, o = run("analyze", "--pheno", tmp_path / "p.csv", "--geno", tmp_path / "g.fam",
+                "--id-col", "Taxa", "--traits", "IMF", "--outdir", out)
+    assert rc == 1, o
+    rep = report(out)
+    hf = set(rep["hard_failures"])
+    assert "collision.dup_iid" in hf, hf
+    detail = " ".join(c["detail"] for c in rep["checks"] if "dup_iid" in c["name"])
+    assert "FID" in detail and "不是归一化" in detail, detail

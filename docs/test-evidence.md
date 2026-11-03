@@ -1361,3 +1361,14 @@ GWAS 管线整条无门禁，保持不修，只维持本文档 §11.6 的「已�
 
 **全量回归：1141 passed**（0.5.0 为 1073）。新增 `tests/test_pheno_align.py` 28 条 +
 `tests/test_gwas_verify.py` 的 keep 交接 2 条。`docs/test-matrix.md` 补 `VERIFY-45`（170 条）。
+
+
+### 11.15 第十一批（2026-11-03，v0.6.1）：上游 5xx 文案与 dup_iid 提示
+
+| 代号 | 现象（实测） | 处置 | 证据 |
+|---|---|---|---|
+| U1 | 中转站 `/v1/*` 挂掉：`/` 与 `/api/status` 200，`/v1/models` 502/超时，`/v1/messages` 502（两种模型都一样） | 判定为上游故障；不改判据，只把错误文案改准确 | 现场探测记录：10:54–10:57 连续 502；`/v1/models` time=6s→000、随后 502 |
+| U2 | 重试耗尽后界面仍写「将自动重试」，并把整页 502 HTML 当错误正文 | 最后一次尝试改为「已重试 N 次仍失败」+ 502 定位提示；HTML 只留 `<title>`；5xx 与 429/529 分开标注 | `test_exhausted_502_message_is_actionable`、`test_http_error_html_body_is_summarized`；变异：去掉 HTML 摘要 → 对应用例红 |
+| U3 | 同一 IID 多 FID 被报成「归一化碰撞，请收紧规则」，方向错误 | 区分 `collision.dup_iid`（指向 FID/映射表）与 `collision.norm_iid`（才提示收紧规则） | `test_duplicate_iid_is_reported_as_fid_problem_not_normalize` |
+
+全量回归：**1144 passed**（0.6.0 为 1141）。

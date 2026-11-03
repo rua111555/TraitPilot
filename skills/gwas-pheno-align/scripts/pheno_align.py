@@ -423,11 +423,17 @@ class GenoIndex:
             self.by_norm_pair.setdefault(normalize(f"{fid}_{iid}", rules), []).append((fid, iid))
             self.by_norm_pair.setdefault(normalize(f"{fid} {iid}", rules), []).append((fid, iid))
             self.by_norm_pair.setdefault(normalize(f"{fid}:{iid}", rules), []).append((fid, iid))
-        # 归一化碰撞：两个不同的个体被归一成同一个键 —— 取交集时会把两个人混成一个
+        # 归一化碰撞：两个不同的个体被归一成同一个键 —— 取交集时会把两个人混成一个。
+        # ⚠️ 要区分两种成因，否则给用户的建议是错的：
+        #   · dup_iid ：**原始 IID 就重复**（同一 IID 出现在多个 FID 下）→ 该用 FID_IID/映射表，
+        #                "收紧 --normalize" 根本没用；
+        #   · norm_iid：原始 ID 不同、被规则归一后撞在一起（A12/B12 → 12）→ 才该收紧规则。
         for key, hits in self.by_norm_iid.items():
             uniq = set(hits)
             if len(uniq) > 1:
-                self.collisions.append(("norm_iid", key, sorted(uniq)))
+                raw = {iid for _, iid in uniq}
+                kind = "dup_iid" if len(raw) == 1 else "norm_iid"
+                self.collisions.append((kind, key, sorted(uniq)))
         for key, hits in self.by_norm_pair.items():
             uniq = set(hits)
             if len(uniq) > 1:
@@ -561,9 +567,15 @@ def analyze(args):
     # ---- 逐行匹配 ----
     index = GenoIndex(geno, rules)
     for kind, key, hits in index.collisions:
-        rep.add(f"collision.{kind}", "hard", False,
-                f"归一化后两个不同个体撞成同一个键 {key!r}：{hits} —— "
-                f"取交集会把两个人混成一个；请收紧 --normalize（去掉 digits-only 等）")
+        if kind == "dup_iid":
+            rep.add(f"collision.{kind}", "hard", False,
+                    f"同一 IID 出现在多个 FID 下：{hits} —— **只凭 IID 无法确定是哪个人**；"
+                    f"请改用 FID_IID 形式给 ID，或提供映射表。"
+                    f"（这不是归一化的问题，收紧 --normalize 不解决）")
+        else:
+            rep.add(f"collision.{kind}", "hard", False,
+                    f"归一化后两个不同个体撞成同一个键 {key!r}：{hits} —— "
+                    f"取交集会把两个人混成一个；请收紧 --normalize（去掉 digits-only 等）")
 
     matched = {}            # (fid,iid) -> {"rows":[...], "rule":..., "raw":...}
     unmatched_pheno = []

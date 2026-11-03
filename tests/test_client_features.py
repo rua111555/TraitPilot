@@ -4,6 +4,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pytest  # noqa: E402
+
 from skill_agent.client import AnthropicClient, APIError  # noqa: E402
 
 
@@ -143,7 +145,10 @@ def test_attempt_gives_up_after_max(monkeypatch):
         c.create(system=SYS, tools=TOOLS,
                  messages=[{"role": "user", "content": "hi"}], stream=False)
     except APIError as e:
-        assert e.retryable and len(calls) == 3
+        # 重试已经耗尽：标成不可重试（否则上层还会再试），并如实写明重试次数
+        assert not e.retryable and len(calls) == 3
+        assert "已重试 3 次仍失败" in str(e)
+        assert "将自动重试" not in str(e)
         return
     raise AssertionError("重试耗尽后应抛出 APIError")
 
@@ -170,3 +175,36 @@ def test_auth_error_not_retried(monkeypatch):
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+# ---------------- 上游 502：错误文案可读且可操作 ----------------
+
+def test_http_error_html_body_is_summarized():
+    """nginx 502 返回整页 HTML 时，不能把标签倒给用户；只留标题 + 定位提示。"""
+    c = _client()
+    html = ("<html><head><title>502 Bad Gateway</title></head><body>"
+            "<center><h1>502 Bad Gateway</h1></center></body></html>")
+    s = str(c._http_error(_resp(502, html)))
+    assert "502 Bad Gateway" in s
+    assert "<html" not in s and "<body" not in s and "<center" not in s
+    assert "上游网关" in s
+
+
+def test_exhausted_502_message_is_actionable(monkeypatch):
+    """重试耗尽后不能再写「将自动重试」；要说明已重试几次、并指向中转/配置。"""
+    c = _client(max_attempts=2)
+    monkeypatch.setattr("time.sleep", lambda *_a, **_k: None)
+
+    def boom(*_a, **_k):
+        raise APIError("HTTP 502(上游服务端错误，将自动重试)：502 Bad Gateway",
+                       status=502, retryable=True)
+
+    monkeypatch.setattr(c, "_stream", boom)
+    with pytest.raises(APIError) as ei:
+        c.create(system=SYS, tools=TOOLS,
+                 messages=[{"role": "user", "content": "hi"}], stream=True)
+    msg = str(ei.value)
+    assert "已重试 2 次仍失败" in msg
+    assert "将自动重试" not in msg
+    assert "上游网关" in msg and "base_url" in msg
+    assert ei.value.retryable is False

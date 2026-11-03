@@ -157,8 +157,26 @@ class AnthropicClient:
                 return self._request(payload, stream=False)
             except APIError as e:
                 # 仅限流/过载/服务端错误可重试；鉴权、参数错误等立即抛出
-                if not e.retryable or last:
+                if not e.retryable:
                     raise
+                if last:
+                    # 重试已经用尽：不能再对用户说"将自动重试"（那是撒谎），
+                    # 并把 5xx 的定位方向说清楚 —— 这类错误不在本机 Agent 里。
+                    msg = str(e)
+                    if "，将自动重试" in msg:
+                        msg = msg.replace(
+                            "，将自动重试", f"，已重试 {self.max_attempts} 次仍失败")
+                    else:
+                        # 异常可能来自别处（不是 _error_text 拼的），同样要如实标注
+                        msg = f"{msg}（已重试 {self.max_attempts} 次仍失败）"
+                    if e.status == 502:
+                        msg += ("。502 表示**上游网关/模型服务不可用**（不是本机 Agent 的问题）："
+                                "检查中转服务是否在线，或在 config.json 里更换 base_url/模型")
+                    elif e.status in (503, 504):
+                        msg += "。上游服务暂时不可用，稍后再试或更换 base_url/模型"
+                    elif e.status in (429, 529):
+                        msg += "。上游持续限流/过载，稍后再试或更换模型"
+                    raise APIError(msg, status=e.status, retryable=False) from e
                 retry_after = e.retry_after
             except (requests.RequestException, ValueError) as e:
                 if last:
@@ -311,11 +329,20 @@ class AnthropicClient:
             body = str(body)
         except Exception:
             body = resp.text[:400]
+        # 上游网关常返回整页 HTML（nginx 502 等）：只取 <title>，否则前端会塞满标签
+        if "<html" in body.lower() or "<!doctype" in body.lower():
+            import re as _re
+            m = _re.search(r"<title[^>]*>(.*?)</title>", body, _re.S | _re.I)
+            title = _re.sub(r"\s+", " ", m.group(1)).strip() if m else "HTML 错误页"
+            body = f"{title}（上游网关返回 HTML 错误页，不是本机 Agent 的报错）"
         if retryable is None:
             retryable = self._retryable_status(status)
-        if status in (429, 529) or status >= 500:
+        if status in (429, 529):
             hint = "，将自动重试" if retryable else ""
             return f"HTTP {status}(过载/限流{hint})：{body}"
+        if status >= 500:
+            hint = "，将自动重试" if retryable else ""
+            return f"HTTP {status}(上游服务端错误{hint})：{body}"
         return f"HTTP {status}：{body}"
 
     @staticmethod
