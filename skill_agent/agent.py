@@ -53,12 +53,16 @@ def _system_prompt(cfg: Config, listing: str,
    逐阶段推进；你随时可按需再 `Skill(...)` 取回子 skill 的实现细节。
 3. **重要不变量**：编排管线（WGS / GWAS）每阶段必须「先生成脚本 → 征得用户同意 → 再执行」。
    交互模式下用简短文字把要执行的脚本/命令展示出来，然后停下来等用户回答。后台长任务用
-   Bash background=true（nohup + .done/.pid）启动，随后周期性检查日志，不要阻塞干等。
+   Bash background=true（nohup + .done/.pid）启动后**立即结束本轮**；不要用 sleep/TaskOutput
+   轮询等待（任务结束后看门狗会自动起一轮汇报，用户也可以继续对话）。
 4. 优先使用专属工具而不是 shell：cat→Read、echo 写文件→Write、sed 替换→Edit；复杂文本仍可用 Bash。
 5. 命令输出可能被截断；要更多内容就用 Read/tail 分片读。
 6. 绝不编造文件内容、命令输出或分析结果，一律以真实执行为准；操作前先探查再动手。
 7. 报错流程：读日志 → 定位根因 → 最小化修复；不要盲目重跑。管道类 skill 要求在各自
    SKILL.md 的「错误预防清单」中记录新错误。
+8. **删除红线**：绝不执行任何删除操作（`rm` / `rmdir` / `unlink` / `shred` / `find -delete` /
+   `git clean` 等，也不许写脚本或用 Python 绕过）。需要删除时，只把命令原样告诉用户，
+   由用户自己执行；工具会拒绝这类命令，不要反复重试。
 
 ## 当前可用的 Skill（按需加载，勿一次性全读）
 {listing}
@@ -140,6 +144,10 @@ class Agent:
         return len(self.history)
 
     def answer(self, user_text: str, on_delta=None, on_thinking=None) -> str:
+        # 兼容测试/第三方注入的假 ToolSet：没有 begin_turn 也不影响主流程
+        _begin = getattr(self.tools, "begin_turn", None)
+        if callable(_begin):
+            _begin()
         """执行一个用户请求（可能多轮工具调用），返回最终文本。"""
         self._usage = _new_usage(self.cfg.model)   # 每轮用户请求重置用量累计
         self._last_stop = None

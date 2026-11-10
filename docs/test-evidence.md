@@ -1372,3 +1372,16 @@ GWAS 管线整条无门禁，保持不修，只维持本文档 §11.6 的「已�
 | U3 | 同一 IID 多 FID 被报成「归一化碰撞，请收紧规则」，方向错误 | 区分 `collision.dup_iid`（指向 FID/映射表）与 `collision.norm_iid`（才提示收紧规则） | `test_duplicate_iid_is_reported_as_fid_problem_not_normalize` |
 
 全量回归：**1144 passed**（0.6.0 为 1141）。
+
+
+### 11.16 第十二批（2026-11-10，v0.7.0）：后台任务主动汇报 + 删除红线 + 前端两个崩溃点
+
+| 代号 | 现象（实测） | 处置 | 证据 |
+|---|---|---|---|
+| B1 | 后台任务结束后没有任何返回，必须等用户下次说话（用户 2026-11-10 反馈） | 看门狗每 5s 检 pid，进程结束且会话空闲 → 自动起一轮 `[系统]` 汇报；状态落盘、重启不重复 | 真实会话出现 `[系统] 后台任务已结束…` + 自动汇报；`tests/test_bgwatch.py` 7 条 |
+| B2 | 模型启动后台任务后自己跑 `sleep 23`，整轮卡 23 秒，对话框无法输入 | 系统提示 + Bash 说明要求"后台启动后立即结束本轮"；同轮前台 `sleep` 硬拒；前端运行中 Enter 改为排队 | `tests/test_bg_blocking.py` 2 条；前端队列静态检查 |
+| B3 | 用户要求删除目录，模型直接 `rm -r` 执行（另一会话弹窗、本会话不弹） | 删除红线：直接删除命令一律拒绝、只回命令；跨会话 `set_params` 按会话同步；危险模式覆盖 `rm -r` 等变体 | `tests/test_safety_delete.py` 2 条、`test_web_session_permission.py` 1 条、`test_permissions.py` 危险模式用例；变异：还原旧 `set_params` → 红 |
+| B4 | 流式输出到表头（分隔行未到）时标签页 OOM，Chrome dump `0xE0000008`、含 `127.0.0.1:8787` | `md()` 对孤立 `\|` 行退化段落 + `guard` 兜底；完整表格路径保留 | `tests/test_ui_markdown_stream.py` 1 条；变异：删兜底 → 红 |
+| B5 | 前端排队/通知：后台结束消息与普通用户消息视觉一致 | `[系统]` 消息渲染为蓝色通知条；运行中 Enter 排队、当前轮结束自动发送 | 静态页面检查 `已排队`/`sess-banner sys`；`node --check` 通过 |
+
+全量回归：**1158 passed**（0.6.1 为 1144）。

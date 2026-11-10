@@ -203,6 +203,7 @@
   .sess-banner{max-width:860px;margin:0 auto 14px;padding:8px 12px;border:1px dashed var(--accent);
     border-radius:10px;color:var(--accent2);font-size:12px;background:rgba(224,120,86,.06)}
   .sess-banner.cut{border-color:var(--warn);color:var(--warn);background:rgba(234,179,8,.08)}
+  .sess-banner.sys{border-color:var(--accent);color:var(--text);background:rgba(88,166,255,.10)}
   .empty{color:var(--muted);font-size:12.5px;padding:8px 2px}
 
   /* 输入区 */
@@ -484,9 +485,15 @@ function dropPane(sid){
    那条路径把原来的 DOM 原样搬回来再从离开时的游标续播，两者不可叠加，否则内容翻倍。 */
 function rebuildLiveTurn(sid, snap){
   const showable = snap.prefix!=null ? snap.prefix : null;
-  const d=document.createElement("div"); d.className="msg user";
-  d.innerHTML=`<div class="msg-role">你</div><div class="bubble">${escapeHtml(snap.prompt||"")}</div>`;
-  chatEl.appendChild(d);
+  if(isSysNote(snap.prompt||"")){
+    const note=document.createElement("div"); note.className="sess-banner sys";
+    note.innerHTML=`🔔 ${escapeHtml(snap.prompt)}`;
+    chatEl.appendChild(note);
+  }else{
+    const d=document.createElement("div"); d.className="msg user";
+    d.innerHTML=`<div class="msg-role">你</div><div class="bubble">${escapeHtml(snap.prompt||"")}</div>`;
+    chatEl.appendChild(d);
+  }
   addAssistMsg();
   const txt=snap.partial_text||"";
   if(txt){
@@ -737,6 +744,7 @@ async function selectSession(id, force){
   scrollBottom();
   $("#input").focus();
   syncBusyToView();
+  drainQueue(id);
 }
 
 
@@ -863,6 +871,12 @@ function replayMessages(msgs, opts){
         continue;
       }
       const text=blocks.filter(b=>b.type==="text").map(b=>b.text).join("\n");
+      if(isSysNote(text)){
+        const note=document.createElement("div"); note.className="sess-banner sys";
+        note.innerHTML=`🔔 ${escapeHtml(text)}`;
+        chatEl.appendChild(note);
+        continue;
+      }
       const d=document.createElement("div");
       d.className="msg user";
       d.innerHTML=`<div class="msg-role">你</div><div class="bubble">${escapeHtml(text)}</div>`;
@@ -1005,10 +1019,16 @@ function finalizeThink(){
   el.replaceWith(makeThinkBox(txt));             // 原地替换为可折叠块
 }
 
+function isSysNote(text){ return String(text||"").startsWith("[系统]"); }
 function addUserMsg(text){
   const d=document.createElement("div");
-  d.className="msg user";
-  d.innerHTML=`<div class="msg-role">你</div><div class="bubble">${escapeHtml(text)}</div>`;
+  if(isSysNote(text)){
+    d.className="sess-banner sys";
+    d.innerHTML=`🔔 ${escapeHtml(text)}`;
+  }else{
+    d.className="msg user";
+    d.innerHTML=`<div class="msg-role">你</div><div class="bubble">${escapeHtml(text)}</div>`;
+  }
   chatEl.appendChild(d); scrollBottom();
 }
 function addAssistMsg(){
@@ -1141,10 +1161,27 @@ function setUsage(u){
   $("#usageBadge").title = `模型 ${u.model||""} · 输出 token ${t} · 累计延迟 ${ms}ms · 模型轮次 ${u.steps||0}`;
 }
 
+const queuedBySid={};                      // sid -> [待发送文本]
+function queueText(text){
+  const t=String(text||"").trim();
+  if(!t) return;
+  const q=queuedBySid[SID] || (queuedBySid[SID]=[]);
+  q.push(t);
+  notice(`已排队（第 ${q.length} 条）：当前轮结束后自动发送；点「停止」可中断本轮。`);
+  $("#input").value=""; autosize();
+}
+function drainQueue(sid){
+  const q=queuedBySid[sid];
+  if(!q || !q.length || isRunning(sid)) return;
+  if(sid!==activeViewId) return;           // 不在看这个会话 → 等切回来再发
+  const text=q.shift();
+  $("#input").value=text; send();
+}
 async function send(){
   const text=$("#input").value.trim();
   const sid=SID;
-  if(!text||isRunning(sid)) return;          // 只看**本会话**是否在跑，不看别的会话
+  if(!text) return;
+  if(isRunning(sid)){ queueText(text); return; }   // 运行中：排队，不丢消息
   if(!curSessionMeta.title) curSessionMeta.title = text.replace(/\s+/g," ").slice(0,60);
   markRunning(sid,{running:true,state:"running"});
   addUserMsg(text); $("#input").value=""; autosize();
@@ -1270,6 +1307,7 @@ function handleEvent(block, sid){
     if((ev.state||"done")==="done") dropPane(rt);
     markRunning(rt,{running:false, streaming:false, state:ev.state||"done"});
     if(shouldRender(rt)) renderSessions();
+    drainQueue(rt);                         // 本轮结束 → 自动发出排队消息
     refreshRunBar();
     return;
   }
@@ -1456,7 +1494,10 @@ function setCurrent(id){
 
 const inputEl=$("#input"), sendBtn=$("#sendBtn");
 inputEl.addEventListener("keydown", e=>{
-  if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); onPrimary(); }
+  if(e.key==="Enter" && !e.shiftKey){
+    e.preventDefault();
+    if(isRunning(SID)) queueText(inputEl.value); else send();
+  }
 });
 inputEl.addEventListener("input", autosize);
 // 发送按钮在空闲时=发送，运行中=强制中断
@@ -1593,6 +1634,9 @@ function md(src){
       :`<code>${t} (${u})</code>`);
   while(i<lines.length){
     const l=lines[i];
+    if(++guard > lines.length + 1000){   // 兜底：任何分支不推进都不许死循环
+      out.push(`<p>${inline(l)}</p>`); i++; continue;
+    }
     if(/^```/.test(l)){                 // 代码块
       const buf=[]; i++;
       while(i<lines.length && !/^```/.test(lines[i])){ buf.push(lines[i]); i++; }
@@ -1610,6 +1654,9 @@ function md(src){
         +`<tbody>${recs.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
       continue;
     }
+    if(l.startsWith("|")){               // 流式中间态：表头到了、分隔行还没到
+      out.push(`<p>${inline(l)}</p>`); i++; continue;
+    }
     const h=l.match(/^(#{1,6})\s+(.*)/);
     if(h){ out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); i++; continue; }
     if(l.startsWith("> ")){ const b=[]; while(i<lines.length&&lines[i].startsWith("> ")){ b.push(lines[i].slice(2)); i++; } out.push(`<blockquote>${md(b.join("\n"))}</blockquote>`); continue; }
@@ -1623,6 +1670,21 @@ function md(src){
   }
   return out.join("\n");
 }
+
+/* ---------------- 后台任务看门狗：轮询新 Run ---------------- */
+let bgPollBusy=false;
+setInterval(async ()=>{
+  if(document.hidden || bgPollBusy) return;
+  bgPollBusy=true;
+  try{
+    if(!isRunning(SID)){
+      const r=await (await fetch(`/api/session/${encodeURIComponent(SID)}/run`)).json();
+      if(r && r.running){ await selectSession(SID, true); return; }
+    }
+    await renderSessions();          // 别处的后台任务结束时，左栏也能看到
+  }catch(e){}
+  finally{ bgPollBusy=false; }
+}, 5000);
 </script>
 </body>
 </html>

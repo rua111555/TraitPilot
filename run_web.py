@@ -40,6 +40,9 @@ def main() -> int:
     from webapp.server import create_app
 
     app = create_app(cfg, registry)
+    # 后台任务看门狗：Bash background=true 的进程结束后主动拉起一轮汇报
+    from webapp.bgwatch import start_watcher
+    start_watcher()
     n = len(registry.names())
     print(f"TraitPilot Web 已启动  http://{args.host}:{args.port}")
     print(f"  project = {cfg.project}（发现 {n} 个 skill）")

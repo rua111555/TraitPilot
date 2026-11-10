@@ -1,11 +1,13 @@
 """WebAgent 会话：承载一次对某用户的对话，桥接线程中的 agent 运行与 SSE 事件流。"""
 from __future__ import annotations
 
+import json
 import os
 import queue
 import threading
 import time
 import uuid
+from pathlib import Path
 
 from skill_agent.config import default_checkpoint_dir
 
@@ -52,6 +54,11 @@ class WebSession:
         self.run = None                      # 当前唯一的非终态 Run（可能为 None）
         self._turn = 0
         self._run_lock = threading.Lock()    # 保护 run 的注册/交接（临界区内不做 I/O）
+        # 后台任务（Bash background=true）：由看门狗轮询 pid，进程结束后主动起一轮汇报。
+        self.bg_tasks: dict[str, dict] = {}
+        _safe_sid = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in session_id)
+        self._bg_state_path = (Path.home() / ".skill-agent" / "bg" /
+                               f"{_safe_sid}.json")
 
     @property
     def busy(self) -> bool:
@@ -84,16 +91,55 @@ class WebSession:
         """取最近一轮 Run（含已终态的，供展示收尾信息）。"""
         return self.run
 
+    # ---------- 后台任务看门狗 ----------
+    def register_bg_task(self, meta: dict) -> None:
+        """Bash background=true 启动后登记任务；看门狗据此轮询并主动汇报。"""
+        tid = str(meta.get("task_id") or "")
+        if not tid:
+            return
+        self.bg_tasks[tid] = {
+            "task_id": tid,
+            "log": str(meta.get("log") or ""),
+            "pid_file": str(meta.get("pid_file") or ""),
+            "cmd": str(meta.get("cmd") or "")[:500],
+            "started": time.time(),
+            "notified": False,
+        }
+        self.save_bg_tasks()
+
+    def save_bg_tasks(self) -> None:
+        try:
+            self._bg_state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._bg_state_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"tasks": self.bg_tasks}, ensure_ascii=False,
+                                      indent=2), encoding="utf-8")
+            tmp.replace(self._bg_state_path)
+        except Exception:
+            pass
+
+    def load_bg_tasks(self) -> None:
+        try:
+            data = json.loads(self._bg_state_path.read_text(encoding="utf-8"))
+            for tid, t in (data.get("tasks") or {}).items():
+                if tid not in self.bg_tasks:
+                    self.bg_tasks[tid] = t
+        except Exception:
+            pass
+
     # ---------- 参数 ----------
     def set_params(self, model: str | None = None, permission: str | None = None) -> None:
         if model and model != self.cfg.model:
             self.cfg.model = model
             if self.agent is not None:
                 self.agent.client.model = model
-        if permission and permission != self.cfg.permission:
-            self.cfg.permission = permission
-            if self.tools is not None:
+        if permission:
+            # 本会话必须按请求同步；不能拿共享 cfg.permission 当「已同步」哨兵：
+            # A 会话先把 cfg 改成 ask 后，B 会话若仍 auto，旧逻辑会跳过，
+            # 导致 B 的 Bash 完全不弹确认（2026-11-10 实测：rm -r 直接删目录）。
+            if self.tools is not None and getattr(self.tools, "permission", None) != permission:
                 self.tools.permission = permission
+            if permission != self.cfg.permission:
+                self.cfg.permission = permission
 
     def cancel(self, run_id: str | None = None) -> bool:
         """请求取消当前轮次。幂等。不改订阅者（前端可留在流上看收尾）。"""
@@ -233,6 +279,8 @@ def build_session(session_id: str, cfg, registry) -> WebSession:
         sandbox=sandbox_backend, idempotency=idem,
         enable_todo=bool(getattr(cfg, "todo", False)),
         enable_retrieval=bool(getattr(cfg, "retrieval", False)), retrieval=_retrieval)
+    session.tools.on_bg_start = session.register_bg_task
+    session.load_bg_tasks()
     agent = Agent(cfg, registry, session.tools)
     agent.on_event = hooks.emit
     agent.cancel_event = session.cancel_event

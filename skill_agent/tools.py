@@ -55,7 +55,13 @@ class ToolResult:
 
 # 危险命令告警（不拦截，仅提示；ask 模式下会转化为确认）
 DANGEROUS_PATTERNS = [
-    r"\brm\s+-rf\b", r"\bmkfs\b", r"\bdd\s+if=\b", r">\s*/dev/sd",
+    # 删除类：rm -r / -rf / -fr / -Rf / --recursive / --force 都算危险
+    # （2026-11-10 实测：模型用 `rm -r` 绕过了只匹配 `rm -rf` 的旧规则，静默删目录）
+    r"\brm\s+-[a-zA-Z]*[rR][a-zA-Z]*\b",
+    r"\brm\s+-[a-zA-Z]*f[a-zA-Z]*\b",
+    r"\brm\s+--(?:recursive|force)\b",
+    r"\bfind\b.*\s-delete\b", r"\bshred\b",
+    r"\bmkfs\b", r"\bdd\s+if=\b", r">\s*/dev/sd",
     r"\bdrop\s+table\b", r"\bdrop\s+database\b", r"\bgit\s+push\s+(-f|--force)\b",
     r"\bmv\s+/\s", r"\bchmod\s+\d{3}\s+/\s", r":\(\)\s*\{",
     r"\bcurl\s+\|?\s*bash\b", r"\bwget\s+.*\|?\s*bash\b",
@@ -113,6 +119,13 @@ class ToolSet:
         # #11：检索索引（默认 None → 不挂载 Search/RepoMap）
         self.retrieval = retrieval if enable_retrieval else None
         self._bg_tasks: dict[str, dict] = {}    # task_id -> {log, pid, cmd}
+        # 网页端：后台任务启动后登记给会话，供看门狗在进程结束后主动汇报
+        self.on_bg_start = None
+        # 安全红线（用户 2026-11-10 裁定）：本 Agent 不执行任何删除操作；
+        # 需要删除时只把命令告诉用户，由用户自己执行。
+        self.deny_delete = True
+        # 本轮是否已启动过后台任务：启动后禁止再 sleep/轮询阻塞（否则整轮卡住、对话框无法用）
+        self._bg_started_this_turn = False
         self.max_tokens_warning_shown = False
 
         # M4：可插拔工具注册表（内置工具经 register 登记，行为与硬编码字面量一致）
@@ -146,6 +159,42 @@ class ToolSet:
         """active skill 的 allowed-tools 白名单没有命中任何本套件工具时视为不限制。"""
         return self.registry_tools.schemas(allowed)
 
+    def begin_turn(self) -> None:
+        """每轮对话开始时复位「本轮已启动后台任务」标记。"""
+        self._bg_started_this_turn = False
+
+    @staticmethod
+    def _deletion_reason(command: str) -> str:
+        """判断是否为删除类命令（命令位置，而不是字符串里提到 rm）。"""
+        import re as _re
+        text = str(command or "")
+        for seg in _re.split(r"(?:\r?\n|;|&&|\|\||\|)", text):
+            toks = seg.strip().split()
+            while toks and _re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[0]):
+                toks.pop(0)
+            if toks and toks[0] in ("sudo", "command", "env"):
+                toks = toks[1:]
+            if not toks:
+                continue
+            if toks[0] in ("rm", "rmdir", "unlink", "shred"):
+                return f"`{toks[0]}`"
+            if toks[0] == "find" and "-delete" in toks:
+                return "`find -delete`"
+            if toks[0] == "git" and len(toks) > 1 and toks[1] in ("clean", "rm"):
+                return f"`git {toks[1]}`"
+            if toks[0] in ("bash", "sh") and "-c" in toks:
+                rest = " ".join(toks)
+                if _re.search(r"\b(rm|rmdir|unlink|shred)\s", rest):
+                    return "shell -c 内的删除命令"
+        if _re.search(r"\b(os\.remove|os\.unlink|shutil\.rmtree|\.unlink\s*\(|unlink\s*\()", text):
+            return "脚本内删除调用"
+        return ""
+
+    @staticmethod
+    def _looks_blocking_wait(command: str) -> bool:
+        import re as _re
+        return bool(_re.search(r"\bsleep\s+[0-9.]+", str(command or "")))
+
     def execute(self, name: str, args: dict) -> ToolResult:
         tool = self.registry_tools.get(name)
         if tool is None:
@@ -154,6 +203,20 @@ class ToolSet:
         verr = validate_args(tool.input_schema, args)
         if verr:
             return ToolResult(verr, True)
+        # 安全红线：任何删除都不做，只把命令给用户
+        if name == "Bash" and self.deny_delete:
+            why = self._deletion_reason(args.get("command", ""))
+            if why:
+                return ToolResult(
+                    f"[安全策略] 本 Agent **拒绝执行删除操作**（命中：{why}）。\n"
+                    f"请把下面的命令复制到终端，由你本人执行：\n\n"
+                    f"{args.get('command', '')}", True)
+        # 后台任务启动后，本轮禁止 sleep 阻塞等待（看门狗会在结束后主动汇报）
+        if (name == "Bash" and self._bg_started_this_turn
+                and self._looks_blocking_wait(args.get("command", ""))):
+            return ToolResult(
+                "[后台任务] 已启动后台任务，本轮不要用 sleep/轮询阻塞等待；"
+                "请直接结束本轮，任务结束后看门狗会自动起一轮汇报。", True)
         # M10：PreToolUse 钩子（在权限门之前——钩子属策略扩展，权限门是内建安全兜底）
         if self.hooks is not None and not self.hooks.empty:
             blocked = self.hooks.pre_tool_use(name, args)
@@ -302,7 +365,8 @@ class ToolSet:
             name="Bash",
             description=(
                 "在项目根目录执行 shell 命令（/bin/bash）。可配 background=true 后台启动；"
-                "长任务请用后台 + .done/.pid 标记 + 日志轮询。"
+                "长任务请用 background=true 启动，随后**立即结束本轮**，不要 sleep/TaskOutput "
+                "轮询等待（看门狗会在进程结束后自动汇报）。"
             ),
             input_schema={"type": "object",
                           "properties": {
@@ -372,6 +436,12 @@ class ToolSet:
             "后续可用 TaskOutput(log_path=...) 或 Read/Bash 查看进度；"
             "编排管线请按各自 SKILL.md 用 .done/.pid 标记确认完成。")
         res.meta = {"task_id": task_id, "log": str(log), "pid_file": str(pidf)}
+        self._bg_started_this_turn = True
+        if callable(getattr(self, "on_bg_start", None)):
+            try:
+                self.on_bg_start({**res.meta, "cmd": command})
+            except Exception:
+                pass
         return res
 
     def _tool_read(self) -> Tool:

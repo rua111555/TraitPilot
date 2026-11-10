@@ -135,3 +135,22 @@ def test_first_matching_rule_wins():
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+def test_danger_patterns_cover_rm_recursive_variants():
+    """危险模式必须覆盖 rm -r/-fr/-R/--recursive/--force，而不只是 rm -rf。
+
+    2026-11-10 实测：模型用 `rm -r` 绕过了只匹配 `rm -rf` 的旧规则，
+    在 auto 模式下静默删掉了目录。
+    """
+    import re
+    from skill_agent.tools import DANGEROUS_PATTERNS
+
+    def hit(cmd):
+        return any(re.search(p, cmd.lower()) for p in DANGEROUS_PATTERNS)
+
+    for cmd in ("rm -r ~/x", "rm -rf ~/x", "rm -fr ~/x", "rm -Rf ~/x",
+                "rm --recursive ~/x", "rm --force ~/x", "sudo rm -r ~/x",
+                "find ~/x -delete", "shred -u ~/x"):
+        assert hit(cmd), cmd
+    assert not hit("rm ~/x"), "普通 rm 不应命中（危险与否取决于目标）"
