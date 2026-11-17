@@ -18,7 +18,6 @@
 """
 from __future__ import annotations
 
-import json
 import os
 import shlex
 import shutil
@@ -84,7 +83,11 @@ class HostBackend(SandboxBackend):
 
     def bg(self, command: str, cwd, task_id: str, pidf, log, script_path) -> tuple:
         script = (f'cd "{cwd}" && echo $$ > "{pidf}"\n'
-                  f'exec bash -c {json.dumps(command)}\n')
+                  # 用 shlex.quote 而非 json.dumps：json.dumps 会把多行命令的换行转成**字面**
+                  # 的 `\n` 两个字符（不换行），且双引号包裹会让命令里的 `$VAR` 被外层 shell
+                  # 提前展开 → 多行后台命令一律 `syntax error near unexpected token 'do'`，
+                  # 变量的 `$X` 也变空。shlex.quote 产出单引号、保留真实换行，两病同消。
+                  f'exec bash -c {shlex.quote(command)}\n')
         launch = ["/bin/bash", "-c",
                   f'nohup /bin/bash "{script_path}" > "{log}" 2>&1 &']
         return script, launch
@@ -150,7 +153,11 @@ class RlimitBackend(SandboxBackend):
     def bg(self, command: str, cwd, task_id: str, pidf, log, script_path) -> tuple:
         prefix = self._ulimit_prefix()
         script = (f'{prefix}cd "{cwd}" && echo $$ > "{pidf}"\n'
-                  f'exec bash -c {json.dumps(command)}\n')
+                  # 用 shlex.quote 而非 json.dumps：json.dumps 会把多行命令的换行转成**字面**
+                  # 的 `\n` 两个字符（不换行），且双引号包裹会让命令里的 `$VAR` 被外层 shell
+                  # 提前展开 → 多行后台命令一律 `syntax error near unexpected token 'do'`，
+                  # 变量的 `$X` 也变空。shlex.quote 产出单引号、保留真实换行，两病同消。
+                  f'exec bash -c {shlex.quote(command)}\n')
         launch = ["/bin/bash", "-c",
                   f'nohup /bin/bash "{script_path}" > "{log}" 2>&1 &']
         return script, launch

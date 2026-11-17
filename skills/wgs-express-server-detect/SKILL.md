@@ -218,7 +218,7 @@ if GPU_VRAM_GB < 32:
 **核心原则**：
 1. 优先样本并行（单线程工具多，多跑样本比给 BWA 开 16 线程更划算）
 2. NUMA 绑定：2+ 样本时绑定到不同 NUMA node
-3. 后台作业池：使用 `wait -n` 控制并行度
+3. 后台作业池：**禁止使用 `wait -n` 控制并行度** —— 本机是 bash 4.2.46，`wait -n` 到 bash 4.3 才有；4.2 会报 `wait: -n: invalid option`。若脚本以 `set -e` 运行，该行**当场退出**、并发池整体失效，导致**一次性启动全部样本**（实测：162 个 fastp 全在同 1 秒内启动，load 冲到 663）。正确做法见 `wgs-express-align-sort/SKILL.md` 的「样本并行处理」段：用 `kill -0` 轮询的 pid 池 + `sleep` 控制并发。
 4. 动态调整：后续阶段可重新评估负载
 5. **GPU 存在且 Parabricks 可用时，优先走 GPU 路径**：样本并行由 GPU 卡数主导，每个 pbrun 任务绑 1 张卡（`--num-gpus 1`；⚠️ 唯一例外是 `genotypegvcf` —— 它**不接受**该参数，见 `references/parabricks-setup.md` §4.1）
 6. **consumer 卡（4090 等）不作数**：需先冒烟测试通过（见 `references/parabricks-setup.md`），否则回退 CPU GATK

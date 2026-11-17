@@ -192,7 +192,11 @@ log_done "Sample ${sample_name} BAM generated: ${BAM}"
 ### 样本并行处理
 
 ```bash
-# ─── 样本伪并行（wait -n 池） ───
+# ─── 样本伪并行（kill -0 轮询 pid 池） ───
+# ⚠️ **不要用 `wait -n`**：本机 bash 4.2.46 不支持（4.3 才有），会报
+#    `wait: -n: invalid option`；在 `set -e` 下并发控制当场失效，
+#    结果样本被**一次性全部启动**（实测：162 个 fastp 全在同 1 秒内启动，
+#    load average 冲到 663）。下面这套 `kill -0` 轮询池在 4.2 上可移植、已验证。
 MAX_CONCURRENT=3   # 从 run.params.json parallelism.parallel_samples 读取
 pids=()
 FAILED=0           # ⚠️ 累计失败样本数，供收尾门禁判定

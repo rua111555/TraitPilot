@@ -19,6 +19,13 @@ skills/**/model/*.onnx
 .skill-agent/
 logs/
 
+# 后台任务留下的运行残留：`nohup.out` 与自定义日志（如 imf_extract.log）。
+# 实测形态（2026-11-17）：内容是**空文件**或一行 `bash: line 0: cd: <路径>nnohup: No such
+# file or directory` —— 后者正是 v0.7.1 修的 `json.dumps` 换行字面化留下的伤疤
+# （`\n` 变成 `n`，路径被拼上 `nnohup`）。既非源码也非产物，不该进版本库。
+nohup.out
+*.log
+
 # pytest 的 tmp_path 残留：TMPDIR 未设或指向仓库根时，pytest 会在**仓库根**
 # 建 pytest-of-<user>/（内含各用例的 .fam/.txt 等真实产出的临时件）。
 # 实测：把它当普通未跟踪文件时，`git status` 会一直挂着一项，

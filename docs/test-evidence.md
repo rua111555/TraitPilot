@@ -1385,3 +1385,20 @@ GWAS 管线整条无门禁，保持不修，只维持本文档 §11.6 的「已�
 | B5 | 前端排队/通知：后台结束消息与普通用户消息视觉一致 | `[系统]` 消息渲染为蓝色通知条；运行中 Enter 排队、当前轮结束自动发送 | 静态页面检查 `已排队`/`sess-banner sys`；`node --check` 通过 |
 
 全量回归：**1158 passed**（0.6.1 为 1144）。
+
+
+### 11.17 第十三批（2026-11-17，v0.7.1）：后台命令被 JSON 转义、并发池教错 `wait -n`
+
+| 代号 | 现象（实测） | 处置 | 证据 |
+|---|---|---|---|
+| C1 | 后台挂长任务（Stage 0.5 的 `while … do … done`）**秒退**，日志首行即 `bash: -c: line 0: syntax error near unexpected token 'do'`；凡 `"${RUN_DIR}/.done"` 都变 `"/.done"` | `bg()` 用 `json.dumps(command)` 拼 `exec bash -c …` —— JSON 转义 ≠ shell 引用：换行被字面化成 `\`+`n`（多行压成一行），双引号包裹又让 `$VAR` 在外层提前展开。两处 `bg()` 改用 `shlex.quote`（单引号、保留真实换行） | `tests/test_sandbox.py` 新增 2 条**行为**用例（真跑一遍断言输出，不比对字符串）。**变异**：还原 `json.dumps` → 两条各指名红，报错逐字复现现象段 |
+| C2 | 样本伪并行池用 `wait -n` 控并发，样本被**一次性全部启动**（实测 162 个 fastp 同 1 秒启动、load average 663） | 本机 `/bin/bash` 是 **4.2.46**，`wait -n` 到 bash **4.3** 才有（实测 `wait: -n: invalid option`，rc=2）；`set -e` 下该行当场退出、并发池整体失效。3 处 SKILL.md + 3 处 `environment/` 共 8 行命中，全部改为 `kill -0` 轮询 pid 池 + `sleep` | 改后文档语料复查：6 行命中全部是**禁令/纠正叙述**。**变异**：`check_env.sh` / `server-detect SKILL.md` 还原处方 → 两条新防线分别指名红 |
+| C3 | **已登记的兜底被推翻**：`environment/` 三处让人"靠 conda 的 bash 绕开 4.2" | 实测**不存在可用的 conda bash**：`envs/Agent/bin/bash` 与 `<conda>/bin/bash` 均无，各 `conda-meta/` 里也无 bash 包；PATH 前插 `envs/Agent/bin` 后 `which bash` 仍是 `/bin/bash`。故该兜底是**空的** | 当场重跑 `which bash` / `bash -c 'echo $BASH_VERSION'` / `ls conda-meta | grep ^bash`。按本仓约定，推翻已登记边界属一级事件 → 就地作废并注明日期（`environment/README.md`、`check_env.sh`、`install.sh`、本文件均标注） |
+| C4 | `stage_verify_probe` 的 `G10a-5` **在未变异代码上恒为红**（63/64） | v0.5.0 把 `Report` 骨架抽到 `skills/_shared/verify_core.py` 后，写入侧那句 `"read_totals": dict(self.read_totals)` 搬走了，而判据仍只在 `stage_verify.py` 里找 —— 判据的对象已不在它扫的文件里 | 按**职责**拆成 a/b/c：写入侧从**真实导入的** `Report.as_dict` 回溯其所在文件（不写死路径），填充侧、读取侧看阶段脚本。**变异**：写入侧改空字典 → `G10a-5a` 红；读取侧键名改坏 → `G10a-5c` 红。探针 **64/64**、`FAILED: 0` |
+
+新增防线 2 条（`tests/test_defect_class_guards.py`，扫全部 skill 文档 + 三份 `environment/`），
+每条都拆出 `_pred_*` 谓词并由 `test_guards_actually_discriminate` 证红/证不误伤 ——
+**坏样本逐字取自修复前的真实语料**（不是顺手写的形状）。
+
+全量回归：**1190 passed, 1 skipped**（0.7.0 为 1158；GWAS E2E 因本机无 gemma 按显式开关跳过）。
+探针：`stage_verify_probe` 64/64、`verify_fix_probe` 64/64。

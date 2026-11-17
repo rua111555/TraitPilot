@@ -2737,6 +2737,132 @@ def test_orchestrator_template_is_self_contained():
             f"LLM 照抄即死（见本文件 docstring 的 A5 复发记录）")
 
 
+# ============ 失效模式：教的并发池在本机 bash 上根本跑不了（2026-11-17 新增） ============
+# 缺陷形态：**权威模板自足**的又一具体面 —— 模板给了一段照抄就错的并发控制。
+# 文档（含本仓自述的环境清单）一直教用 `wait -n` 控样本并发，而本机是 **bash 4.2.46**，
+# `wait -n` 到 bash 4.3 才有。实测（2026-11-17 本机）：
+#     $ /bin/bash -c 'true & wait -n'; echo rc=$?
+#     /bin/bash: line 0: wait: -n: invalid option
+#     rc=2
+# 在 `set -e` 下这一行**当场退出**该子 shell，或（不带 set -e 时）并发池整体失效 ——
+# 结果是样本被**一次性全部启动**（实测：162 个 fastp 全在同 1 秒内启动，load 冲到 663）。
+#
+# 为什么是"缺陷类"而不是"改这一个文件"：**三处 SKILL.md + 三处 environment/**
+# 各自独立地写了同一条处方（本次实测命中 8 行，见下面 `_WAIT_N_LINE` 的注释）。
+# 只改被点名的那一处，下次新增模板时同一条错误处方会原样复发 —— 这与本文件
+# docstring 里 A5/A7/A2 的复发机理是同一个。
+#
+# 判据建在**行**上而非"文档里没有 wait -n 字样"：这三处文档里现在都**必须**提到
+# `wait -n`（用来告诉读者"别用、以及为什么"），所以"提到了就报红"的粗判据会把
+# 正确的修复文本本身拦下。判据必须区分**处方**与**禁令**。
+_WAIT_N_LINE = re.compile(r"wait\s+-n\b")
+# 禁令/纠正标记：同一行内出现以下任一词，即视为"这是在告诫读者别用、或在记录旧写法"，
+# 不是处方。**穷举当前真实写法**得来（不要在没核对语料的情况下加词）——
+# 实测 2026-11-17 修复后全仓剩余 6 行命中，逐行标注如下：
+#   skills/wgs-express-align-sort:196   不要用         → 禁令
+#   skills/wgs-express-fastp-qc:351     禁止用         → 禁令
+#   skills/wgs-express-server-detect:221 禁止使用      → 禁令
+#   environment/check_env.sh:95         旧版…警告      → 纠正叙述
+#   environment/check_env.sh:102        不依赖         → 纠正叙述
+#   environment/README.md:81            实测           → 纠正叙述
+#   environment/README.md:267           不要指望       → 纠正叙述
+_WAIT_N_BAN = ("不要", "禁止", "不支持", "才有", "invalid option",
+               "不依赖", "旧版", "订正", "实测", "改用", "kill -0", "不存在")
+
+
+def _pred_wait_n_prescribed(line):
+    """该行**推荐**用 `wait -n` 控并发 → True（是本缺陷的处方形态）。
+
+    只在同一行内判断：`wait -n` 与禁令词必须同行才算禁令。跨行判断需要窗口，
+    会把"上一行的加粗警告"当成本行的护身符 —— 而缺陷正是"警告在别处、处方在这里"
+    这种两端各说各话的形态（根因 D），恰恰不能靠跨行豁免。
+
+    ⚠️ 禁令词表**必须放行纠正叙述**（`_pred_readgroup_auto_claim` 的同一约定）：
+    修复后的文档里，正确写法恰恰是"本机实测 4.2.46、不支持 `wait -n`、改用 kill -0"——
+    这些行全都含有 `wait -n`，若不放行，修复文本本身会被拦下，防线会被迫关掉
+    （比过窄一样坏）。放行靠的是**同行出现纠正标记**，不是"整篇文档有免责声明"。
+    """
+    if not _WAIT_N_LINE.search(line):
+        return False
+    return not any(ban in line for ban in _WAIT_N_BAN)
+
+
+@pytest.mark.parametrize("rel", sorted(DOCS) + ["environment/README.md",
+                                                "environment/check_env.sh",
+                                                "environment/install.sh"])
+def test_no_doc_prescribes_wait_n_for_concurrency(rel):
+    """全部 skill 文档 + 三份 environment/ 文件都不得把 `wait -n` 当并发池用法教出去。
+
+    这条防线覆盖**文档侧**（LLM 照抄生成脚本 / 人照抄部署）。`environment/` 下这三个
+    文件不在 `DOCS` 里（`DOCS` 是自动发现的 `skills/**/*.md`），故显式列出 ——
+    它们恰恰是**部署时**的权威依据，写错会让人去装一个本机根本没有的 conda bash。
+    """
+    path = os.path.join(REPO, rel)
+    assert os.path.isfile(path), f"{rel} 不存在 —— 本防线在扫空集（文件改名/移动了？）"
+    offenders = []
+    for i, line in enumerate(open(path, encoding="utf-8", errors="replace").read()
+                             .splitlines(), 1):
+        if _pred_wait_n_prescribed(line):
+            offenders.append(f"{rel}:{i}  {line.strip()[:160]}")
+    assert not offenders, (
+        "以下位置把 `wait -n` 当作并发池**处方**教出去，而本机 bash 是 4.2.46"
+        "（`wait -n` 需 ≥4.3，实测报 `wait: -n: invalid option`）：\n  "
+        + "\n  ".join(offenders)
+        + "\n  正确写法见 skills/wgs-express-align-sort/SKILL.md 的「样本并行处理」段："
+          "`kill -0` 轮询 pid 池 + sleep。若这里是在**告诫读者别用**，请同行带上"
+          "「不要/禁止」等禁令词，让判据能区分处方与禁令。")
+
+
+def _pred_conda_bash_claimed(line):
+    """该行把「用 conda 里的 bash」当成可用兜底 → True（部署文档的缺陷形态）。
+
+    谓词拆出来单列，理由与其它 `_pred_*` 相同：本文件自身也受"纸面具备"威胁，
+    必须能由 `test_guards_actually_discriminate` 用构造样本证明它会红、且不误伤。
+
+    ⚠️ 判据是「`conda` 直接修饰 `bash`」（conda bash / conda 的 bash / conda 里的 bash /
+    conda 装的 bash），**不是**"同行出现 conda 与 bash"。自检当场证伪了两版更粗的写法：
+      · 要求"靠/用它"这类主张词 → 漏报 `装 conda bash`（check_env.sh:98）与
+        `用 conda 里的 bash，或升级系统 bash`（README:256），两者都不含主张词。
+      · 放宽成 40 字窗口内同行出现 → 误伤 `conda init bash`（README:225 的安装命令）
+        与订正说明本身。
+    只认"直接修饰"这一条，两种病同时消失：`conda init bash` 中间隔着 `init`、
+    `$CONDA/bin/bash` 中间隔着 `/bin/`，都不匹配；而四种真实处方形态全部命中。
+    """
+    if not re.search(r"conda\s*(?:的|里的|装的|自带的)?\s*bash", line, re.I):
+        return False
+    # 纠正叙述/禁令标记：明说"不存在/曾/实测/不要指望"，或已在推 kill -0 替代方案。
+    # "旧版" 与 "曾" 是同一类：记录"这里以前这么写过"，不是让读者去照做。
+    if re.search(r"不存在|并没有|根本没有|也没有|实测|订正|曾|旧版|不要|跑不通|均无|不依赖|kill -0|改用",
+                 line):
+        return False
+    return True
+
+
+@pytest.mark.parametrize("rel", ["environment/README.md", "environment/check_env.sh",
+                                 "environment/install.sh"])
+def test_deploy_docs_do_not_claim_a_conda_bash_exists(rel):
+    """部署文档不得让读者去"用 conda 里的 bash" —— 本机实测**不存在** conda bash。
+
+    实测（2026-11-17）：`anaconda3/envs/Agent/bin/bash`、`anaconda3/bin/bash` 都不存在，
+    各 `conda-meta/` 里也没有 `bash` 包；`PATH` 前插 `envs/Agent/bin` 后 `which bash`
+    仍是 `/bin/bash`（4.2.46）。所以"靠 conda 的 bash 绕开 4.2"是一条**跑不通的兜底**，
+    而它被写在部署清单里，会让人以为并发池只要照装就行。
+    """
+    path = os.path.join(REPO, rel)
+    assert os.path.isfile(path), f"{rel} 不存在 —— 本防线在扫空集"
+    bad = []
+    for i, line in enumerate(open(path, encoding="utf-8", errors="replace").read()
+                             .splitlines(), 1):
+        if _pred_conda_bash_claimed(line):
+            bad.append(f"{rel}:{i}  {line.strip()[:160]}")
+    assert not bad, (
+        "部署文档把「conda 里的 bash」当成可用的 4.3+ 兜底，但本机实测该文件不存在"
+        "（`envs/Agent/bin/bash` 与 `anaconda3/bin/bash` 均无，conda-meta 里也没有 bash 包）：\n  "
+        + "\n  ".join(bad)
+        + "\n  并发池应改用 `kill -0` 轮询（见 skills/wgs-express-align-sort/SKILL.md），"
+          "不要把系统 bash 升级/换 bash 当作必需步骤。")
+
+
 # ======================= 自检：这些判据**真的会红**吗？ =======================
 
 def test_guards_actually_discriminate():
@@ -2861,6 +2987,69 @@ def test_guards_actually_discriminate():
          "samtools index 对乱序 BAM 报 [E::hts_idx_push] Unsorted positions"),
         # ---- F05 残余：pbrun 调用不得与 §4.1 契约相矛盾（2026-10-28） ----
         # （命令式谓词要多传一个推导出来的集合，单列在下面 cases_contract）
+        # ---- wait -n：处方 vs 禁令（2026-11-17）----
+        # 坏样本**逐字取自真实语料**（本次修复前的命中行），不是顺手写的形状 ——
+        # 仓库硬约定：自检与变异若都用同一个人想象出来的形态，会一起掩盖同一个盲点
+        # （G02 的教训：33/41 处真实调用是缩进的，自检里全是无缩进的，于是全绿）。
+        (_pred_wait_n_prescribed,   # ← environment/check_env.sh:94 的等价形态
+         "# bash 版本：编排管线用 `wait -n` 控并发，需 ≥4.3",
+         "# bash 版本：并发池用 `kill -0` 轮询，不依赖 bash ≥4.3"),
+        (_pred_wait_n_prescribed,   # ← environment/install.sh:105（依赖声明式）
+         '"bash>=4.3"          # wait -n 并发池（系统 bash 常 <4.3）',
+         '"vcftools"           # VCF→PLINK（可选，plink 可替代）'),
+        (_pred_wait_n_prescribed,   # ← environment/README.md:77（表格行，**无禁令词**）
+         "| `bash >= 4.3` | 编排脚本用 `wait -n` 控样本并发 | 并发池降级/报错 |",
+         "| `kill -0` 轮询 | 并发池不依赖 bash 版本 | 无（4.2 亦可） |"),
+        (_pred_wait_n_prescribed,   # ← 修复前的 skill 处方（server-detect:221 旧文本）
+         "3. 后台作业池：使用 `wait -n` 控制并行度",
+         "3. 后台作业池：**禁止使用 `wait -n` 控制并行度** —— 本机是 bash 4.2.46"),
+        (_pred_wait_n_prescribed,   # 真用法（不是"提到"，是"在用"）
+         "pids+=($!)\nwhile [ ${#pids[@]} -ge 3 ]; do wait -n; done",
+         "pids+=($!)\nwhile [ ${#pids[@]} -ge 3 ]; do sleep 10; done"),
+        (_pred_wait_n_prescribed,   # ← 修复后的禁令（真实语料 align-sort:196）不得误伤
+         "报 `wait -n` 时并发池失效",       # 无禁令词 → 坏样本（应报）
+         "# ⚠️ **不要用 `wait -n`**：本机 bash 4.2.46 不支持（4.3 才有），会报"),
+        (_pred_wait_n_prescribed,   # 引文形态：讲的是报错长什么样，不是用法
+         "wait  -n 2>/dev/null",           # 多空格的真用法
+         "| `wait: -n: invalid option` | 系统 bash 4.2 < 4.3 |"),
+        (_pred_wait_n_prescribed,   # 别的 wait 选项，不是 -n —— 不得误伤
+         "pids+=($!); wait -n",
+         'wait "$pid" || { FAILED=$((FAILED+1)); log_error "PID failed"; }'),
+        # ---- conda bash 兜底（2026-11-17）----
+        # 坏样本逐字取自修复前的真实行（environment/README.md:77/256；
+        # install.sh:364 的 warn、check_env.sh:98 的提示）。四种形态**全都要**被抓住 ——
+        # 自检当场证伪了两版更粗/更窄的谓词（详见 `_pred_conda_bash_claimed` 的 docstring）。
+        (_pred_conda_bash_claimed,
+         "| `bash >= 4.3` | 编排脚本用 `wait -n` 控样本并发 | 并发池降级/报错。"
+         "**本机系统 bash 仅 4.2，靠 conda 的 bash** |",
+         "| `kill -0` 轮询 | 并发池不依赖 bash 版本 | 无（4.2 亦可） |"),
+        (_pred_conda_bash_claimed,   # 处置建议式：**不含**"靠/用它"主张词
+         "| `wait: -n: invalid option` | 系统 bash 4.2 < 4.3 | 用 conda 里的 bash，"
+         "或升级系统 bash |",
+         "| `wait: -n: invalid option` | 脚本用了 `wait -n` | 改用 `kill -0` 轮询 |"),
+        (_pred_conda_bash_claimed,   # conda 装的 bash
+         'warn "conda 装的 bash 在 $CONDA/bin/bash（系统 bash <4.3 时编排脚本用它）"',
+         "# 并发池已改用 kill -0 轮询（bash 4.2 亦可），不再需要也不安装 bash"),
+        (_pred_conda_bash_claimed,   # 简明式：不给"的/里的"，直接 "conda bash"
+         'c_warn "bash $BASHV 过旧：编排脚本的 `wait -n` 并发池需 ≥4.3（装 conda bash）"',
+         'c_ok "bash $BASHV（并发池用 kill -0 轮询，不依赖 wait -n / bash ≥4.3）"'),
+        (_pred_conda_bash_claimed,
+         'c_warn "装 conda bash 即可"',
+         '"bash>=4.3"          # wait -n 并发池（系统 bash 常 <4.3）'),  # 无 conda 字样
+        (_pred_conda_bash_claimed,
+         "用 conda 里的 bash 即可",           # 无订正标记 → 坏样本（应报）
+         '# ⚠️ 2026-11-17 订正：此处曾警告"conda 装的 bash 在 $CONDA/bin/bash"；'
+         "实测本机并不存在该文件，是一条跑不通的兜底"),
+        # 好样本：`conda init bash` —— **安装命令**，不是"用 conda 的 bash 控并发"。
+        # 初期用 40 字窗口的宽松版把它误伤了（实测命中 README:225）。
+        (_pred_conda_bash_claimed,
+         "后台作业池：使用 conda bash 控制并行度",     # 真处方 → 坏样本（应报）
+         "bash Miniconda3-latest-Linux-x86_64.sh -b -p ~/miniconda3 && "
+         "~/miniconda3/bin/conda init bash"),
+        # 好样本：订正说明自身（含 conda-meta / bash 包 / 均无）—— 不得误伤
+        (_pred_conda_bash_claimed,
+         "把 conda bash 装好就行",
+         "> `conda-meta/` 里也没有 bash 包；把 `envs/Agent/bin` 前插 `PATH` 后 `which bash`"),
     ]
     # pbrun 契约谓词单列（要多传 §4.1 推导出来的 rejected/accepted）
     REJECTED, ACCEPTED = _pbrun_contract()

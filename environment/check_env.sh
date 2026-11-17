@@ -91,13 +91,15 @@ have nohup    "nohup（后台任务/TaskOutput）"                 "coreutils"
 have curl     "curl（start_web.sh 探活）"                    "curl"
 have pgrep    "pgrep/pkill（start_web.sh 停启）"             "procps-ng"
 have rg       "ripgrep（Grep 工具加速；缺则回退纯 Python）"  "可选，apt/yum install ripgrep"
-# bash 版本：编排管线用 `wait -n` 控并发，需 ≥4.3
+# bash 版本：**不需要 ≥4.3**（2026-11-17 订正）。
+# 旧版此处警告"编排管线用 `wait -n` 控并发，需 ≥4.3"，并让人去装 conda bash。
+# 但本机实测：/bin/bash 是 4.2.46，且**不存在可用的 conda bash**
+# （envs/Agent/bin/bash 与 <conda>/bin/bash 均无，conda-meta 里也没有 bash 包），
+# 故那条兜底跑不通。并发池已改为 `kill -0` 轮询 pid 池（见
+# skills/wgs-express-align-sort/SKILL.md），在 4.2 上可移植 —— 这里只报信息，不告警。
 if [ -n "$(command -v bash)" ]; then
   BASHV="$(bash -c 'echo ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}')"
-  case "$BASHV" in
-    4.[0-2]|[0-3].*) c_warn "bash $BASHV 过旧：编排脚本的 \`wait -n\` 并发池需 ≥4.3（装 conda bash 或升级系统 bash）" ;;
-    *) c_ok "bash $BASHV（支持 wait -n）" ;;
-  esac
+  c_ok "bash $BASHV（并发池用 kill -0 轮询，不依赖 wait -n / bash ≥4.3）"
 fi
 
 hdr "② Agent 本体 Python 依赖（harness：requests/PyYAML/flask，装在 Agent 环境）"

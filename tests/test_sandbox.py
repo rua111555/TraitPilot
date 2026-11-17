@@ -120,6 +120,47 @@ def test_background_runs_in_cwd():
         assert Path(d, "where.txt").is_file(), "后台任务应在 self.cwd 下执行"
 
 
+# ---------------- 缺陷类：后台命令是**多行**时不得被 json.dumps 破坏 ----------------
+# 根因：bg() 曾用 json.dumps(command) 拼 `exec bash -c "…"`。json.dumps 把命令里的真实
+# 换行转成**字面量** `\n` 两字符（不换行），多行脚本被压成一行 → while/for/函数一律
+# `syntax error near unexpected token 'do'`；且双引号包裹使命令内 `$VAR` 被外层 shell
+# 提前展开为空（编排脚本文档里净是 `$RUN_DIR`）。改为 shlex.quote 后两病同消。
+# 用**行为**断言（真实跑一遍），不用字符串比对，避免"纸面具备"。
+
+def _run_bg(d, command, timeout=4.0):
+    """后台跑 command，等进程结束；返回 (command.sh 文本, output.log 文本)。"""
+    from skill_agent.tools import BG_ROOT
+    ts = _ts(d)
+    tid = ts.execute("Bash", {"command": command, "background": True}).meta["task_id"]
+    sh = Path(BG_ROOT) / tid / "command.sh"
+    log = Path(BG_ROOT) / tid / "output.log"
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        out = ts.execute("TaskOutput", {"task_id": tid})
+        if out.meta.get("pid_alive") is False:
+            break
+        time.sleep(0.05)
+    return (sh.read_text(errors="replace") if sh.is_file() else "",
+            log.read_text(errors="replace") if log.is_file() else "")
+
+
+def test_background_multiline_command_runs():
+    """多行 for 循环 + 变量：必须真的逐行执行（旧写法在这里 syntax error）。"""
+    with tempfile.TemporaryDirectory() as d:
+        cmd = 'X=hello\nfor i in 1 2 3; do echo "run $i $X"; done\n'
+        _, out = _run_bg(d, cmd)
+        assert "run 1 hello" in out and "run 3 hello" in out, \
+            f"多行后台命令应正确处理换行与变量，实得：{out!r}"
+
+
+def test_background_script_keeps_real_newlines():
+    """生成的 command.sh 必须含真实换行，而不是字面量 `\\n`（json.dumps 的病灶）。"""
+    with tempfile.TemporaryDirectory() as d:
+        script, _ = _run_bg(d, 'A=1\nB=2\necho "$A$B"\n')
+        assert "\\n" not in script, "脚本里不得留字面量 \\n"
+        assert "\nB=2" in script, "换行应为真实换行符"
+
+
 # ---------------- Tier 1：rlimit ----------------
 
 def test_rlimit_backend_limits_address_space():

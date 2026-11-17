@@ -12,6 +12,104 @@
 
 ---
 
+## [0.7.1] — 2026-11-17
+
+**主题一：修掉「后台长命令一律跑不起来」的根因 —— `json.dumps` 拼 shell 脚本。**
+**主题二：并发池不再教 `wait -n` —— 本机 bash 是 4.2.46，那段处方照抄即失效。**
+
+> 为什么是 0.7.1：两个主题都是修缺陷，不改变任何对外契约（工具参数、技能产物、
+> CLI 语义均不变），属 `PATCH`。
+
+### 现象
+
+后台挂长任务（Stage 0.5 之类的 `while … do … done` 编排脚本）秒退，日志首行即：
+
+```
+bash: -c: line 0: syntax error near unexpected token `do'
+bash: -c: line 0: `RUN_DIR=/…\nwhile true; do sleep 1; done'
+```
+
+且日志里凡是 `"${RUN_DIR}/.done"` 都变成 `"/.done"`（变量被掏空）。
+
+### 根因（`skill_agent/sandbox.py` 两处 `bg()`）
+
+`bg()` 用 `exec bash -c {json.dumps(command)}` 把命令包进脚本。`json.dumps` 是 **JSON 转义**，
+不是 **shell 引用**，两个隐患并发：
+
+1. **换行被字面化**：命令里的真实换行 `\n` 被转义成**两个字符** `\` `n`，多行脚本被压成
+   一行 → `while/for/函数` 一律 `syntax error`；这正是「后台脚本永远秒退」。
+2. **双引号引发提前展开**：`json.dumps` 产出双引号包裹，命令内的 `$VAR` 在**外层** shell
+   （`exec bash -c "…"`）就被展开（多为空），跑到内层已失真。
+
+即：**任何想用 `$变量` 或跨行的后台命令都跑不起来**，只有一行、无变量的命令侥幸可用。
+
+### 修复
+
+- `sandbox.py` 两处 `bg()`（`HostBackend` / `RlimitBackend`）：`json.dumps(command)`
+  → `shlex.quote(command)`。`shlex.quote` 产出**单引号**包裹、**保留真实换行**，
+  两个隐患同时消除（`$VAR` 不再被外层展开，多行照常）。
+- 移除因此不再使用的 `import json`。
+- **缺陷类回归防线**：`tests/test_sandbox.py` 新增
+  `test_background_multiline_command_runs`（多行 for + 变量，真跑一遍断言输出）与
+  `test_background_script_keeps_real_newlines`（生成脚本不得含字面量 `\n`）。
+  断言基于**行为**而非字符串比对，避免"纸面具备"。
+- 系统提示补一句同族判据（`skill_agent/agent.py`）：后台命令秒退先怀疑"被包进 shell
+  却没被正确引用"，且多行/含变量的后台命令必须**端到端真跑一遍**再看结论。
+
+### 影响
+
+- 后台长任务（WGS/GWAS 编排脚本、监测循环）恢复可用；
+- 之前只在「多行 或 含 `$变量`」时才触发，故一行命令的既有用例始终是绿的 —— 这也是它长期潜伏的原因。
+
+### 主题二：并发池用 `kill -0` 轮询，不再教 `wait -n`
+
+- **现象**：样本伪并行池用 `wait -n` 控并发时，样本被**一次性全部启动**（实测 162 个
+  fastp 全在同 1 秒内启动，load average 冲到 663）。
+- **根因**：本机 `/bin/bash` 是 **4.2.46**，而 `wait -n` 是 bash **4.3** 才有的选项。
+  实测 `bash -c 'true & wait -n'` → `wait: -n: invalid option`（rc=2）。在 `set -e`
+  下该行**当场退出**，并发池整体失效。
+- **关键事实（推翻一条已登记的兜底）**：**本机并不存在可用的 conda bash** ——
+  `envs/Agent/bin/bash` 与 `<conda>/bin/bash` 都没有，各 `conda-meta/` 里也没有 bash 包；
+  把 `envs/Agent/bin` 前插 `PATH` 后 `which bash` 仍是 `/bin/bash`。
+  故 `environment/` 里"靠 conda 的 bash"的说法是一条**跑不通的兜底**，已就地订正。
+- **修复**（8 处命中，全部改为 `kill -0` 轮询 pid 池 + `sleep`，在 4.2 上可移植）：
+  - `skills/wgs-express-align-sort/SKILL.md`：并发池段改写并注明为何不能用 `wait -n`；
+  - `skills/wgs-express-server-detect/SKILL.md`：核心原则 "使用 `wait -n`" → **禁止使用**；
+  - `skills/wgs-express-fastp-qc/SKILL.md`：错误预防清单新增第 7 条；
+  - `environment/README.md`：依赖表去掉 `bash >= 4.3`；故障排查表改指 `kill -0`；
+  - `environment/check_env.sh`：bash 版本检查不再告警（只报信息）；
+  - `environment/install.sh`：从 `LOCAL_TOOLS` 移除 `bash>=4.3`，删掉"conda 装了 bash"的提示。
+- **缺陷类回归防线**（`tests/test_defect_class_guards.py`）：新增两条按**写法**扫全仓的
+  判据 —— `test_no_doc_prescribes_wait_n_for_concurrency`（扫全部 skill 文档 +
+  三份 `environment/`）与 `test_deploy_docs_do_not_claim_a_conda_bash_exists`。
+  两条都拆出 `_pred_*` 谓词并由自检证明"会红且不误伤"。**坏样本逐字取自修复前的真实语料**。
+
+### 探针订正：`stage_verify_probe` 的 G10a-5 因 v0.5.0 共享骨架重构而过期
+
+- `G10a-5` 原本断言 `'"read_totals": dict(self.read_totals)'` 出现在 `stage_verify.py`
+  里。v0.5.0 把 `Report` 骨架抽到 `skills/_shared/verify_core.py` 后，**写入侧那句搬走了**，
+  于是该判据在**未变异的代码上恒为红**（判据的对象已不在它扫的文件里 —— 与"同一个断点
+  的两端各说各话"同形：写入侧在 A 文件、判据只在 B 文件里找）。
+- 现按**职责**拆成三条：`G10a-5a` 从**真实导入的** `Report.as_dict` 回溯其所在文件
+  （不写死文件名，骨架日后再搬判据跟着走）、`G10a-5b` 填充侧、`G10a-5c` 读取侧。
+  探针由 **63/64 → 64/64**（`FAILED: 0`）。
+
+### 测试与验证
+
+- **全量回归 1157 passed, 1 skipped**（`tests/`；GWAS E2E 因本机无 gemma 按显式开关跳过）。
+- **变异验证**（每条都实跑过，确认指名的那条会红）：
+  - `sandbox.py` 还原 `json.dumps` → `test_background_multiline_command_runs` 与
+    `test_background_script_keeps_real_newlines` **双红**，报错逐字复现现象段
+    （`syntax error near unexpected token 'do'`、字面量 `\n`、`$X` 被掏空）；
+  - `check_env.sh` / `server-detect SKILL.md` 还原 `wait -n` 处方 → 两条新防线**分别指名变红**；
+  - `verify_core.py` 写入侧改空字典 → `G10a-5a` 红；`stage_verify.py` 读取侧键名改坏 → `G10a-5c` 红。
+- **探针**：`stage_verify_probe` 64/64（`FAILED 0`）；`verify_fix_probe` 64/64。
+- ⚠️ 诚实说明：本条订正了 `environment/` 里一条**已登记的边界**（"本机靠 conda 的 bash
+  绕开 4.2"）——它是**空的**。按本仓约定，推翻已登记边界属一级事件，故此处与
+  `environment/README.md` 均就地作废并注明日期，而非静默改写。
+
+---
+
 ## [0.7.0] — 2026-11-10
 
 **主题：后台任务不再锁死对话、删除只给命令不动手；顺带修掉两个前端崩溃点。**

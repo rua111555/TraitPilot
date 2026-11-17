@@ -66,6 +66,19 @@ def read(p):
     return open(p, encoding="utf-8", errors="replace").read()
 
 
+def _read_source_of(fn):
+    """读**已导入函数**所在文件的源码 —— 不写死文件路径。
+
+    用于 v0.5.0 起被抽进共享骨架的那些实现（如 `Report.as_dict`）：判据要跟着
+    **职责**走，而不是跟着"我以为它在哪个文件"走。写死路径时，骨架一搬，判据就
+    变成恒红/恒绿的装饰（本探针 G10a-5 正是这么过期的，见其订正说明）。
+    """
+    try:
+        return read(fn.__code__.co_filename)
+    except OSError:
+        return ""
+
+
 def _code_lines(text):
     """只取**可执行**行：剔除 docstring/注释/说明性文本。
 
@@ -175,9 +188,27 @@ ok("G10a-4 [缺陷确认] 工具缺失是 fail-closed（不判「跳过=通过�
 ok("G10a-5 [缺陷确认] reads 守恒链真的接通（read_totals 有写有读）",
    # 实测漏洞：Stage 2 读 prev["read_totals"]，但没有任何地方写过这个键 ——
    # 守恒检查永远静默跳过（声称存在、从不生效）。
-   '"read_totals": dict(self.read_totals)' in src
-   and "rep.read_totals.update(totals)" in src,
-   "Report 必须把 read_totals 落进 JSON，且各阶段要真的填它")
+   #
+   # ⚠️ 2026-11-17 订正：本条原为**单文件字符串断言**（两条 in `src`），v0.5.0 把
+   #    Report 骨架抽到 `skills/_shared/verify_core.py` 后，写入侧那句
+   #    `"read_totals": dict(self.read_totals)` **搬去了共享骨架**，于是这条判据
+   #    在**未变异的代码上恒为红** —— 判据的对象已经不在它扫的文件里（"同一个断点
+   #    的两端各说各话"的同形：写入侧在 A 文件、判据只在 B 文件里找）。
+   #    这正是探针 docstring 要防的"判据变装饰"，只是方向反了（恒红而非恒绿）。
+   # 现按**职责**拆成 a/b/c 三段分别定位（见下）：写入侧从**真实导入的**
+   # Report.as_dict 回溯它所在文件（不写死文件名，骨架日后再搬判据跟着走），
+   # 填充侧与读取侧仍看阶段脚本 src。
+    bool(_read_source_of(SV.Report.as_dict)) and bool(src),
+   "写入侧、填充侧、读取侧三段分别见下三条（G10a-5a/b/c）")
+ok("G10a-5a [缺陷确认] 写入侧：Report.as_dict 把 read_totals 落进 JSON",
+   '"read_totals": dict(self.read_totals)' in _read_source_of(SV.Report.as_dict),
+   f"在 {SV.Report.as_dict.__code__.co_filename} 的 Report.as_dict 里找该键")
+ok("G10a-5b [缺陷确认] 填充侧：各阶段真的填 read_totals（有 update 调用）",
+   "rep.read_totals.update(totals)" in src,
+   "阶段脚本必须 update read_totals，否则下游读到空字典、守恒检查静默跳过")
+ok("G10a-5c [缺陷确认] 读取侧：Stage 2 真的取 prev['read_totals']",
+   'prev.get("read_totals")' in src,
+   "读取侧要真的取该键，否则守恒判据与写入侧断链")
 ok("G10a-6 [缺陷确认] 无装饰性参数（声明了却从不使用的 CLI 选项）",
    # 实测漏洞：--ref / --expected-reads 曾是纯装饰 —— argparse 里有，
    # 代码里从不使用。传了以为多了层检查，实际没有（"纸面具备"的一种）。

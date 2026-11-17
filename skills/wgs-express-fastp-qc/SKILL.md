@@ -348,6 +348,7 @@ print(f"dup rate: {r['duplication']['rate']:.2%}")  # 诊断用
 | 4 | **PE 双端文件顺序正确: `-i R1 -I R2`** | 接头检测和 read 命名错误 |
 | 5 | **多色平台显式指定 `--trim_poly_g`** — 自动检测可能漏掉 | poly-G 残留 |
 | 6 | **清洗后文件不入数据库** — DB 始终存原始 FASTQ 路径 | 原始数据引用丢失 |
+| 7 | **禁止用 `wait -n` 控并发** — 本机 bash 4.2.46 不支持（4.3 才有），报 `wait: -n: invalid option`；`set -e` 下并发池当场失效，样本被**一次性全启动**（实测 162 个 fastp 同 1 秒启动、load 663）。改用 `align-sort` 的 `kill -0` 轮询 pid 池 | 资源超订、I/O 争抢、可能 OOM |
 
 ## 脚本安全检查清单（生成脚本前逐条检查）
 

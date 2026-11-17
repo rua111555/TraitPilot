@@ -74,9 +74,16 @@ conda run -n Agent pip install -r requirements.txt
 | `nohup` | 后台任务（`.done`/`.pid` 轮询机制的基础） | 后台任务起不来，编排管线退化 |
 | `curl` | `start_web.sh` 启动后探活 `/api/config` | 只是探活失败，服务照常起 |
 | `pgrep`/`pkill`（procps） | `start_web.sh stop/restart` | 只能手动 `kill` |
-| `bash >= 4.3` | 编排脚本用 `wait -n` 控样本并发 | 并发池降级/报错。**本机系统 bash 仅 4.2，靠 conda 的 bash** |
 | `rg`（ripgrep，可选） | `Grep` 工具加速 | 自动回退纯 Python 实现，只是慢 |
 | `sqlite3` + **FTS5** | `--retrieval` 的 Search/RepoMap、`--memory` | 两个功能**自停用**，其余不受影响。FTS5 还需 SQLite ≥3.34（trigram 分词） |
+
+> ⚠️ **不需要 `bash >= 4.3`**（2026-11-17 订正）。此前本表要求 `bash >= 4.3`，因为
+> 编排脚本用 `wait -n` 控样本并发。但本机实测 `/bin/bash` 是 **4.2.46**，
+> 且**并不存在可用的 conda bash**（`envs/Agent/bin/bash` 与 `<conda>/bin/bash` 都没有，
+> `conda-meta/` 里也没有 bash 包；把 `envs/Agent/bin` 前插 `PATH` 后 `which bash`
+> 仍是 `/bin/bash`）。故"靠 conda 的 bash"是一条**跑不通的兜底**。
+> 现在的并发池改用 **`kill -0` 轮询 pid 池**（见 `skills/wgs-express-align-sort/SKILL.md`
+> 的「样本并行处理」段），在 bash 4.2 上可移植，**不再要求任何 bash 版本升级**。
 
 ### 1.3 生信工具链 —— conda 环境 `Agent`
 
@@ -257,7 +264,7 @@ export PIPELINE_DB=/your/data/geno/pipeline.db
 |---|---|---|
 | `import numpy` 报 `GLIBCXX_3.4.29 not found` | 系统 libstdc++ 太旧 | 运行前加 `LD_LIBRARY_PATH=<conda>/lib`（要**前插**，追加无效——`/usr/lib64` 在前会先命中旧库） |
 | LDBlockShow 起不来（同上 GLIBCXX） | 新编译二进制需要新 libstdc++ | 同上 |
-| `wait: -n: invalid option` | 系统 bash 4.2 < 4.3 | 用 conda 里的 bash，或升级系统 bash |
+| `wait: -n: invalid option` | 脚本用了 `wait -n`，而本机 bash 4.2 < 4.3（**不存在可用的 conda bash**，不要指望换 bash） | 改用 `kill -0` 轮询 pid 池（见 `skills/wgs-express-align-sort/SKILL.md`）；**不要把升级 bash 当必需步骤** |
 | `library(rMVP)` 编译崩溃 / `C++14 required` | r-gwas 缺 g++ 工具链 | `conda install -n r-gwas -c conda-forge gxx_linux-64` |
 | rMVP 报缺 `dplyr` | r-gwas 未装 | `Rscript -e "install.packages('dplyr')"` |
 | `library(rMVP)` 在系统 R 上失败 | 系统 R 3.6 | 用 conda 环境 `r-gwas` 的 R ≥4.0 |

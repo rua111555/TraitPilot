@@ -102,7 +102,6 @@ LOCAL_TOOLS=(
   "imagemagick"        # convert：SVG→PNG
   "poppler"            # pdftotext：PDF 文本校验
   "ripgrep"            # rg：Grep 工具加速
-  "bash>=4.3"          # wait -n 并发池（系统 bash 常 <4.3）
   "vcftools"           # VCF→PLINK（可选，plink 可替代）
 )
 
@@ -343,7 +342,7 @@ do_bins() {
 
 # ────────────────────────────── 6. 本地命令行工具 ───────────────────────────
 do_tools() {
-  step "⑥ 本地额外软件 —— 命令行工具（perl / convert / pdftotext / rg / bash≥4.3 / vcftools）"
+  step "⑥ 本地额外软件 —— 命令行工具（perl / convert / pdftotext / rg / vcftools）"
   echo "  ${LOCAL_TOOLS[*]}"
   if [ "$DRY" = 1 ]; then echo "  [dry-run] conda install -n base ..."; return; fi
   # 已有则跳过（--with-system 时连系统版也接受）
@@ -361,7 +360,10 @@ do_tools() {
   "$CONDA_BIN" install -y -n base -c conda-forge --override-channels "${missing[@]}" >/dev/null \
     || warn "部分工具安装失败：${missing[*]}"
   for spec in "${missing[@]}"; do ok "已尝试安装 $spec"; done
-  warn "conda 装的 bash 在 $CONDA/bin/bash（系统 bash <4.3 时编排脚本用它）"
+  # ⚠️ 2026-11-17 订正：此处曾警告"conda 装的 bash 在 $CONDA/bin/bash（系统 bash <4.3 时
+  #    编排脚本用它）"。实测本机并**不存在**该文件（<conda>/bin/bash 与
+  #    envs/Agent/bin/bash 均无，conda-meta 里也没有 bash 包），是一条跑不通的兜底。
+  #    并发池已改用 `kill -0` 轮询 pid 池（bash 4.2 亦可），故不再需要也不安装 bash。
 }
 
 # ────────────────────────────── 7. 收尾 ─────────────────────────────────────
