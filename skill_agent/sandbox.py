@@ -70,6 +70,18 @@ class SandboxBackend:
 # --------------------------------------------------------------------------- #
 # Tier 0：宿主
 # --------------------------------------------------------------------------- #
+def _background_script(run, cwd, pidf, log, script_path, limits=""):
+    def quote(value):
+        return shlex.quote(str(value))
+
+    status = quote(Path(pidf).with_name("exit_code"))
+    script = (f'{limits}(cd {quote(cwd)} && exec {run}) &\n'
+              f'worker=$!\necho "$worker" > {quote(pidf)}\nwait "$worker"\n'
+              f'rc=$?\necho "$rc" > {status}\nexit "$rc"\n')
+    return script, ["/bin/bash", "-c",
+                    f'nohup /bin/bash {quote(script_path)} > {quote(log)} 2>&1 &']
+
+
 class HostBackend(SandboxBackend):
     """与改造前完全一致的宿主执行（默认档）。"""
 
@@ -82,15 +94,7 @@ class HostBackend(SandboxBackend):
         }
 
     def bg(self, command: str, cwd, task_id: str, pidf, log, script_path) -> tuple:
-        script = (f'cd "{cwd}" && echo $$ > "{pidf}"\n'
-                  # 用 shlex.quote 而非 json.dumps：json.dumps 会把多行命令的换行转成**字面**
-                  # 的 `\n` 两个字符（不换行），且双引号包裹会让命令里的 `$VAR` 被外层 shell
-                  # 提前展开 → 多行后台命令一律 `syntax error near unexpected token 'do'`，
-                  # 变量的 `$X` 也变空。shlex.quote 产出单引号、保留真实换行，两病同消。
-                  f'exec bash -c {shlex.quote(command)}\n')
-        launch = ["/bin/bash", "-c",
-                  f'nohup /bin/bash "{script_path}" > "{log}" 2>&1 &']
-        return script, launch
+        return _background_script(f"bash -c {shlex.quote(command)}", cwd, pidf, log, script_path)
 
 
 # --------------------------------------------------------------------------- #
@@ -151,16 +155,8 @@ class RlimitBackend(SandboxBackend):
         return ("; ".join(parts) + "; ") if parts else ""
 
     def bg(self, command: str, cwd, task_id: str, pidf, log, script_path) -> tuple:
-        prefix = self._ulimit_prefix()
-        script = (f'{prefix}cd "{cwd}" && echo $$ > "{pidf}"\n'
-                  # 用 shlex.quote 而非 json.dumps：json.dumps 会把多行命令的换行转成**字面**
-                  # 的 `\n` 两个字符（不换行），且双引号包裹会让命令里的 `$VAR` 被外层 shell
-                  # 提前展开 → 多行后台命令一律 `syntax error near unexpected token 'do'`，
-                  # 变量的 `$X` 也变空。shlex.quote 产出单引号、保留真实换行，两病同消。
-                  f'exec bash -c {shlex.quote(command)}\n')
-        launch = ["/bin/bash", "-c",
-                  f'nohup /bin/bash "{script_path}" > "{log}" 2>&1 &']
-        return script, launch
+        return _background_script(f"bash -c {shlex.quote(command)}", cwd, pidf, log,
+                                  script_path, self._ulimit_prefix())
 
 
 # --------------------------------------------------------------------------- #
@@ -170,8 +166,7 @@ class DockerBackend(SandboxBackend):
     """``docker run`` 强隔离。
 
     与编排后台机制的耦合（唯一真风险点）：后台脚本采用**宿主监督 pid** 方案——
-    ``echo $$`` 写在宿主 shell，随后 ``exec docker run --rm`` 前台接管，故该 pid 有效且生命周期
-    = 容器生命周期，``TaskOutput`` 的宿主 ``os.kill`` 判活无需改动。要求把 ``cwd`` 以**相同宿主路径**
+    宿主 shell 等待前台 docker 命令并记录退出码。要求把 ``cwd`` 以**相同宿主路径**
     bind-mount 进容器，使编排脚本写入的 ``.done`` 落回宿主（自动推进/``--resume`` 依赖它）。
     """
 
@@ -227,15 +222,9 @@ class DockerBackend(SandboxBackend):
         return argv, {"cwd": str(cwd), "timeout": timeout}
 
     def bg(self, command: str, cwd, task_id: str, pidf, log, script_path) -> tuple:
-        # 宿主监督：先写宿主 pid，再 exec 前台 docker run —— 该 pid 在整段后台任务期间保持有效，
-        # TaskOutput 的宿主判活因此正确；--rm 随容器退出清理。
         argv = self._docker_argv(command, cwd, task_id)
         run = " ".join(shlex.quote(a) for a in argv)
-        script = (f'cd "{cwd}" && echo $$ > "{pidf}"\n'
-                  f'exec {run}\n')
-        launch = ["/bin/bash", "-c",
-                  f'nohup /bin/bash "{script_path}" > "{log}" 2>&1 &']
-        return script, launch
+        return _background_script(run, cwd, pidf, log, script_path)
 
 
 # --------------------------------------------------------------------------- #

@@ -81,8 +81,19 @@ class AnthropicClient:
         for mi, model in enumerate(models):
             payload = self._payload(model, system, tools, messages, stream)
             try:
-                blocks, stop_reason, out_tokens = self._attempt(
-                    payload, stream, on_delta, on_thinking)
+                try:
+                    blocks, stop_reason, out_tokens = self._attempt(
+                        payload, stream, on_delta, on_thinking)
+                except APIError as error:
+                    # Some Messages-compatible gateways do not implement prompt caching.
+                    message = str(error).lower()
+                    if not (self.prompt_cache and error.status in (400, 422)
+                            and ("cache_control" in message or "prompt caching" in message)):
+                        raise
+                    self.prompt_cache = False
+                    payload = self._payload(model, system, tools, messages, stream)
+                    blocks, stop_reason, out_tokens = self._attempt(
+                        payload, stream, on_delta, on_thinking)
                 if mi > 0:
                     self.model = model        # 记录实际生效模型
                     if self.verbose:

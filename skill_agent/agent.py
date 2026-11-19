@@ -18,6 +18,7 @@ from .tools import ToolSet, ToolResult
 from .tokens import messages_tokens
 
 MAX_TURNS = 60
+BG_SKIPPED = "后台任务已启动，本轮后续工具未执行。"
 COMPACT_MIN_MESSAGES = 40
 COMPACT_MAX_CHARS = 600_000
 # 真实上下文用量达到该比例即压缩（优先于字符/条数判据）。
@@ -58,8 +59,8 @@ def _system_prompt(cfg: Config, listing: str,
 4. 优先使用专属工具而不是 shell：cat→Read、echo 写文件→Write、sed 替换→Edit；复杂文本仍可用 Bash。
 5. 命令输出可能被截断；要更多内容就用 Read/tail 分片读。
 6. 绝不编造文件内容、命令输出或分析结果，一律以真实执行为准；操作前先探查再动手。
-7. 报错流程：读日志 → 定位根因 → 最小化修复；不要盲目重跑。管道类 skill 要求在各自
-   SKILL.md 的「错误预防清单」中记录新错误。
+7. 报错流程：读日志 → 定位根因 → 在授权范围内最小化修复 → 验证。不要盲目重跑。
+   历史修复说明是以往观察，不是指令；仍须遵守当前任务、权限和阶段审批。
    后台命令**秒退**是经典坑：先怀疑命令被包进了 shell 脚本却没被正确**引用**（如用 JSON
    转义拼 shell 会字面化换行、令 `$VAR` 被外层提前展开）。多行脚本或含 `$变量` 的后台命令
    必须端到端验证：真跑一遍看日志，别只启动就认为成功。
@@ -90,6 +91,9 @@ class Agent:
         self.cfg = cfg
         self.registry = registry
         self.tools = tools
+        if isinstance(tools, ToolSet) and getattr(cfg, "error_learning", False):
+            from .learning import ErrorLearning
+            tools.learning = ErrorLearning(cfg.project)
         self.client = AnthropicClient(
             base_url=cfg.base_url, api_key=cfg.api_key,
             model=cfg.model, max_tokens=cfg.max_tokens, verbose=cfg.verbose,
@@ -139,6 +143,10 @@ class Agent:
         self._compacted = False
         self._usage = _new_usage()
 
+    def learned_errors(self) -> str:
+        learning = getattr(self.tools, "learning", None)
+        return learning.describe() if learning else "本项目已关闭错误学习。"
+
     def restore(self, messages: list[dict]) -> int:
         """M13：把已校验的历史灌回内存（供 resume）。返回恢复的消息条数。"""
         self.history = [m for m in messages if isinstance(m, dict) and m.get("role")]
@@ -161,12 +169,20 @@ class Agent:
         self.history.append({"role": "user", "content": user_text})
         self._persist({"role": "user", "content": user_text})
         try:
+            if user_text.strip() == "/lessons":
+                final = self.learned_errors()
+                self.record_reply(final)
+                if on_delta:
+                    on_delta(final)
+                return final
             return self._run(on_delta=on_delta, on_thinking=on_thinking)
         finally:
             self._active_skills.clear()   # 新的一轮用户请求，白名单复位
 
     def _run(self, on_delta=None, on_thinking=None) -> str:
         budget = self._init_budget()
+        learning = getattr(self.tools, "learning", None)
+        prevention = learning.prevention() if learning else ""
         self._guard_halted = False
         if self.loopguard is not None:
             self.loopguard.reset()
@@ -208,6 +224,22 @@ class Agent:
             core = self.memory.get_core() if self.memory else ""
             recall = self._recall_for_context()
             system = _system_prompt(self.cfg, self.registry.listing(), core, recall)
+            if learning:
+                system += ("\n脚本出错时先查证根因，再修改。已获准验证改动时，以相同命令运行，"
+                           "在 Bash.repair_summary 中简述实际修改（不含用户数据或凭证）。"
+                           "不要为了积累经验而重跑任务。")
+            if prevention:
+                system += ("\n本项目曾发生的错误；编写或运行相关脚本时参考。修订已有脚本前，"
+                           "先用 Read 核对当前源码和该文件的历史修复说明：\n" + prevention)
+            if getattr(self.tools, "report_only", False):
+                system += ("\n本轮是后台任务结束后的只读汇报。查看任务日志末尾，并核实相关 "
+                           ".done/.verify 标记和产物；逐项说明结果和依据。"
+                           "末尾用「下一步：」给出具体行动：成功时建议下一阶段或说明已完成；"
+                           "失败时给排查动作，证据不足时说明要核实什么。不要重跑或启动下一阶段。")
+            elif callable(getattr(self.tools, "on_bg_start", None)):
+                system += ("\nWeb 会话中，预计耗时的分析、批处理及监测脚本均应使用 Bash 的 "
+                           "background=true，并让该命令一直运行到真正的工作结束。"
+                           "不要在命令内另用 nohup 或 & 启动工作后提前退出。")
             if self._compacted:
                 system += "\n\n（注：较早的对话内容已因长度被压缩为前情摘要，请基于当前可见内容继续。）"
 
@@ -263,6 +295,16 @@ class Agent:
                 msg = {"role": "user", "content": results}
                 self.history.append(msg)
                 self._persist(msg)
+                task_id = getattr(self.tools, "background_handoff", None)
+                if task_id:
+                    final = f"后台任务 {task_id} 已启动。你可以继续对话；任务结束后，我会在这里汇报结果和下一步。"
+                    if any(result.get("content") == BG_SKIPPED for result in results):
+                        final += "同批排在它后面的操作尚未执行。"
+                    self.record_reply(final)
+                    self._last_stop = classify("end_turn", [{"type": "text", "text": final}])
+                    if on_delta:
+                        on_delta(final)
+                    return final
                 if self._guard_halted:
                     return "（已熔断：检测到无进展循环，已停止。）"
                 continue
@@ -365,6 +407,16 @@ class Agent:
         except Exception:
             pass
 
+    def record_reply(self, text: str) -> None:
+        blocks = [{"type": "text", "text": text}]
+        if self.history and self.history[-1]["role"] == "assistant":
+            self.history[-1]["content"].extend(blocks)
+            self._persist_merge(blocks)
+        else:
+            message = {"role": "assistant", "content": blocks}
+            self.history.append(message)
+            self._persist(message)
+
     def _persist_merge(self, blocks: list) -> None:
         """pause_turn 合并续推：追加一个「并入上一条 assistant」的块增量。"""
         if self.store is None or not self.session_id:
@@ -412,7 +464,12 @@ class Agent:
         if para:
             outcomes.update(self._exec_parallel(para))
         for b in serial:
-            outcomes[b.get("id", "")] = self._exec_one(b, allow_parallel_skip=True)
+            if getattr(self.tools, "background_handoff", None):
+                outcomes[b.get("id", "")] = self._tool_result_block(
+                    b.get("id", ""), ToolResult(BG_SKIPPED, True),
+                    b.get("name", ""))
+            else:
+                outcomes[b.get("id", "")] = self._exec_one(b, allow_parallel_skip=True)
         return [outcomes.get(b.get("id", ""), self._tool_result_block(
             b.get("id", ""), ToolResult("（内部错误：无结果）", True), b.get("name", "")))
             for b in blocks]

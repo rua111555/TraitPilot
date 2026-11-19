@@ -49,7 +49,10 @@ class PermissionModel:
     @classmethod
     def from_config(cls, cfg, cwd: Path) -> "PermissionModel":
         roots = [Path(cwd).resolve()]
-        for r in getattr(cfg, "permission_roots", None) or []:
+        configured = list(getattr(cfg, "permission_roots", None) or [])
+        if getattr(cfg, "spill_dir", None):
+            configured.append(cfg.spill_dir)  # 允许用户读取 Agent 自己生成的长输出文件
+        for r in configured:
             try:
                 roots.append(Path(r).expanduser().resolve())
             except Exception:
@@ -81,7 +84,7 @@ class PermissionModel:
         allowed = "、".join(str(r) for r in self._all_roots())
         return (f"路径越出允许的工作区边界：{p}\n"
                 f"允许根：{allowed}\n"
-                f"如需访问，请把它加入 extra_roots（或关闭 restrict_paths）。")
+                f"如需访问，请把数据目录加入 config.json 的 permission_roots（或关闭 restrict_paths）。")
 
     def _all_roots(self) -> list[Path]:
         roots = list(self.roots)

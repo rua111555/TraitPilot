@@ -19,6 +19,7 @@ from pathlib import Path
 DEFAULT_INTERVAL = float(os.environ.get("SKILL_AGENT_BG_WATCH", "5") or 5)
 MIN_AGE = 3.0          # 给 pid 文件一点写入时间
 NO_PID_GRACE = 15.0    # 超过这么久还没有 pid 文件 → 视为启动失败
+EXIT_CODE_GRACE = 2.0
 
 
 class BackgroundWatcher:
@@ -75,22 +76,20 @@ class BackgroundWatcher:
             prefix = server._disk_prefix(s.id)
         except Exception:
             prefix = 0
-        new_run = s.begin_run(msg, prefix=prefix)
+        new_run = s.begin_run(msg, prefix=prefix, background_tasks=finished)
         if new_run is None:
             return
-        for tid, t, status in finished:
-            t["notified"] = True
-            t["result"] = status
-        try:
-            s.save_bg_tasks()
-        except Exception:
-            pass
         threading.Thread(target=s.run_turn, args=(new_run,), daemon=True).start()
 
     def _status(self, t: dict):
         started = float(t.get("started") or 0)
         if time.time() - started < MIN_AGE:
             return None
+        if t.get("exit_file"):
+            try:
+                return f"exit:{int(Path(t['exit_file']).read_text().strip())}"
+            except (ValueError, OSError):
+                pass
         pid_file = t.get("pid_file") or ""
         p = Path(pid_file) if pid_file else None
         if p is None or not p.is_file():
@@ -102,6 +101,8 @@ class BackgroundWatcher:
         except Exception:
             return "bad_pid"
         if self._pid_alive(pid, t):
+            return None
+        if t.get("exit_file") and time.time() - t.setdefault("exit_seen", time.time()) < EXIT_CODE_GRACE:
             return None
         return "exited"
 
@@ -131,17 +132,29 @@ class BackgroundWatcher:
         return True
 
     @staticmethod
-    def _message(finished) -> str:
-        lines = ["[系统] 后台任务已结束（看门狗自动检查，不需要用户再发消息）："]
+    def evidence(finished) -> str:
+        lines = []
         for tid, t, status in finished:
             log = t.get("log") or "(无日志)"
-            if status == "exited":
-                lines.append(f"- {tid}：进程已退出。日志：{log}")
+            if status.startswith("exit:"):
+                code = int(status.split(":")[1])
+                outcome = "命令正常退出，产物仍须核实" if code == 0 else "命令执行失败"
+                lines.append(f"- {tid}：{outcome}（退出码 {code}）。日志：{log}")
+            elif status == "exited":
+                lines.append(f"- {tid}：进程已退出，退出码未知。日志：{log}")
             else:
                 lines.append(f"- {tid}：未找到有效 pid（{status}），可能启动失败。日志：{log}")
-        lines.append("请用 TaskOutput/Read 查看日志末尾，并检查相关 .done/.verify 标记，"
-                     "向用户汇报结果；不要重复执行该任务。")
         return "\n".join(lines)
+
+    @classmethod
+    def _message(cls, finished) -> str:
+        return "[系统] 后台任务已结束：\n" + cls.evidence(finished)
+
+    @staticmethod
+    def next_step(finished) -> str:
+        if any(status != "exit:0" for _, _, status in finished):
+            return "下一步：先查看异常任务的日志末尾，核对报错和启动记录，再决定是否重试。"
+        return "下一步：核对日志中列出的输出文件及阶段校验结果，确认产物齐全后再进入下一阶段。"
 
 
 def start_watcher() -> BackgroundWatcher:

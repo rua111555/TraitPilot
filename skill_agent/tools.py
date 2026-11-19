@@ -68,6 +68,7 @@ DANGEROUS_PATTERNS = [
 ]
 
 BG_ROOT = Path.home() / ".skill-agent" / "tasks"
+REPORT_TOOLS = {"Read", "Glob", "Grep", "TaskOutput"}
 
 
 @dataclass
@@ -121,6 +122,9 @@ class ToolSet:
         self._bg_tasks: dict[str, dict] = {}    # task_id -> {log, pid, cmd}
         # 网页端：后台任务启动后登记给会话，供看门狗在进程结束后主动汇报
         self.on_bg_start = None
+        self.learning = None
+        self.report_only = False
+        self.background_handoff = None
         # 安全红线（用户 2026-11-10 裁定）：本 Agent 不执行任何删除操作；
         # 需要删除时只把命令告诉用户，由用户自己执行。
         self.deny_delete = True
@@ -157,11 +161,15 @@ class ToolSet:
     # ---------------- schema 对外 ----------------
     def schemas_for(self, allowed: set[str] | None = None) -> list[dict]:
         """active skill 的 allowed-tools 白名单没有命中任何本套件工具时视为不限制。"""
-        return self.registry_tools.schemas(allowed)
+        schemas = self.registry_tools.schemas(allowed)
+        if self.report_only:
+            return [schema for schema in schemas if schema["name"] in REPORT_TOOLS]
+        return schemas
 
     def begin_turn(self) -> None:
         """每轮对话开始时复位「本轮已启动后台任务」标记。"""
         self._bg_started_this_turn = False
+        self.background_handoff = None
 
     @staticmethod
     def _deletion_reason(command: str) -> str:
@@ -196,6 +204,8 @@ class ToolSet:
         return bool(_re.search(r"\bsleep\s+[0-9.]+", str(command or "")))
 
     def execute(self, name: str, args: dict) -> ToolResult:
+        if self.report_only and name not in REPORT_TOOLS:
+            return ToolResult("后台汇报只能读取结果，不能执行下一阶段。", True)
         tool = self.registry_tools.get(name)
         if tool is None:
             return ToolResult(f"未知工具 {name}", True)
@@ -280,7 +290,7 @@ class ToolSet:
             return result
         try:
             d = Path(self.spill_dir)
-            d.mkdir(parents=True, exist_ok=True)
+            d.mkdir(mode=0o700, parents=True, exist_ok=True)
             fid = uuid.uuid4().hex[:8]
             p = d / f"{name}-{fid}.txt"
             p.write_text(content, encoding="utf-8")
@@ -336,8 +346,11 @@ class ToolSet:
                 return ToolResult("Bash 需要 command 参数。", True)
             timeout = int(args.get("timeout") or 120)
             timeout = min(max(timeout, 1), 3600)
+            attempt = (self.learning.snapshot(self.cwd, command, self.sandbox.name,
+                                              self.permission_model, args.get("repair_summary"))
+                       if self.learning else None)
             if args.get("background"):
-                return self._bash_background(command, str(args.get("description", "")))
+                return self._bash_background(command, str(args.get("description", "")), attempt)
             t0 = time.monotonic()
             argv, kw = self.sandbox.fg(command, self.cwd, timeout)
             try:
@@ -345,6 +358,8 @@ class ToolSet:
             except subprocess.TimeoutExpired:
                 res = ToolResult(f"命令超时（>{timeout}s）：\n$ {command}", True)
                 res.meta = {"duration_ms": int((time.monotonic() - t0) * 1000), "timed_out": True}
+                if attempt:
+                    res.content += "\n" + self.learning.observe(attempt, "timeout")
                 return res
             out = (proc.stdout or "") + (proc.stderr or "")
             out = out.strip() or f"（无输出，返回码 {proc.returncode}）"
@@ -360,6 +375,14 @@ class ToolSet:
             tr = ToolResult(res, is_error=proc.returncode != 0)
             tr.meta = {"duration_ms": int((time.monotonic() - t0) * 1000),
                        "exit_code": proc.returncode}
+            if attempt:
+                from .learning import category, signature
+                diagnostic = ((proc.stdout or "")[-8192:] + "\n" + (proc.stderr or "")[-8192:]) if proc.returncode else ""
+                kind = category(diagnostic) if proc.returncode else None
+                note = self.learning.observe(attempt, kind, exit_code=proc.returncode,
+                                             signal=signature(diagnostic, proc.returncode) if kind else "")
+                if note:
+                    tr.content += "\n" + note
             return tr
         return Tool(
             name="Bash",
@@ -373,6 +396,8 @@ class ToolSet:
                               "command": {"type": "string", "description": "要执行的 shell 命令"},
                               "description": {"type": "string", "description": "命令意图（便于审查）"},
                               "background": {"type": "boolean", "description": "后台启动"},
+                              "repair_summary": {"type": "string", "description":
+                                  "验证已修复的脚本时填写一句可复用的修改说明，不含命令、路径、数据或凭证。"},
                               "timeout": {"type": "integer", "description": "超时秒数，默认120，最大3600"}},
                           "required": ["command"]},
             executor=run,
@@ -417,7 +442,7 @@ class ToolSet:
                 continue
             tool.executor = self._timed(nm, default_timeout(nm))[1](tool.executor)
 
-    def _bash_background(self, command: str, desc: str) -> ToolResult:
+    def _bash_background(self, command: str, desc: str, attempt=None) -> ToolResult:
         task_id = uuid.uuid4().hex[:10]
         d = BG_ROOT / task_id
         d.mkdir(parents=True, exist_ok=True)
@@ -435,11 +460,13 @@ class ToolSet:
             f"已在后台启动（task_id={task_id}）。\n日志：{log}\n"
             "后续可用 TaskOutput(log_path=...) 或 Read/Bash 查看进度；"
             "编排管线请按各自 SKILL.md 用 .done/.pid 标记确认完成。")
-        res.meta = {"task_id": task_id, "log": str(log), "pid_file": str(pidf)}
+        res.meta = {"task_id": task_id, "log": str(log), "pid_file": str(pidf),
+                    "exit_file": str(d / "exit_code")}
         self._bg_started_this_turn = True
         if callable(getattr(self, "on_bg_start", None)):
             try:
-                self.on_bg_start({**res.meta, "cmd": command})
+                self.on_bg_start({**res.meta, "cmd": command, "learning": attempt})
+                self.background_handoff = task_id
             except Exception:
                 pass
         return res
@@ -468,6 +495,10 @@ class ToolSet:
             if not body.strip():
                 body = "（空文件或无内容）"
             tr = ToolResult(head + "\n" + body)
+            if self.learning:
+                advice = self.learning.advice(self.learning.for_file(path))
+                if advice:
+                    tr.content += "\n本脚本的历史经验（不属于文件内容）：\n" + advice
             try:
                 st = path.stat()
                 tr.meta = {"path": str(path), "lines": total,
@@ -491,13 +522,19 @@ class ToolSet:
         def run(args: dict) -> ToolResult:
             path = self._resolve(args.get("file_path", ""))
             content = str(args.get("content", ""))
+            issue, advice = self.learning.check_script(path, content) if self.learning else ("", "")
+            if issue:
+                return ToolResult(issue, True)
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(content, encoding="utf-8")
             except OSError as e:
-                return ToolResult(f"写入失败：{e}", True)
+                note = self.learning.file_error(path, "Write", "file_io") if self.learning else ""
+                return ToolResult(f"写入失败：{e}\n{note}".rstrip(), True)
             size = len(content.encode("utf-8"))
             tr = ToolResult(f"已写入 {path}（{size} 字节）。")
+            if advice:
+                tr.content += "\n本脚本的历史经验：\n" + advice
             try:
                 st = path.stat()
                 tr.meta = {"path": str(path), "size": st.st_size, "mtime": st.st_mtime}
@@ -524,17 +561,26 @@ class ToolSet:
             try:
                 text = path.read_text(encoding="utf-8")
             except OSError as e:
-                return ToolResult(f"读取失败：{e}", True)
+                note = self.learning.file_error(path, "Edit", "file_io") if self.learning else ""
+                return ToolResult(f"读取失败：{e}\n{note}".rstrip(), True)
             if old not in text:
-                return ToolResult("old_string 未在文件中找到（注意首尾空白精确匹配）。", True)
+                note = self.learning.file_error(path, "Edit", "edit_match") if self.learning else ""
+                return ToolResult(("old_string 未在文件中找到（注意首尾空白精确匹配）。" + "\n" + note).rstrip(), True)
             if not replace_all and text.count(old) > 1:
-                return ToolResult("old_string 出现多次，请加 replace_all=true 或提供更精确的串。", True)
+                note = self.learning.file_error(path, "Edit", "edit_match") if self.learning else ""
+                return ToolResult(("old_string 出现多次，请加 replace_all=true 或提供更精确的串。" + "\n" + note).rstrip(), True)
             new_text = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+            issue, advice = self.learning.check_script(path, new_text) if self.learning else ("", "")
+            if issue:
+                return ToolResult(issue, True)
             try:
                 path.write_text(new_text, encoding="utf-8")
             except OSError as e:
-                return ToolResult(f"写入失败：{e}", True)
+                note = self.learning.file_error(path, "Edit", "file_io") if self.learning else ""
+                return ToolResult(f"写入失败：{e}\n{note}".rstrip(), True)
             tr = ToolResult(f"已编辑 {path}。")
+            if advice:
+                tr.content += "\n本脚本的历史经验：\n" + advice
             try:
                 st = path.stat()
                 tr.meta = {"path": str(path), "size": st.st_size, "mtime": st.st_mtime}

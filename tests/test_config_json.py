@@ -126,7 +126,7 @@ def test_config_file_ignores_wrong_types():
         old = os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
         try:
             cfg = Config.load(project=Path(d), cwd=Path(d))
-            assert cfg.retrieval is False       # 非 bool 忽略
+            assert cfg.retrieval is True        # 非 bool 忽略，保留默认开启
             assert cfg.max_turns is None         # 非整数忽略
             assert cfg.sandbox == "host"         # 非法档位忽略
             assert not cfg.fallback_models       # 非 list/str 忽略
@@ -278,3 +278,25 @@ def test_config_env_block_ignores_malformed():
         finally:
             for k in ("X_OK", "BAD", "NUM"):
                 os.environ.pop(k, None)
+
+
+def test_builtin_defaults_can_be_disabled_in_file_or_environment(tmp_path, monkeypatch):
+    for name in tuple(os.environ):
+        if name.startswith("SKILL_AGENT_"):
+            monkeypatch.delenv(name)
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"api_key": "fixture"}))
+    cfg = Config.load(project=tmp_path, config_file=path)
+    assert cfg.retrieval and cfg.todo and cfg.memory_enabled and cfg.summary_compaction
+    assert cfg.persist and cfg.loop_guard and cfg.idempotency and cfg.parallel_tools
+    assert cfg.hooks_enabled and cfg.spill_dir and cfg.prompt_cache and cfg.error_learning
+    assert cfg.restrict_paths and cfg.write_approval
+    assert cfg.sandbox == "host" and not cfg.fallback_models and not cfg.plugin_dirs
+
+    path.write_text(json.dumps({"api_key": "fixture", "trace": False,
+                                "spill": True, "persist": False}))
+    monkeypatch.setenv("SKILL_AGENT_SPILL", "0")
+    cfg = Config.load(project=tmp_path, config_file=path)
+    assert not cfg.hooks_enabled and cfg.spill_dir is None and not cfg.persist
+    monkeypatch.setenv("SKILL_AGENT_PERSIST", "1")
+    assert Config.load(project=tmp_path, config_file=path).persist

@@ -78,7 +78,7 @@ export ANTHROPIC_AUTH_TOKEN="<你的token>"
 
 ### config.json 功能开关一览
 
-在 `config.json` 里设置这些键即可打开对应 harness 能力（省略 = 用默认，多数默认关）。
+表中的布尔功能默认开启。设为 `false` 可关闭，省略则采用默认。旧配置里的显式 `false` 仍然有效。读取外部数据时，将所需的绝对目录加入 `permission_roots`。
 也可换成同名的 `SKILL_AGENT_*` 环境变量或 CLI 参数（CLI > 环境变量 > config.json）。
 
 | 配置键 | 打开的能力 | 说明 |
@@ -87,7 +87,8 @@ export ANTHROPIC_AUTH_TOKEN="<你的token>"
 | `todo` | #9 规划 | 挂载 `TodoWrite`，计划外部化 |
 | `memory` | M12 分层记忆 | `core.md` + archival 检索 |
 | `summary_compaction` | M12 摘要压缩 | 长对话按结构化前情摘要压缩 |
-| `persist` | M13 会话持久化 | 逐条落盘，支持 `--continue/--resume` |
+| `persist` | M13 会话持久化 | CLI 和 Web 均逐条落盘，CLI 支持 `--continue/--resume` |
+| `error_learning` | 项目错误经验 | 本地积累失败与验证结果，用 `/lessons` 查看 |
 | `parallel_tools` | M7 只读并行 | 同轮多个只读工具并行执行 |
 | `loop_guard` | M3 死循环熔断 | 无进展循环检测（`loop_warn`/`loop_halt` 调参）|
 | `idempotency` | M11 幂等去重 | 有副作用工具 run 内只执行一次（`idempotency_mode`）|
@@ -181,10 +182,10 @@ python3 run.py chat -p "列出 phenotype-extract 提供哪些表型" -m DSv4-fla
 
 | 参数 | 作用 | 默认 |
 |---|---|---|
-| `--restrict-paths` | **M8a** 启用工作区路径边界（越界拒绝） | 关 |
-| `--write-approval` | **M8a** 把 Write/Edit 纳入审批门 | 关 |
+| `--restrict-paths` | **M8a** 启用工作区路径边界（越界拒绝） | 开 |
+| `--write-approval` | **M8a** 把 Write/Edit 纳入审批门 | 开 |
 | `--sandbox {host,rlimit,docker}` | **M9** Bash 执行后端（见 §7.7） | `host` |
-| `--idempotency` | **M11** 同一次运行内有副作用工具去重（见 §7.9） | 关 |
+| `--idempotency` | **M11** 同一次运行内有副作用工具去重（见 §7.9） | 开 |
 
 ### 3.3 预算与稳定性
 
@@ -193,7 +194,7 @@ python3 run.py chat -p "列出 phenotype-extract 提供哪些表型" -m DSv4-fla
 | `--max-turns N` | **M1b** 单轮最多模型轮次 | 不限（内部上限 60） |
 | `--max-seconds N` | **M1b** 单轮墙钟上限（秒） | 不限 |
 | `--max-output-tokens N` | **M1b** 单轮输出 token 上限 | 不限 |
-| `--loop-guard` | **M3** 无进展死循环熔断 | 关 |
+| `--loop-guard` | **M3** 无进展死循环熔断 | 开 |
 | `--fallback-models M1,M2` | **#12** 过载重试耗尽后依次切后备模型 | 空（不切换） |
 
 > 预算熔断只在**发请求前**或**整轮后**判定，到点只停止后续调用、**不杀后台任务**。
@@ -202,9 +203,9 @@ python3 run.py chat -p "列出 phenotype-extract 提供哪些表型" -m DSv4-fla
 
 | 参数 | 作用 | 默认 |
 |---|---|---|
-| `--summary-compact` | **M12** 摘要式压缩（长管线不丢阶段参数/路径/审批结论） | 关 |
-| `--memory` | **M12** 分层记忆（core.md + FTS5 archival 检索） | 关 |
-| `--persist` | **M13** 逐条消息落盘，支持 resume | 关 |
+| `--summary-compact` | **M12** 摘要式压缩（长管线不丢阶段参数/路径/审批结论） | 开 |
+| `--memory` | **M12** 分层记忆（core.md + FTS5 archival 检索） | 开 |
+| `--persist` | **M13** 逐条消息落盘，支持 resume | 开 |
 | `--continue` | **M13** 恢复最近一次会话 | 关 |
 | `--resume SID` | **M13** 按会话 id 恢复 | 无 |
 
@@ -213,12 +214,12 @@ python3 run.py chat -p "列出 phenotype-extract 提供哪些表型" -m DSv4-fla
 | 参数 | 作用 | 默认 |
 |---|---|---|
 | `--plugin-dir DIR` | **M4** 加载声明式插件工具（可重复） | 不加载 |
-| `--trace` | **#6** 工具调用 trace 落盘 jsonl | 关 |
-| `--spill` | **M7** 超长工具结果落盘转存（可继续 Read） | 关 |
-| `--parallel-tools` | **M7** 同轮只读工具并行执行 | 关 |
-| `--todo` | **#9** 挂载 `TodoWrite` 计划工具 | 关 |
-| `--prompt-cache` | **#14** 给稳定前缀打 `cache_control: ephemeral` | 关 |
-| `--retrieval` | **#11** 挂载 `Search`/`RepoMap` 检索工具 | 关 |
+| `--trace` | **#6** 工具调用 trace 落盘 jsonl | 开 |
+| `--spill` | **M7** 超长工具结果落盘转存（可继续 Read） | 开 |
+| `--parallel-tools` | **M7** 同轮只读工具并行执行 | 开 |
+| `--todo` | **#9** 挂载 `TodoWrite` 计划工具 | 开 |
+| `--prompt-cache` | **#14** 给稳定前缀打 `cache_control: ephemeral` | 开 |
+| `--retrieval` | **#11** 挂载 `Search`/`RepoMap` 检索工具 | 开 |
 | `--index-dir DIR` | **#11** 覆盖检索索引目录 | `<project>/.skill-agent/index` |
 | `--index-rebuild` | **#11** 启动时强制重建检索索引 | 关 |
 
@@ -240,7 +241,8 @@ python3 run.py chat -p "列出 phenotype-extract 提供哪些表型" -m DSv4-fla
 | `SKILL_AGENT_WRITE_APPROVAL` | `--write-approval` | 同上 |
 | `SKILL_AGENT_SUMMARY_COMPACTION` | `--summary-compact` | 同上 |
 | `SKILL_AGENT_MEMORY` | `--memory` | 同上 |
-| `SKILL_AGENT_PERSIST` | `--persist` | Web 默认开；`=0` 关闭 |
+| `SKILL_AGENT_ERROR_LEARNING` | 配置项 `error_learning` | 默认开；设为 `0` 停止记录、提醒和自适应预检 |
+| `SKILL_AGENT_PERSIST` | `--persist` | CLI 和 Web 默认开；`=0` 关闭 |
 | `SKILL_AGENT_SESSION_ID` | `--resume` | 指定会话 id |
 | `SKILL_AGENT_MAX_TURNS` / `_MAX_OUTPUT_TOKENS` / `_MAX_SECONDS` | M1b | 整数 |
 | `SKILL_AGENT_LOOP_GUARD` | `--loop-guard` | 布尔 |
@@ -296,6 +298,14 @@ python3 run.py chat -p "列出 phenotype-extract 提供哪些表型" -m DSv4-fla
 
 ---
 
+**错误学习（CLI 和 Web）**：输入 `/lessons` 查看本项目最近 20 条记录。失败的 Bash 命令、超时、Web 后台进程的非零退出，以及 Write/Edit 的写入或匹配错误会分类计数。审批拒绝、被跳过的命令和仅仅启动后台任务都不是验证结果。
+
+Agent 会在后续会话参考本项目常见问题。对于直接运行的项目内小脚本（如 `python3 job.py`、`bash job.sh`），会记录源文件指纹。如果脚本修订后以相同工作目录、执行后端和命令退出 0，会登记一次通过，并保留本次验证提供的简短修复说明，供以后读取或修改同一脚本时参考。退出 0 不替代产物校验。复合命令只记录失败，不据此认定某个脚本已经修复。
+
+例如，`job.py` 发生过语法错误后，用 Write/Edit 修改它时会先检查语法，检查不通过则保留原文件。预检限与本机检查器匹配的 Python/Bash、小脚本；不会执行草稿。任务审批和 Web 后台汇报规则不变。
+
+记录保存在项目的 `.skill-agent/learning.sqlite3`，独立于普通对话记忆。库中不复制完整命令、日志及源码；修复说明请勿填写敏感数据。可用 `python -m skill_agent.learning --project .` 列出全部记录；`--forget 编号` 撤销指定记录。关闭学习不会删除已有记录。
+
 ## 6. Web 前端
 
 ```bash
@@ -316,11 +326,12 @@ cd ~/TraitPilot          # 仓库根（含 skills/）
 - **停止按钮**：运行中「发送」按钮变「停止」，点按 abort 本次流并 `POST /api/cancel`，协作式终止当前轮次
   （拒绝所有待确认命令；已起的后台任务不被杀）。
 - **导出对话**：一键把消息与工具卡片导出为 Markdown 文件下载。
+- **后台任务与对话**：用 `Bash background=true` 启动后即可在原会话继续提问。任务结束且会话空闲时，Web 服务会自动汇报退出状态、检查结果和下一步；页面会补上两次轮询之间完成的汇报。汇报不会自动执行下一阶段。模型服务不可用时仍会显示已知状态、日志位置和核查建议。需保持 Web 服务运行。
 - **命令审批弹窗**：`权限=危险命令询问`（默认，仅危险命令弹）或 `每条命令询问`（== CLI 的 `ask`）；
   点「允许/拒绝」回复 `/api/confirm`，未答复即断开会自动拒绝并终止任务。
 - **默认只绑 `127.0.0.1`**。远程使用走 SSH 端口转发：
   `ssh -L 8787:127.0.0.1:8787 <server>`，再在本机浏览器打开。
-- **Web 默认开启 M13 持久化**（断线可按 sid 恢复）；`SKILL_AGENT_PERSIST=0` 可关。
+- **CLI 和 Web 默认开启 M13 持久化**（Web 断线可按 sid 恢复）；`persist: false` 或 `SKILL_AGENT_PERSIST=0` 可关。
 
 `run_web.py` 直接参数：`--host` `--port` `--project` `--cwd` `-m` `--permission` `--debug`。
 后端 API：`GET /api/config` `/api/usage` `/api/skills`；`POST /api/chat`(SSE) `/api/clear` `/api/confirm` `/api/cancel`。
@@ -329,7 +340,7 @@ cd ~/TraitPilot          # 仓库根（含 skills/）
 
 ## 7. 可选能力（harness 模块）
 
-**全部默认关，不开启时行为与改造前逐字节一致**——这是刻意设计（opt-in / fail-soft）。
+**内置功能默认开启**；按需在 `config.json` 中关闭。插件、Docker 隔离、备用模型和自定义预算需要单独配置。
 
 | 模块 | 能力 | 开启方式 |
 |---|---|---|
@@ -346,7 +357,7 @@ cd ~/TraitPilot          # 仓库根（含 skills/）
 | M11 幂等去重 | 同一次运行内有副作用工具只执行一次 | `--idempotency`（模式 `reuse`/`deny`） |
 | M12 摘要压缩 | 命中阈值时保留最近 K 条、更早压成结构化前情摘要 | `--summary-compact` |
 | M12 分层记忆 | core.md（稳定前缀）+ archival（SQLite FTS5 检索） | `--memory` |
-| M13 会话持久化 | 逐条消息落盘 + resume（修复悬挂 tool_use） | CLI `--persist`；Web 默认开 |
+| M13 会话持久化 | 逐条消息落盘 + resume（修复悬挂 tool_use） | CLI 和 Web 默认开 |
 | #6 可观测性 | 工具调用 trace jsonl | `--trace` |
 | #9 规划/todo | `TodoWrite` 工具，计划外部化 | `--todo` |
 | #11 检索 | `Search` / `RepoMap`（FTS5） | `--retrieval` |

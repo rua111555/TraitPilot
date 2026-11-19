@@ -152,6 +152,9 @@ def main(argv=None) -> int:
     if getattr(args, "index_dir", None):
         cfg.index_dir = args.index_dir
     registry = SkillRegistry(cfg.project, skills_dir=cfg.skills_dir)
+    if args.command == "list":
+        return _list(registry, args)
+
     pmodel = PermissionModel.from_config(cfg, cfg.cwd)
 
     # ---- M9：可选沙箱执行后端（默认 host，fail-soft 回退并提示） ----
@@ -162,7 +165,7 @@ def main(argv=None) -> int:
     elif cfg.sandbox != "host":
         print(f"[沙箱] 执行后端 = {sandbox_backend.name}", file=sys.stderr)
 
-    # ---- M11：可选幂等去重（默认关） ----
+    # ---- M11：按配置启用幂等去重 ----
     from .idempotency import IdempotencyGuard
     idem = IdempotencyGuard(enabled=cfg.idempotency, mode=cfg.idempotency_mode)
     if idem.enabled:
@@ -170,12 +173,12 @@ def main(argv=None) -> int:
 
     # ---- M10：可选 trace 钩子 ----
     hooks = None
-    if getattr(args, "trace", None):
+    if cfg.hooks_enabled or getattr(args, "trace", None):
         from .observability import build_trace_hooks
         from .session_store import new_session_id
         hooks = build_trace_hooks(getattr(cfg, "session_id", None) or new_session_id())
 
-    # ---- #11：可选检索索引（Search/RepoMap，默认关；--index-rebuild 强制重建） ----
+    # ---- #11：可选检索索引（Search/RepoMap；--index-rebuild 强制重建） ----
     retrieval = None
     if cfg.retrieval or getattr(args, "index_rebuild", None):
         from .retrieval import CodeIndex
@@ -227,9 +230,6 @@ def main(argv=None) -> int:
     if getattr(pmodel, "enabled", False):
         print(f"[权限] 结构化策略已启用：路径边界={pmodel.restrict_paths} "
               f"写审批={pmodel.write_approval} 规则={len(pmodel.rules)}", file=sys.stderr)
-
-    if args.command == "list":
-        return _list(registry, args)
 
     agent = Agent(cfg, registry, tools)
     if cfg.loop_guard:
@@ -348,7 +348,7 @@ def _oneshot(agent: Agent, cfg: Config, prompt: str) -> int:
 
 
 # ---------------- REPL ----------------
-COMMANDS = {"/exit", "/quit", "/clear", "/skills", "/active", "/help", "/model", "/permission", "/cost"}
+COMMANDS = {"/exit", "/quit", "/clear", "/skills", "/active", "/help", "/model", "/permission", "/cost", "/lessons"}
 
 
 def _repl(agent: Agent, cfg: Config, registry: SkillRegistry, tools: ToolSet) -> int:
@@ -404,7 +404,9 @@ def _handle_command(agent: Agent, cfg: Config, registry: SkillRegistry, line: st
     cmd, _, arg = parts[0], parts[0], (parts[1] if len(parts) > 1 else "")
     if cmd == "/help":
         print("命令：/exit 退出 · /clear 清空对话 · /skills 列技能 · /active 当前激活"
-              " · /drop <skill> 移除激活 · /model X 换模型 · /permission ask|auto · /cost 本轮用量")
+              " · /drop <skill> 移除激活 · /model X 换模型 · /permission ask|auto · /cost 本轮用量 · /lessons 错误经验")
+    elif cmd == "/lessons":
+        print(agent.learned_errors())
     elif cmd == "/clear":
         agent.clear()
         print("上下文已清空。")

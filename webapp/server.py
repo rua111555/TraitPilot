@@ -171,9 +171,13 @@ def api_session_messages(sid):
     from skill_agent.config import default_checkpoint_dir
     from skill_agent.session_store import SessionStore
     store = SessionStore(default_checkpoint_dir())
-    if not (store.exists(sid) or store.is_archived(sid)):
+    live = _sessions().get(sid)
+    if live and live.agent.store is None:
+        data = {"messages": list(live.agent.history)}
+    elif store.exists(sid) or store.is_archived(sid):
+        data = store.load_view(sid)
+    else:
         return jsonify({"ok": False, "error": "not found"}), 404
-    data = store.load_view(sid)             # 已做路径安全校验
     out = []
     for m in data.get("messages", []):
         role = m.get("role")
@@ -317,6 +321,7 @@ def api_session_run(sid):
     if r is None:
         return jsonify({"ok": True, "running": False, "run": None, "session": sid})
     snap = r.snapshot()
+    snap["last_bg_report"] = s.last_bg_report
     snap["ok"] = True
     return jsonify(snap)
 
@@ -348,6 +353,9 @@ def api_session_stream(sid):
 def _disk_prefix(sid: str) -> int:
     """本轮开始前该会话磁盘上已完成的消息条数（供前端拼接，避免重复渲染）。"""
     try:
+        live = _sessions().get(sid)
+        if live and live.agent.store is None:
+            return len(live.agent.history)
         from skill_agent.config import default_checkpoint_dir
         from skill_agent.session_store import SessionStore
         store = SessionStore(default_checkpoint_dir())

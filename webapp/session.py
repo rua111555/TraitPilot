@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import threading
 import time
 import uuid
@@ -56,6 +57,7 @@ class WebSession:
         self._run_lock = threading.Lock()    # 保护 run 的注册/交接（临界区内不做 I/O）
         # 后台任务（Bash background=true）：由看门狗轮询 pid，进程结束后主动起一轮汇报。
         self.bg_tasks: dict[str, dict] = {}
+        self.last_bg_report = None
         _safe_sid = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in session_id)
         self._bg_state_path = (Path.home() / ".skill-agent" / "bg" /
                                f"{_safe_sid}.json")
@@ -66,7 +68,7 @@ class WebSession:
         r = self.run
         return bool(r is not None and r.running)
 
-    def begin_run(self, message: str, prefix: int = 0) -> "Run | None":
+    def begin_run(self, message: str, prefix: int = 0, background_tasks=()) -> "Run | None":
         """在锁内一次性完成「判忙 + 注册 Run」，把 409 的竞争窗口关死。
 
         返回 None 表示该会话已有非终态 Run（调用方应回 409 并附当前 run 快照）。
@@ -78,6 +80,7 @@ class WebSession:
             self._turn += 1
             r = Run(self.id, message, turn_index=self._turn)
             r.prefix = prefix
+            r.background_tasks = background_tasks
             self.run = r
             self.cancel_event = r.cancel_event   # 线程与我们共用同一个取消事件
             return r
@@ -101,8 +104,10 @@ class WebSession:
             "task_id": tid,
             "log": str(meta.get("log") or ""),
             "pid_file": str(meta.get("pid_file") or ""),
+            "exit_file": str(meta.get("exit_file") or ""),
             "cmd": str(meta.get("cmd") or "")[:500],
             "started": time.time(),
+            "learning": meta.get("learning"),
             "notified": False,
         }
         self.save_bg_tasks()
@@ -197,11 +202,37 @@ class WebSession:
         """
         self.cancel_event = run.cancel_event
         try:
-            final = self.agent.answer(
-                run.prompt,
-                on_delta=lambda t: run.emit({"type": "text", "delta": t}),
-                on_thinking=lambda t: run.emit({"type": "thinking", "delta": t}),
-            )
+            tasks = run.background_tasks
+            if tasks:
+                from .bgwatch import BackgroundWatcher
+                if self.tools.learning:
+                    from skill_agent.tools import BG_ROOT
+                    for _, task, status in tasks:
+                        self.tools.learning.background(task, status, BG_ROOT)
+                self.tools.report_only = True
+            try:
+                final = self.agent.answer(
+                    run.prompt,
+                    on_delta=lambda t: run.emit({"type": "text", "delta": t}),
+                    on_thinking=lambda t: run.emit({"type": "thinking", "delta": t}),
+                )
+            except Exception:
+                if not tasks:
+                    raise
+                final = "未能生成详细解读。\n" + BackgroundWatcher.evidence(tasks)
+                self.agent.record_reply(final)
+            finally:
+                if tasks:
+                    self.tools.report_only = False
+            if tasks:
+                if not re.search(r"(?m)^\s*(?:[-*] +)?(?:\*\*)?下一步(?:\*\*)?[：:](?:\*\*)?\s*[^\s*]", final):
+                    extra = "\n\n" + BackgroundWatcher.next_step(tasks)
+                    self.agent.record_reply(extra)
+                    final += extra
+                for _, task, status in tasks:
+                    task.update(notified=True, result=status)
+                self.save_bg_tasks()
+                self.last_bg_report = run.run_id
             st = "cancelled" if run.cancel_event.is_set() else "done"
             run.finish(st, final=final, result={
                 "messages": len(self.agent.history),
@@ -254,11 +285,11 @@ def build_session(session_id: str, cfg, registry) -> WebSession:
     # M9：按配置选择沙箱执行后端（webapp 无 argparse，直接读 cfg；fail-soft 回退宿主）
     from skill_agent.sandbox import build_backend
     sandbox_backend, _sb_warn = build_backend(cfg)
-    # M11：按配置启用幂等去重（默认关）
+    # M11：按配置启用幂等去重
     from skill_agent.idempotency import IdempotencyGuard
     idem = IdempotencyGuard(enabled=bool(getattr(cfg, "idempotency", False)),
                             mode=getattr(cfg, "idempotency_mode", "reuse"))
-    # #11：按配置装配检索索引（默认关，不挂载 Search/RepoMap）
+    # #11：按配置装配检索索引（Search/RepoMap）
     _retrieval = None
     if bool(getattr(cfg, "retrieval", False)):
         from pathlib import Path
@@ -279,6 +310,10 @@ def build_session(session_id: str, cfg, registry) -> WebSession:
         sandbox=sandbox_backend, idempotency=idem,
         enable_todo=bool(getattr(cfg, "todo", False)),
         enable_retrieval=bool(getattr(cfg, "retrieval", False)), retrieval=_retrieval)
+    if cfg.plugin_dirs:
+        from skill_agent.registry import load_plugin_dir
+        for directory in cfg.plugin_dirs:
+            load_plugin_dir(session.tools.registry_tools, directory, allow=cfg.plugin_allow)
     session.tools.on_bg_start = session.register_bg_task
     session.load_bg_tasks()
     agent = Agent(cfg, registry, session.tools)
@@ -288,9 +323,8 @@ def build_session(session_id: str, cfg, registry) -> WebSession:
         from skill_agent.loopguard import LoopGuard
         agent.loopguard = LoopGuard(enabled=True, warn=cfg.loop_warn, halt=cfg.loop_halt)
 
-    # M13：网页默认持久化，支持断线后按 sid 恢复（可用 SKILL_AGENT_PERSIST=0 关闭）
-    import os as _os
-    if _os.environ.get("SKILL_AGENT_PERSIST", "1") != "0":
+    # M13：与 CLI 共用配置，支持断线后按 sid 恢复。
+    if cfg.persist:
         store = SessionStore(default_checkpoint_dir())
         if not store.exists(session_id):
             store.append_meta(session_id, {"model": cfg.model, "permission": cfg.permission,
@@ -305,14 +339,14 @@ def build_session(session_id: str, cfg, registry) -> WebSession:
 
     # M12：按配置装配记忆/压缩
     if cfg.memory_enabled:
-        from skill_agent.compaction import SummaryCompressor
         from skill_agent.config import default_memory_dir
         from skill_agent.memory import MemoryStore
         agent.memory = MemoryStore(default_memory_dir(cfg.project))
-        if cfg.summary_compaction:
-            agent.summary_compressor = SummaryCompressor()
-            from skill_agent.session import _make_summarizer
-            agent.summarize = _make_summarizer(cfg)
+    if cfg.summary_compaction:
+        from skill_agent.compaction import SummaryCompressor
+        from skill_agent.session import _make_summarizer
+        agent.summary_compressor = SummaryCompressor()
+        agent.summarize = _make_summarizer(cfg)
 
     session.agent = agent
     return session

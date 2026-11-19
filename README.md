@@ -35,24 +35,94 @@ python run_web.py
 
 习惯命令行可以改用 `python run.py chat`；配置好凭证后，`python run.py list` 可检查有哪些技能被识别。`python run.py --version` 可查看版本。
 
-## 跑真实分析：按工作流部署
+## 默认功能
 
-克隆仓库可以获得 Agent 和技能定义。执行分析时，按选用的工作流补齐工具与数据：
+Web 和命令行默认开启检索（`Search` / `RepoMap`）、任务清单、项目记忆、上下文摘要、会话保存与恢复、只读工具并行、循环保护、重复执行防护、超长输出落盘、工具追踪、提示缓存和错误学习。Web 的后台任务默认支持继续对话；任务完成后会回传结果，并提示下一步。用 `/lessons` 查看当前项目积累的错误经验。
 
-| 目标 | 额外依赖与输入 |
-| --- | --- |
-| WGS 分析 | `Agent` Conda 环境中的 BWA、SAMtools、BCFtools 等工具，以及参考基因组和 FASTQ 等输入。 |
-| GWAS | `r-gwas` 环境、按步骤选用的 PLINK / GEMMA 等工具，以及基因型、表型和所需协变量。 |
-| 表型提取 | `Phenotype` 环境、表型图片及模型权重。权重未随仓库分发，需单独准备并配置路径。 |
+文件工具默认限制访问路径，`Write` 和 `Edit` 默认需要确认。分析数据在仓库之外时，将可信的数据目录加入 `config.json` 的 `permission_roots`（下节有示例）。安装后可以在 `config.json` 将任一功能开关设为 `false`；**升级已有项目时保留原配置和凭证，把想启用的旧 `false` 改为 `true`，或删除对应键以采用新默认值**。修改后重启 Web 或重新启动 CLI。会话、长输出和工具追踪的文件写在 `~/.skill-agent/` 下；项目记忆、索引和错误经验保存在项目内的 `.skill-agent/`。
 
-具体版本、安装步骤、数据库与数据路径配置见[完整部署指南](environment/README.md)。先查看可选安装项，按指南装好所需组件后再检查：
+默认用 `host` 执行分析命令，便于直接调用本机的 Conda 环境。Docker 沙箱、额外插件和备用模型需要配置相应的环境、目录或模型 ID。模型端点如果明确拒绝提示缓存字段，Agent 会去掉该字段重试；缺少 SQLite FTS5 时，检索不可用。
+
+## 跑真实分析：安装依赖并准备数据
+
+以下命令面向 Linux x86_64，从仓库根目录执行。先安装并初始化 Conda，确认终端能运行 `conda --version`。安装器默认逐项确认，`--list` 可查看版本与安装项：
 
 ```bash
 bash environment/install.sh --list
-bash environment/check_env.sh          # 检查已装工具及相关资源
 ```
 
-能打开页面和列出技能，说明 Agent 本体已启动。分析环境是否齐备，以所选工作流的工具和输入检查为准。
+为当前分析设置数据路径。把示例路径换成自己的路径：
+
+```bash
+export GENO_DIR=/path/to/genomics_data
+export PIPELINE_DB="$GENO_DIR/pipeline.db"
+export IMAGE_DIR=/path/to/phenotype_images  # 只跑 WGS / GWAS 可省略
+export PATH="$HOME/.local/bin:$PATH"         # GWAS 独立程序的安装位置
+```
+
+如果希望这些路径随项目启动，也可以把 `GENO_DIR`、`PIPELINE_DB` 和 `IMAGE_DIR` 写入 `config.json` 的 `env`。以下是配置片段，请合并到现有 `config.json`，保留模型和凭证：
+
+```json
+{
+  "permission_roots": ["/path/to/genomics_data", "/path/to/phenotype_images"],
+  "env": {
+    "GENO_DIR": "/path/to/genomics_data",
+    "PIPELINE_DB": "/path/to/genomics_data/pipeline.db",
+    "IMAGE_DIR": "/path/to/phenotype_images"
+  }
+}
+```
+
+### WGS：从 FASTQ 开始
+
+```bash
+bash environment/install.sh --only agent
+conda run -n Agent samtools --version
+conda run -n Agent bcftools --version
+conda run -n Agent python skills/wgs-expressive-pipeline/scripts/db_query.py --action query-ref
+```
+
+`Agent` 环境包含 BWA、SAMtools、BCFtools、GATK 等工具。准备双端 FASTQ、物种匹配的参考 FASTA 与所需索引（如 `.fai`、`.dict`），若使用 BQSR 还需准备已知位点 VCF。使用 `wgs-expressive-pipeline` 前，需要提供项目数据库 `pipeline.db`，并在 `reference_genome` 和 `fastq_samples` 中登记文件路径与样本编号，并在 `pipeline_config` 中配置管线所需参数。安装器不生成数据库或输入数据；上面的查询应返回参考基因组记录。参见 [WGS 工作流的数据布局](skills/wgs-expressive-pipeline/references/workflow.md)。再用同一脚本的 `--action query-samples --samples 101` 检查样本（用你自己的编号替换 `101`）。
+
+在 Agent 中调用 `wgs-expressive-pipeline`，给出已登记的样本编号，先检查它生成的运行参数和脚本，再确认执行。
+
+### GWAS：从过滤后的 VCF 或 PLINK 文件开始
+
+```bash
+bash environment/install.sh --only agent  # 已装 WGS 环境可跳过
+bash environment/install.sh --only rgwas
+bash environment/install.sh --only bins
+bash environment/install.sh --only tools
+conda run -n Agent plink --version
+conda run -n r-gwas Rscript -e 'library(rMVP); library(CMplot)'
+command -v gemma gcta64
+```
+
+准备过滤后的 VCF，或已有的 PLINK `.bed/.bim/.fam` 文件前缀，以及含样本 ID 的表型表。有协变量时一起提供，确认样本 ID 与基因型文件一致。安装分组会准备 PLINK、R 关联与作图包，以及 GEMMA、GCTA 和 LD 分析工具。独立工具安装在 `~/.local/bin`；如果 Agent 从另一个终端启动，给那个终端也设置 `PATH`。
+
+在 Agent 中调用 `gwas-pipeline`，给出基因型、表型和可选协变量路径，请它先检查样本对齐并生成阶段脚本。
+
+### 表型提取：从已登记的样本图片开始
+
+```bash
+bash environment/install.sh --only pheno --cpu  # 用 GPU 时省略 --cpu
+conda run -n Phenotype python skills/phenotype-extract/scripts/phenotype_extract.py
+```
+
+第二条命令列出已接入的表型。以肌内脂肪（IMF）为例：
+
+1. 在 `pipeline.db` 的 `sample_images` 表登记样本与图片路径，确认 Agent 所在机器可以读取这些图片。
+2. 单独准备训练好的 `best_model.pth`。仓库不附带该权重。确保 `models` 表存在名为 `imf_mask2former` 的记录，且 `model_path` 指向该权重的本机绝对路径。
+3. 准备 Mask2Former 骨架模型 `facebook/mask2former-swin-small-ade-semantic` 的缓存。若网络可访问模型源，可在首次小样本运行时加 `--allow-download`。先用少量图片验证，再跑完整数据：
+
+```bash
+conda run -n Phenotype python skills/phenotype-extract/scripts/phenotype_extract.py \
+  --pheno IMF --db "$PIPELINE_DB" --device cpu --limit 10
+```
+
+GPU 环境可改为 `--device cuda:0`。需要按基因型样本顺序输出时，可用 `--fam` 指定 `.fam` 文件。
+
+安装完可用 `bash environment/check_env.sh` 检查；只装一条工作流时，其他工作流出现缺件提示是正常的。完整依赖版本、数据库与路径约定见[部署指南](environment/README.md)。
 
 ## 常用命令
 
@@ -107,8 +177,8 @@ python run.py chat -p "列出 phenotype-extract 提供哪些表型"
 | `--config <file>` | 显式 `config.json` 路径（默认 `<project>/config.json` 或 `./config.json`） |
 | `--cwd <dir>` | Bash 等工具的执行目录（默认=项目根） |
 | `--permission auto\|ask` | `auto`（默认）：危险命令仅告警；`ask`：每个 Bash 先询问 |
-| `--restrict-paths` | 启用工作区路径边界（越界拒绝；默认关）|
-| `--write-approval` | 把 Write/Edit 纳入审批门（默认关）|
+| `--restrict-paths` | 启用工作区路径边界（越界拒绝；默认开）|
+| `--write-approval` | 把 Write/Edit 纳入审批门（默认开）|
 | `--no-stream` | 关闭流式输出 |
 | `list --json` | 以 JSON 导出技能清单（含 allowed-tools / 是否可自动调用） |
 
@@ -122,23 +192,23 @@ REPL 内命令：`/help` `/clear` `/skills` `/active` `/model X` `/permission as
 | M6 输入校验 | executor 前按 `input_schema` 校验 required/type/enum，畸形参数结构化报错 | 恒开（宽容优先） |
 | M1a 用量采集 | 累计 token/延迟，emit `usage` 事件，`/cost` + `GET /api/usage` | 恒开（纯被动） |
 | M3a 进展信号 | `ToolResult.meta` 填充 exit_code/size/mtime/pid_alive 等（只记不判） | 恒开 |
-| M8a 权限模型 | allow/deny/ask 规则表、工作区路径边界、写审批 | 默认关，`--restrict-paths`/`--write-approval` 或 `SKILL_AGENT_RESTRICT_PATHS`/`SKILL_AGENT_WRITE_APPROVAL` 开启 |
-| M12 摘要压缩 | 命中阈值时保留最近 K 条、更早区间压成结构化前情摘要（保留阶段号/参数/路径/pid/审批结论） | 默认关，`--summary-compact` 或 `SKILL_AGENT_SUMMARY_COMPACTION=1` |
-| M12 分层记忆 | core.md（稳定前缀）+ archival（SQLite FTS5 检索，注入尾部） | 默认关，`--memory` 或 `SKILL_AGENT_MEMORY=1` |
-| M13 会话持久化 | 逐条消息落盘（append-only jsonl），恢复时修复悬挂 tool_use 并截到安全边界 | CLI `--persist`；Web 默认开（`SKILL_AGENT_PERSIST=0` 关）|
+| M8a 权限模型 | allow/deny/ask 规则表、工作区路径边界、写审批 | 默认开；`restrict_paths` / `write_approval` 可分别关闭 |
+| M12 摘要压缩 | 命中阈值时保留最近 K 条、更早区间压成结构化前情摘要（保留阶段号/参数/路径/pid/审批结论） | 默认开；`summary_compaction: false` 可关闭 |
+| M12 分层记忆 | core.md（稳定前缀）+ archival（SQLite FTS5 检索，注入尾部） | 默认开；`memory: false` 可关闭 |
+| M13 会话持久化 | 逐条消息落盘（append-only jsonl），恢复时修复悬挂 tool_use 并截到安全边界 | CLI 和 Web 默认开；`persist: false` 可关闭（`SKILL_AGENT_PERSIST=0` 关）|
 | M2 终止契约 | `stop_reason` 分类→决策（continue/repair_truncation/pause_turn/refuse/finalize），透出终止原因 | 恒开（更严格，含截断修复）|
 | M1b 预算熔断 | 轮次/墙钟时长/输出 token 上限，发请求前熔断，到点只停调用不杀后台 | 默认不限，`--max-turns`/`--max-seconds`/`--max-output-tokens` |
-| M3 死循环熔断 | 无进展循环检测（动作/观测指纹 + meta 进展信号），轮询工具白名单 | 默认关，`--loop-guard` 或 `SKILL_AGENT_LOOP_GUARD=1` |
+| M3 死循环熔断 | 无进展循环检测（动作/观测指纹 + meta 进展信号），轮询工具白名单 | 默认开；`loop_guard: false` 可关闭 |
 | M4 工具注册表 | 工具以数据登记、可运行时挂载；声明式插件目录（`*.json` 规格） | `--plugin-dir DIR`（默认不加载，防扩大执行面）|
 | M10 钩子 | PreToolUse（可阻断/改参）/ PostToolUse（可脱敏）/ 会话事件钩子 | 代码注入 `HookManager`；`--trace` 用示例钩子落盘 |
 | #6 可观测性 | 工具调用 trace（工具名/参数摘要/耗时/结果）jsonl | `--trace` 或 `SKILL_AGENT_HOOKS=1` |
-| M7 工具治理 | per-tool 看门狗超时；超长结果落盘转存（可继续 Read）；同轮只读工具并行 | `--spill` / `--parallel-tools`（默认关）|
+| M7 工具治理 | per-tool 看门狗超时；超长结果落盘转存（可继续 Read）；同轮只读工具并行 | `--spill` / `--parallel-tools`（默认开）|
 | M9 沙箱 | Bash 执行后端三档：宿主 / stdlib rlimit / docker 强隔离；缺依赖 fail-soft 回退宿主 | 默认 `host`；`--sandbox rlimit\|docker` 或 `SKILL_AGENT_SANDBOX` |
-| M11 幂等去重 | 同一次运行内相同「有副作用」工具调用（Bash/Write/Edit）只执行一次，防重复起后台/重复写 | 默认关，`--idempotency` 或 `SKILL_AGENT_IDEMPOTENCY=1`（模式 `reuse`/`deny`）|
-| #9 规划/todo | `TodoWrite` 工具把计划外部化为结构化清单（单一 in_progress），长任务可检查 | 默认关，`--todo` 或 `SKILL_AGENT_TODO=1` |
-| #14 prompt cache | 给稳定前缀（system + 工具定义末尾）打 `cache_control: ephemeral` | 默认关，`--prompt-cache` 或 `SKILL_AGENT_PROMPT_CACHE=1` |
+| M11 幂等去重 | 同一次运行内相同「有副作用」工具调用（Bash/Write/Edit）只执行一次，防重复起后台/重复写 | 默认开；`idempotency: false` 可关闭|
+| #9 规划/todo | `TodoWrite` 工具把计划外部化为结构化清单（单一 in_progress），长任务可检查 | 默认开；`todo: false` 可关闭 |
+| #14 prompt cache | 给稳定前缀（system + 工具定义末尾）打 `cache_control: ephemeral` | 默认开；`prompt_cache: false` 可关闭 |
 | #12 模型降级 | 过载重试耗尽后按列表依次切换后备模型 | 默认无，`--fallback-models M1,M2` 或 `SKILL_AGENT_FALLBACK_MODELS=M1,M2` |
-| #11 检索 | `Search`（FTS5/BM25 相关性检索，返回 文件:行号+片段）+ `RepoMap`（类/函数/方法/标题大纲）；纯 stdlib，语料=`skills/` 文档 + `skill_agent/`、`webapp/` 源码 | 默认关，`--retrieval` 或 `SKILL_AGENT_RETRIEVAL=1`；`--index-rebuild` 强制重建 |
+| #11 检索 | `Search`（FTS5/BM25 相关性检索，返回 文件:行号+片段）+ `RepoMap`（类/函数/方法/标题大纲）；纯 stdlib，语料=`skills/` 文档 + `skill_agent/`、`webapp/` 源码 | 默认开；`retrieval: false` 可关闭；`--index-rebuild` 强制重建 |
 
 ### 扩展工具（M4）
 
@@ -229,10 +299,10 @@ agent/                        # 本目录即仓库根，也是「项目根」（
 │   ├── config.py           # 配置：环境变量 → config.json → 默认值（不依赖 Claude Code）
 │   ├── skills.py           # SkillRegistry：扫描 skills/、解析 SKILL.md frontmatter
 │   ├── tools.py            # 工具执行器 + 权限门 + 后台任务（Bash background=true）
-│   ├── sandbox.py          # M9：Bash 执行后端（host/rlimit/docker），纯 stdlib、默认关
-│   ├── idempotency.py      # M11：工具幂等去重（有副作用工具、run 级、默认关）
-│   ├── todo.py             # #9：计划外部化（TodoWrite，默认关）
-│   ├── retrieval.py        # #11：FTS5 检索（Search/RepoMap），纯 stdlib、默认关
+│   ├── sandbox.py          # M9：Bash 执行后端（host/rlimit/docker），默认 host
+│   ├── idempotency.py      # M11：工具幂等去重（有副作用工具、run 级）
+│   ├── todo.py             # #9：计划外部化（TodoWrite）
+│   ├── retrieval.py        # #11：FTS5 检索（Search/RepoMap）
 │   ├── client.py           # Anthropic Messages API 客户端（SSE 流式 + 重试回退）
 │   ├── agent.py            # agentic 循环：tool_use → 执行 → 续推；context 压缩；事件/取消钩子
 │   └── cli.py              # list / chat / 会话日志
@@ -258,7 +328,7 @@ agent/                        # 本目录即仓库根，也是「项目根」（
 
 `Skill` · `Bash`（支持 `background=true` → nohup + 日志，配合管线的 `.done/.pid` 机制）
 · `Read` · `Write` · `Edit` · `Glob` · `Grep`（优先 rg）· `TaskOutput`（读后台日志）。
-可选挂载：`TodoWrite`（`--todo`）、`Search`/`RepoMap`（`--retrieval`）、插件工具（`--plugin-dir`）。
+默认还提供 `TodoWrite`、`Search` / `RepoMap`；额外插件用 `--plugin-dir` 或 `plugin_dirs` 配置。
 
 ## 安全与健壮性
 

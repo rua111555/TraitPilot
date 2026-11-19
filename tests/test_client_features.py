@@ -208,3 +208,22 @@ def test_exhausted_502_message_is_actionable(monkeypatch):
     assert "将自动重试" not in msg
     assert "上游网关" in msg and "base_url" in msg
     assert ei.value.retryable is False
+
+
+def test_cache_rejection_retries_without_cache_fields(monkeypatch):
+    c = _client(prompt_cache=True)
+    attempted = []
+
+    def attempt(payload, *args):
+        attempted.append(payload)
+        if len(attempted) == 1:
+            raise APIError("unsupported field: cache_control", status=400)
+        return [{"type": "text", "text": "ok"}], "end_turn", 1
+
+    monkeypatch.setattr(c, "_attempt", attempt)
+    tools = [{"name": "Read", "input_schema": {"type": "object"}}]
+    assert c.create(system="system", tools=tools, messages=[], stream=False)[2] == 1
+    assert "cache_control" in attempted[0]["tools"][-1]
+    assert attempted[1]["system"] == "system" and attempted[1]["tools"] == tools
+    c.create(system="system", tools=tools, messages=[], stream=False)
+    assert attempted[2] == attempted[1]

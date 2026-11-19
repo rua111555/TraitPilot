@@ -4,7 +4,7 @@
 （工具名 / 参数摘要 / 结果或错误 / 耗时）和每轮用量以 jsonl 追加到
 ``~/.skill-agent/traces/<sid>.jsonl``。纯观测、非阻断；钩子异常已被 HookManager 吞掉。
 
-**默认不启用**（CLI ``--trace`` 开启），因为写盘有 I/O 成本。
+CLI 和 Web 默认启用，可设置 ``trace: false`` 关闭本地工具追踪。
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from .hooks import HookManager
 
 def trace_dir() -> Path:
     d = Path.home() / ".skill-agent" / "traces"
-    d.mkdir(parents=True, exist_ok=True)
+    d.mkdir(mode=0o700, parents=True, exist_ok=True)
     return d
 
 

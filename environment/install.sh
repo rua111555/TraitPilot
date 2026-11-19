@@ -282,12 +282,12 @@ do_pheno() {
 # ────────────────────────────── 5. 独立二进制 ───────────────────────────────
 do_bins() {
   step "⑤ 本地额外软件 —— 独立二进制（装到 $BIN_DIR）"
-  mkdir -p "$BIN_DIR"
-  local src="$HOME/.local/src"; mkdir -p "$src"
   if [ "$DRY" = 1 ]; then
     for k in "${!BIN_URL[@]}"; do echo "  [dry-run] $k ← ${BIN_URL[$k]}"; done
     return
   fi
+  mkdir -p "$BIN_DIR"
+  local src="$HOME/.local/src"; mkdir -p "$src"
 
   # GEMMA —— 静态二进制，解压即用
   if ! command -v gemma >/dev/null 2>&1; then

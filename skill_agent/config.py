@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 DEFAULT_MODEL = "claude-opus-4-5"
@@ -48,7 +48,7 @@ def _apply_file_overrides(cfg: "Config", data: dict, env_keys: set | None = None
     """把 config.json 里的键覆盖到 Config（仅出现才覆盖；类型非法则忽略该键）。
 
     支持全部可选能力开关，使 config.json 成为单一控制面板。
-    便捷键：``spill: true`` → 默认落盘目录；``trace: true`` → 启用示例 trace 钩子。
+    ``spill: false`` 关闭结果落盘；``trace`` 是 ``hooks_enabled`` 的便捷别名。
 
     ``env_keys``：这些键**已经由环境变量给出**，config.json 不得再覆盖它们。
     优先级口径是「CLI > 环境变量 > config.json > 代码默认」，而 ``Config.load`` 是先把
@@ -127,6 +127,7 @@ def _apply_file_overrides(cfg: "Config", data: dict, env_keys: set | None = None
     # —— M12 上下文与记忆 ——
     _bool("summary_compaction")
     _bool("memory", "memory_enabled")
+    _bool("error_learning")
     _str("summary_model")
 
     # —— M13 / M1b 预算 ——
@@ -144,16 +145,15 @@ def _apply_file_overrides(cfg: "Config", data: dict, env_keys: set | None = None
     # —— M4 插件 / M10 钩子 ——
     _list("plugin_dirs")
     _list("plugin_allow")
-    _bool("hooks_enabled", "hooks_enabled")
-    if data.get("trace") is True and not _skip("hooks_enabled"):
-        cfg.hooks_enabled = True
+    _bool("trace", "hooks_enabled")
+    _bool("hooks_enabled")
 
     # —— M7 工具治理 ——
     _str("spill_dir")
     _int("spill_threshold")
     _bool("parallel_tools")
-    if data.get("spill") is True and not cfg.spill_dir and not _skip("spill_dir"):
-        cfg.spill_dir = str(default_spill_dir())
+    if data.get("spill") is False and not _skip("spill_dir"):
+        cfg.spill_dir = None
 
     # —— M9 沙箱 ——
     if data.get("sandbox") in ("host", "rlimit", "docker") and not _skip("sandbox"):
@@ -201,47 +201,48 @@ class Config:
     stream: bool = True
     verbose: bool = False
     session_log: Path | None = None
-    # M8a 结构化权限（默认全部关闭 → 行为与改造前一致）
-    restrict_paths: bool = False           # 工作区路径边界
+    # M8a 结构化权限（文件操作路径边界及写入审批默认开启）
+    restrict_paths: bool = True           # 工作区路径边界
     permission_roots: list | None = None   # 额外允许根
     extra_roots: list | None = None        # 系统必要路径白名单（如 ~/.claude）
-    write_approval: bool = False           # 把 Write/Edit 纳入审批
+    write_approval: bool = True           # 把 Write/Edit 纳入审批
     permission_rules: list | None = None   # [{tool, match, action}]
-    # M12 上下文压缩 / 分层记忆（默认关）
-    summary_compaction: bool = False       # 摘要式压缩（需注入 summary 模型调用）
-    memory_enabled: bool = False           # core + archival 记忆
+    # M12 上下文压缩 / 分层记忆
+    summary_compaction: bool = True       # 摘要式压缩（需注入 summary 模型调用）
+    memory_enabled: bool = True           # core + archival 记忆
+    error_learning: bool = True
     summary_model: str | None = None       # 用于生成摘要的模型（默认同主模型）
-    # M13 会话持久化（默认关）
-    persist: bool = False                  # 逐条消息落盘 + 支持 resume
+    # M13 会话持久化
+    persist: bool = True                  # 逐条消息落盘 + 支持 resume
     session_id: str | None = None
     # M1b 预算熔断（默认 None/0 = 不限制 → 行为与改造前一致）
     max_turns: int | None = None           # 覆盖内置 MAX_TURNS
     max_output_tokens: int | None = None   # 本轮累计输出 token 上限
     max_seconds: int | None = None         # 本轮墙钟时长上限（秒）
     warn_ratio: float = 0.8                # 达到上限的此比例时发一次提醒
-    # M3 死循环熔断（默认关）
-    loop_guard: bool = False
+    # M3 死循环熔断
+    loop_guard: bool = True
     loop_warn: int = 3                     # 连续无进展达此次数 → 注入纠偏提示
     loop_halt: int = 6                     # 连续无进展达此次数 → 熔断
-    # M4 可插拔工具 / M10 钩子（默认关）
+    # M4 可插拔工具 / M10 钩子
     plugin_dirs: list | None = None        # 扩展工具规格目录（*.json）
     plugin_allow: list | None = None       # 只加载这些插件工具名（None=全部）
-    hooks_enabled: bool = False            # 预留：外部钩子由调用方注入 HookManager
-    # M7 工具治理（默认关）
-    spill_dir: str | None = None           # 超长工具结果落盘目录（None=不落盘）
+    hooks_enabled: bool = True            # 本地工具调用追踪
+    # M7 工具治理
+    spill_dir: str | None = field(default_factory=lambda: str(default_spill_dir()))
     spill_threshold: int = 30_000          # 超过此字符数才落盘
-    parallel_tools: bool = False           # 同轮只读工具并行执行
+    parallel_tools: bool = True           # 同轮只读工具并行执行
     # M9 沙箱执行后端（默认 host → 与改造前逐字节一致）
     sandbox: str = "host"                  # host | rlimit | docker
     sandbox_spec: dict | None = None       # rlimit/docker 档位参数（上限/镜像/挂载等）
     sandbox_strict: bool = False           # 档位不可用时 fail-closed（默认 fail-open 回宿主）
-    # M11 工具幂等去重（默认关）
-    idempotency: bool = False              # 同一次运行内相同副作用调用只执行一次
+    # M11 工具幂等去重
+    idempotency: bool = True              # 同一次运行内相同副作用调用只执行一次
     idempotency_mode: str = "reuse"        # reuse=复用上次结果 | deny=拒绝重放
-    # #9 规划/todo（默认关，挂载 TodoWrite 工具）
-    todo: bool = False
-    # #14 prompt caching（默认关；给 system/工具定义打 cache_control）
-    prompt_cache: bool = False
+    # #9 规划/todo（挂载 TodoWrite 工具）
+    todo: bool = True
+    # #14 prompt caching（给 system/工具定义打 cache_control）
+    prompt_cache: bool = True
     # 上下文上限（token）。留空则用 agent.CONTEXT_LIMIT_FALLBACK（实测中转 286,720）。
     # 该值只用于**决定何时压缩上下文**，不参与请求参数。
     context_limit: int | None = None
@@ -249,8 +250,8 @@ class Config:
     max_turn_extensions: int | None = None
     # #12 模型路由/降级（默认空 = 不切换后备模型）
     fallback_models: list | None = None
-    # #11 检索（Search/RepoMap，FTS5，默认关）
-    retrieval: bool = False                # 挂载检索工具
+    # #11 检索（Search/RepoMap，FTS5）
+    retrieval: bool = True                # 挂载检索工具
     retrieval_roots: list | None = None    # 覆盖索引语料根（默认 skills + agent 源码）
     retrieval_excludes: list | None = None  # 追加排除目录名/文件
     index_dir: str | None = None           # 覆盖索引目录（默认 <project>/.skill-agent/index）
@@ -315,33 +316,34 @@ class Config:
                         or "auto"),
             stream=True if stream is None else stream,
             verbose=verbose,
-            restrict_paths=_env_bool("SKILL_AGENT_RESTRICT_PATHS"),
-            write_approval=_env_bool("SKILL_AGENT_WRITE_APPROVAL"),
-            summary_compaction=_env_bool("SKILL_AGENT_SUMMARY_COMPACTION"),
-            memory_enabled=_env_bool("SKILL_AGENT_MEMORY"),
+            restrict_paths=_env_bool("SKILL_AGENT_RESTRICT_PATHS", cls.restrict_paths),
+            write_approval=_env_bool("SKILL_AGENT_WRITE_APPROVAL", cls.write_approval),
+            summary_compaction=_env_bool("SKILL_AGENT_SUMMARY_COMPACTION", cls.summary_compaction),
+            memory_enabled=_env_bool("SKILL_AGENT_MEMORY", cls.memory_enabled),
+            error_learning=_env_bool("SKILL_AGENT_ERROR_LEARNING", cls.error_learning),
             summary_model=os.environ.get("SKILL_AGENT_SUMMARY_MODEL") or None,
-            persist=_env_bool("SKILL_AGENT_PERSIST"),
+            persist=_env_bool("SKILL_AGENT_PERSIST", cls.persist),
             session_id=os.environ.get("SKILL_AGENT_SESSION_ID") or None,
             max_turns=_env_int("SKILL_AGENT_MAX_TURNS", max_turns),
             max_output_tokens=_env_int("SKILL_AGENT_MAX_OUTPUT_TOKENS"),
             max_seconds=_env_int("SKILL_AGENT_MAX_SECONDS"),
             context_limit=_env_int("SKILL_AGENT_CONTEXT_LIMIT"),
             max_turn_extensions=_env_int("SKILL_AGENT_MAX_TURN_EXTENSIONS"),
-            loop_guard=_env_bool("SKILL_AGENT_LOOP_GUARD"),
+            loop_guard=_env_bool("SKILL_AGENT_LOOP_GUARD", cls.loop_guard),
             plugin_dirs=_env_list("SKILL_AGENT_PLUGIN_DIRS"),
-            hooks_enabled=_env_bool("SKILL_AGENT_HOOKS"),
+            hooks_enabled=_env_bool("SKILL_AGENT_HOOKS", cls.hooks_enabled),
             spill_dir=(os.environ.get("SKILL_AGENT_SPILL_DIR")
-                       or (str(default_spill_dir()) if _env_bool("SKILL_AGENT_SPILL") else None)),
-            parallel_tools=_env_bool("SKILL_AGENT_PARALLEL_TOOLS"),
+                       or (str(default_spill_dir()) if _env_bool("SKILL_AGENT_SPILL", True) else None)),
+            parallel_tools=_env_bool("SKILL_AGENT_PARALLEL_TOOLS", cls.parallel_tools),
             sandbox=os.environ.get("SKILL_AGENT_SANDBOX", "host"),
             sandbox_spec=_env_json("SKILL_AGENT_SANDBOX_SPEC"),
             sandbox_strict=_env_bool("SKILL_AGENT_SANDBOX_STRICT"),
-            idempotency=_env_bool("SKILL_AGENT_IDEMPOTENCY"),
+            idempotency=_env_bool("SKILL_AGENT_IDEMPOTENCY", cls.idempotency),
             idempotency_mode=os.environ.get("SKILL_AGENT_IDEMPOTENCY_MODE", "reuse"),
-            todo=_env_bool("SKILL_AGENT_TODO"),
-            prompt_cache=_env_bool("SKILL_AGENT_PROMPT_CACHE"),
+            todo=_env_bool("SKILL_AGENT_TODO", cls.todo),
+            prompt_cache=_env_bool("SKILL_AGENT_PROMPT_CACHE", cls.prompt_cache),
             fallback_models=_env_list("SKILL_AGENT_FALLBACK_MODELS", sep=","),
-            retrieval=_env_bool("SKILL_AGENT_RETRIEVAL"),
+            retrieval=_env_bool("SKILL_AGENT_RETRIEVAL", cls.retrieval),
             retrieval_roots=_env_list("SKILL_AGENT_INDEX_ROOTS"),
             retrieval_excludes=_env_list("SKILL_AGENT_INDEX_EXCLUDES"),
             index_dir=os.environ.get("SKILL_AGENT_INDEX_DIR") or None,
@@ -354,6 +356,7 @@ class Config:
                 ("SKILL_AGENT_WRITE_APPROVAL", "write_approval"),
                 ("SKILL_AGENT_SUMMARY_COMPACTION", "summary_compaction"),
                 ("SKILL_AGENT_MEMORY", "memory_enabled"),
+                ("SKILL_AGENT_ERROR_LEARNING", "error_learning"),
                 ("SKILL_AGENT_SUMMARY_MODEL", "summary_model"),
                 ("SKILL_AGENT_PERSIST", "persist"),
                 ("SKILL_AGENT_MAX_TURNS", "max_turns"),
@@ -365,6 +368,7 @@ class Config:
                 ("SKILL_AGENT_PLUGIN_DIRS", "plugin_dirs"),
                 ("SKILL_AGENT_HOOKS", "hooks_enabled"),
                 ("SKILL_AGENT_SPILL_DIR", "spill_dir"),
+                ("SKILL_AGENT_SPILL", "spill_dir"),
                 ("SKILL_AGENT_PARALLEL_TOOLS", "parallel_tools"),
                 ("SKILL_AGENT_SANDBOX", "sandbox"),
                 ("SKILL_AGENT_SANDBOX_SPEC", "sandbox_spec"),
@@ -440,14 +444,14 @@ def default_skills_dir(project: Path) -> Path:
 
 def default_session_dir() -> Path:
     d = Path.home() / ".skill-agent" / "sessions"
-    d.mkdir(parents=True, exist_ok=True)
+    d.mkdir(mode=0o700, parents=True, exist_ok=True)
     return d
 
 
 def default_checkpoint_dir() -> Path:
     """M13：会话 checkpoint 存储目录。"""
     d = Path.home() / ".skill-agent" / "contexts"
-    d.mkdir(parents=True, exist_ok=True)
+    d.mkdir(mode=0o700, parents=True, exist_ok=True)
     return d
 
 
@@ -463,6 +467,4 @@ def default_index_dir(project: Path) -> Path:
 
 def default_spill_dir() -> Path:
     """M7：超长工具结果落盘目录。"""
-    d = Path.home() / ".skill-agent" / "spill"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return Path.home() / ".skill-agent" / "spill"

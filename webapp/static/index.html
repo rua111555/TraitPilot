@@ -358,6 +358,7 @@ const runs = new Map();
 /* 左栏高亮 / 当前正在查看的会话 id。必须与 runs 一起声明在文件前部：
    setRun() 会读它来决定要不要同步 state.busy 镜像，声明晚于调用点会踩 TDZ。 */
 let activeViewId=SID;
+let viewRevision=0;
 /* 当前正被查看的会话是否在跑（保留 state.busy 语义：E2E 与外部脚本依赖它）。 */
 const state = {busy:false, model:"", permission:"auto", pendingConfirm:null, controller:null};
 
@@ -432,7 +433,7 @@ function stashPane(sid){
   // 只存数字的话，下一轮会拿着上一轮的大游标去续订 → 新轮开头的事件被静默跳过。
   const rt=getRun(sid);
   panes.set(sid, {frag:frag, cursor: rt.lastSeq||0, run: rt.run||null,
-                  curAssist:curAssist, curFlow:curFlow, curTextBox:curTextBox,
+                  report:rt.seenReport, curAssist:curAssist, curFlow:curFlow, curTextBox:curTextBox,
                   curThinkEl:curThinkEl, ts:Date.now()});
   // 流式指针随窗格一起封存；当前上下文清空，避免后台事件写进不属于它的节点
   curAssist=curFlow=curTextBox=curThinkEl=null;
@@ -450,14 +451,14 @@ function stashPane(sid){
    游标随窗格一起恢复，调用方用它做 attach(after=...) 补离开期间的事件，不重不漏。
    若暂存窗格属于**上一轮**（run id 不同），则它不该被续订 —— 续订是「补这一轮」，
    拿上一轮的游标会跳过新一轮开头。这种情况下当作过期处理，交给磁盘重建。 */
-function restorePane(sid, curRunId){
+function restorePane(sid, curRunId, report){
   const p=panes.get(sid);
   if(!p) return false;
   panes.delete(sid);
   // 过期不搬（离开太久，磁盘历史更权威），也顺手释放 Fragment
   if(Date.now()-p.ts > 30*60*1000) return false;
   // 换轮了：窗格上的「本轮」内容与新的 run 对不上，不续订
-  if(curRunId!=null && p.run!=null && p.run!==curRunId) return false;
+  if((curRunId!=null && p.run!==curRunId) || p.report!==report) return false;
   chatEl.innerHTML="";
   chatEl.appendChild(p.frag);
   curAssist=p.curAssist; curFlow=p.curFlow; curTextBox=p.curTextBox; curThinkEl=p.curThinkEl;
@@ -656,6 +657,7 @@ async function renderSessions(){
    若该会话正在跑，切过来就**重新附着**它的流（后端 Run 仍在，事件可回放）。 */
 async function selectSession(id, force){
   if(id===SID && activeViewId===id && !force){ renderSessions(); return; }
+  const revision=++viewRevision;
   const prev=activeViewId;
   // ① 先把当前窗格**原样存起来**（不是丢弃）。后台流事件继续往这个 Fragment 里写，
   //    所以切回来时看到的是那一轮真实的样子，而不是事后重建的近似品。
@@ -669,6 +671,7 @@ async function selectSession(id, force){
   let runInfo=null;
   try{ runInfo = await (await fetch(`/api/session/${encodeURIComponent(id)}/run`)).json(); }
   catch(e){}
+  if(SID!==id || revision!==viewRevision) return;
   const running = !!(runInfo && runInfo.running);
   if(running){
     markRunning(id,{running:true, state:runInfo.state, run:runInfo.run,
@@ -677,8 +680,9 @@ async function selectSession(id, force){
     markRunning(id,{running:false, state:(runInfo&&runInfo.state)||null});
   }
   // ③ 如果这个会话有暂存的窗格 → 原样搬回，再从离开时的游标续播（不重放、不重建）
-  const curRunId = running && runInfo ? runInfo.run : null;
-  const restored = restorePane(id, curRunId);
+  const curRunId = runInfo && runInfo.run;
+  const report = (runInfo && runInfo.last_bg_report) || undefined;
+  const restored = restorePane(id, curRunId, report);
   if(restored){
     // 离开期间这一轮可能已经跑完（暂存时主动断了流，末尾几帧没进来）。
     // 判据：轮次已终态，但窗格游标 < 该轮最后事件号 → 窗格是残缺的，退回磁盘重建。
@@ -692,6 +696,7 @@ async function selectSession(id, force){
       scrollBottom();
       $("#input").focus();
       syncBusyToView();
+      drainQueue(id);
       return;
     }
     dropPane(id);                              // 残缺 → 当作没暂存，走下面的磁盘重建
@@ -700,6 +705,7 @@ async function selectSession(id, force){
   let data=null, netErr=false;
   try{ data = await (await fetch("/api/session/"+encodeURIComponent(id))).json(); }
   catch(e){ netErr = true; }
+  if(SID!==id || revision!==viewRevision) return;
   chatEl.innerHTML=""; curAssist=curFlow=curTextBox=null;
   const emptyState=(big, sub)=>{
     chatEl.innerHTML=`<div class="empty-state"><div class="big">${escapeHtml(big)}</div>${escapeHtml(sub)}</div>`;
@@ -709,7 +715,8 @@ async function selectSession(id, force){
       emptyState(netErr?"加载会话失败":"会话不存在或已被删除",
                  netErr?"网络请求出错，请刷新后重试。":"服务端没有这个 id 的记录。");
   }else{
-    const msgs=data.messages||[];
+    const msgs=running ? (data.messages||[]).slice(0,runInfo.prefix) : (data.messages||[]);
+    setRun(id,{seenReport:report,run:curRunId,lastSeq:runInfo?.last_seq||0});
     // 标题与预览都取「磁盘上的第一/最后一次提问」，而不是靠调用方缓存传进来
     const title = firstUserTitle(msgs) || previewCache[id]?.title || "";
     if(title) curSessionMeta.title = title;
@@ -1174,17 +1181,17 @@ function drainQueue(sid){
   const q=queuedBySid[sid];
   if(!q || !q.length || isRunning(sid)) return;
   if(sid!==activeViewId) return;           // 不在看这个会话 → 等切回来再发
-  const text=q.shift();
-  $("#input").value=text; send();
+  send(q.shift());
 }
-async function send(){
-  const text=$("#input").value.trim();
+async function send(queuedText){
+  const text=queuedText ?? $("#input").value.trim();
   const sid=SID;
   if(!text) return;
   if(isRunning(sid)){ queueText(text); return; }   // 运行中：排队，不丢消息
+  ++viewRevision;
   if(!curSessionMeta.title) curSessionMeta.title = text.replace(/\s+/g," ").slice(0,60);
   markRunning(sid,{running:true,state:"running"});
-  addUserMsg(text); $("#input").value=""; autosize();
+  addUserMsg(text); if(queuedText==null) $("#input").value=""; autosize();
   addAssistMsg();
   const body={session:sid,message:text,model:state.model,permission:state.permission};
   const ctl=new AbortController();
@@ -1195,7 +1202,12 @@ async function send(){
     if(!res.ok || !res.body){
       const j=await res.json().catch(()=>({}));
       // 409（本会话真在跑）不再是死胡同：直接附着到那一条流上
-      if(res.status===409){ attach(sid); return; }
+      if(res.status===409){
+        (queuedBySid[sid] ||= []).unshift(text);
+        setRun(sid,{streaming:false,controller:null});
+        if(activeViewId===sid) await selectSession(sid,true);
+        return;
+      }
       addErrorMsg(j.error||"请求失败 ("+res.status+")");
       markRunning(sid,{running:false});
       return;
@@ -1220,7 +1232,7 @@ async function send(){
       : `连接中断（${tag}）。`);
     cleanupTurn();
   }
-  finally{ setRun(sid,{controller:null}); }
+  finally{ if(getRun(sid).controller===ctl) setRun(sid,{controller:null,streaming:false}); }
 }
 
 /* 附着到某会话正在跑的那条流（切回来 / 网络重连 / 409 后转订阅都走这里）。
@@ -1249,7 +1261,7 @@ async function attach(sid, after){
   }catch(e){
     if(!(e && e.name==="AbortError")) console.warn("[attach] 流中断：", e);
   }finally{
-    markRunning(sid,{streaming:false, controller:null});
+    if(getRun(sid).controller===ctl) markRunning(sid,{streaming:false, controller:null});
   }
 }
 
@@ -1673,18 +1685,24 @@ function md(src){
 
 /* ---------------- 后台任务看门狗：轮询新 Run ---------------- */
 let bgPollBusy=false;
-setInterval(async ()=>{
+async function pollBackground(){
   if(document.hidden || bgPollBusy) return;
   bgPollBusy=true;
   try{
-    if(!isRunning(SID)){
-      const r=await (await fetch(`/api/session/${encodeURIComponent(SID)}/run`)).json();
-      if(r && r.running){ await selectSession(SID, true); return; }
+    const sid=SID, revision=viewRevision;
+    if(!getRun(sid).streaming){
+      const r=await (await fetch(`/api/session/${encodeURIComponent(sid)}/run`)).json();
+      if(sid!==SID || revision!==viewRevision || getRun(sid).streaming) return;
+      if(r.running || (r.last_bg_report && r.last_bg_report!==getRun(sid).seenReport)){
+        await selectSession(sid, true); return;
+      }
     }
     await renderSessions();          // 别处的后台任务结束时，左栏也能看到
   }catch(e){}
   finally{ bgPollBusy=false; }
-}, 5000);
+}
+setInterval(pollBackground, 5000);
+document.addEventListener("visibilitychange",pollBackground);
 </script>
 </body>
 </html>

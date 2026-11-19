@@ -15,9 +15,10 @@ class FakeSession:
         self.msgs = []
         self.saved = 0
 
-    def begin_run(self, msg, prefix=0):
+    def begin_run(self, msg, prefix=0, background_tasks=()):
         self.msgs.append((msg, prefix))
-        return object()
+        self.run = SimpleNamespace(running=True, background_tasks=background_tasks)
+        return self.run
 
     def run_turn(self, run):
         pass
@@ -48,8 +49,8 @@ def test_finished_task_triggers_proactive_turn(tmp_path, monkeypatch):
     assert s.msgs, "进程结束却没有起主动汇报"
     msg = s.msgs[0][0]
     assert "[系统]" in msg and "t1" in msg and "output.log" in msg
-    assert s.bg_tasks["t1"]["notified"] is True
-    assert s.saved >= 1
+    assert not s.bg_tasks["t1"]["notified"]
+    assert s.run.background_tasks[0][0] == "t1"
     w._scan_session(s)                      # 不重复通知
     assert len(s.msgs) == 1
 
