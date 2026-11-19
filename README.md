@@ -1,78 +1,85 @@
-# TraitPilot — 自带 skills 的本机 Agent
+# TraitPilot — 面向基因组与表型分析的科研 Agent
 
-> 📖 **详细使用文档见 [`docs/usage.md`](docs/usage.md)**（安装/凭证、三种入口、全部参数与环境变量、
-> REPL 命令、Web 前端、各 harness 模块、技能机制、端到端示例、故障排查）。本文是快速上手版。
+TraitPilot 将自然语言指令转成可审阅的分析步骤、脚本和工具调用。仓库内置 19 个技能，覆盖全基因组测序（WGS）分析、全基因组关联分析（GWAS）、表型提取和表型–基因型对齐。可通过浏览器或命令行使用，无需 Claude Code。
 
-一个**完整、可用、自包含**的单 Agent 系统：技能放在本仓库的 [`skills/`](skills/)，
-API 凭证/配置从本目录的 `config.json` 读取——**不依赖 Claude Code**。
-自带 19 个技能（WGS / GWAS 两大管线 + 表型提取 + 表型-基因型对齐）。
+**版本与变更**：[VERSION](VERSION) · [CHANGELOG](CHANGELOG.md)
 
-**当前版本**：见 [`VERSION`](VERSION)（唯一载体），变更历史见 [`CHANGELOG.md`](CHANGELOG.md)。
-```bash
-python3 run.py --version        # → TraitPilot 0.7.1
-```
+**文档**：[完整使用指南](docs/usage.md) · [分析环境与数据配置](environment/README.md)
 
-## 快速开始
+## 快速开始：启动 Agent
+
+以下命令适用于 **Linux + Bash + Python 3.10 或更高版本**。Windows 用户可在 WSL2 的 Linux 环境中按此流程尝试，原生 Windows 的完整分析流程未验证。仅启动 Agent 不需要安装 Conda 或分析工具链；对话需要能访问兼容 **Anthropic Messages API** 的模型服务，并拥有可用的 API 凭证。
+
+**1. 克隆项目并安装依赖**
 
 ```bash
-# 0) 取代码（仓库根即项目根：含 skills/、run.py、environment/，不要再进子目录）
 git clone https://github.com/rua111555/TraitPilot.git ~/TraitPilot
 cd ~/TraitPilot
-
-# 1) 配置凭证（一次性）：复制模板为 config.json 并填写
+python3 -m venv "$HOME/.venvs/traitpilot"
+source "$HOME/.venvs/traitpilot/bin/activate"
+python -m pip install -r requirements.txt
 cp config.json.example config.json
-#   编辑 config.json：填 api_key（及可选的 base_url / model）
-#   也可改用环境变量：export ANTHROPIC_AUTH_TOKEN="..." / ANTHROPIC_BASE_URL="..."
-
-# 2) 直接可用
-python3 -m skill_agent          # 或 python3 run.py / python3 run.py chat
 ```
 
-> 优先级：**环境变量 > `config.json` > 代码默认值**。若设了 `ANTHROPIC_BASE_URL` /
-> `ANTHROPIC_AUTH_TOKEN`，会覆盖 `config.json` 中的同名项。`config.json` 还可开关可选能力
-> （`retrieval` / `memory` / `persist` / `sandbox` / `todo` …），详见 [`config.json.example`](config.json.example)。
+**2. 配置模型服务**
 
-## 部署到新机器
+编辑 `config.json`，将 `api_key` 填为自己的凭证，`base_url` 和 `model` 填为服务商提供的地址和模型 ID。也可以通过 `ANTHROPIC_AUTH_TOKEN`（或 `ANTHROPIC_API_KEY`）及 `ANTHROPIC_BASE_URL` 提供凭证和地址，环境变量会覆盖配置文件中的对应值。更多选项见[配置模板](config.json.example)。
 
-`requirements.txt` 只有三个包，**只够 Agent 本体**（对话 / 读技能 / 执行 Bash）。自带 19 个技能
-背后还有三套 conda 环境（`Agent` / `r-gwas` / `Phenotype`）、不在 conda 的独立二进制（gemma / gcta64 /
-LDBlockShow / Haploview…）以及数据文件。
-
-**完整环境清单、逐步部署指引与常见坑见 [`environment/README.md`](environment/README.md)。**
+**3. 启动 Web 服务**
 
 ```bash
-bash environment/install.sh --list     # 先看要装哪些虚拟环境 / 软件 / 版本
-bash environment/install.sh            # 一键安装（逐步确认；--yes 无人值守）
-bash environment/check_env.sh          # 装完自检（九块检查 + 安装提示）
-bash environment/check_env.sh --core   # 只查 Agent 本体，不碰生信管线
+python run_web.py
 ```
 
-自检末尾汇总「核心缺失 / 可选缺失」，核心有缺即返回非零退出码。`environment/` 下另有
-`Agent.yml` / `r-gwas.yml`（两套 conda 环境的完整导出，供复刻本机参考）。
+命令会启动 Python 后端，并由同一个服务提供浏览器页面。**无须先单独启动后端，也无须安装 Node.js 或运行 `npm`。** 保持终端运行，在浏览器打开 <http://127.0.0.1:8787>。首次可输入「列出可用技能，并说明 GWAS 的主要步骤，不执行分析」，验证模型连接，不需要准备数据。
+
+习惯命令行可以改用 `python run.py chat`；配置好凭证后，`python run.py list` 可检查有哪些技能被识别。`python run.py --version` 可查看版本。
+
+## 跑真实分析：按工作流部署
+
+克隆仓库可以获得 Agent 和技能定义。执行分析时，按选用的工作流补齐工具与数据：
+
+| 目标 | 额外依赖与输入 |
+| --- | --- |
+| WGS 分析 | `Agent` Conda 环境中的 BWA、SAMtools、BCFtools 等工具，以及参考基因组和 FASTQ 等输入。 |
+| GWAS | `r-gwas` 环境、按步骤选用的 PLINK / GEMMA 等工具，以及基因型、表型和所需协变量。 |
+| 表型提取 | `Phenotype` 环境、表型图片及模型权重。权重未随仓库分发，需单独准备并配置路径。 |
+
+具体版本、安装步骤、数据库与数据路径配置见[完整部署指南](environment/README.md)。先查看可选安装项，按指南装好所需组件后再检查：
+
+```bash
+bash environment/install.sh --list
+bash environment/check_env.sh          # 检查已装工具及相关资源
+```
+
+能打开页面和列出技能，说明 Agent 本体已启动。分析环境是否齐备，以所选工作流的工具和输入检查为准。
 
 ## 常用命令
 
 ```bash
-cd ~/TraitPilot                         # 仓库根
+cd ~/TraitPilot                         # 仓库根；如按上文使用 venv，需先激活
 
-# 列出发现的 skills
-python3 run.py list
+# 列出本机识别的技能
+python run.py list
 
-# 交互对话（REPL，推荐）
-python3 run.py chat            # 可选 --permission ask / -m DSv4-flash
+# 命令行交互对话
+python run.py chat           # 可选 --permission ask
 
 # 单轮运行（脚本化）
-python3 run.py chat -p "用 gwas-pipeline skill 说明标准流程，先不要真正跑数据"
-python3 run.py chat -p "列出 phenotype-extract 提供哪些表型" -m DSv4-flash
+python run.py chat -p "用 gwas-pipeline skill 说明标准流程，先不要真正跑数据"
+python run.py chat -p "列出 phenotype-extract 提供哪些表型"
 ```
 
-## Web 前端
+## Web 启动与重启
 
-```bash
-cd ~/TraitPilot          # 仓库根（含 skills/）
-./start_web.sh                    # 推荐：后台启动/状态检查（log=web.log；停止 ./start_web.sh stop）
-# 或前台式：python3 run_web.py    # 浏览器打开 http://127.0.0.1:8787
-```
+在仓库根目录、装好依赖并配置凭证后，**任选一种方式**启动。两种命令启动的都是同一个 Flask 服务，网页和聊天 API 共用同一个端口：
+
+| 使用方式 | 启动 | 停止或重启 |
+| --- | --- | --- |
+| 前台运行，直接看终端日志 | `python run_web.py` | `Ctrl+C` 停止；再次运行命令重启。 |
+| 后台运行，日志写入 `web.log` | `./start_web.sh` | `./start_web.sh stop` 停止，`./start_web.sh restart` 重启。 |
+
+`start_web.sh` 在找到名为 `Agent` 的 Conda 环境时会优先用它的 Python，否则用当前的 `python3`。按上面的 `venv` 流程安装时，建议直接运行 `python run_web.py`，确保使用刚装好依赖的解释器。修改 `config.json` 或 Python 代码后，需要重启服务再刷新网页；浏览器刷新不会重新加载后端代码。
 
 - **单文件前端**（无构建、无 node），REST + SSE 流式：聊天气泡、实时工具调用卡片
   （Skill/Bash/Read/Write…）、技能侧栏（点技能可预填调用指令）、模型/权限切换。
@@ -80,12 +87,12 @@ cd ~/TraitPilot          # 仓库根（含 skills/）
 - **实时用量徽标**：顶部随流式更新本轮模型轮次与输出 token（接 M1a `usage` 事件）。
 - **停止按钮**：运行中「发送」变「停止」，点按会 abort 本次流并 `POST /api/cancel`，
   协作式终止当前轮次（拒绝所有待确认命令，后台任务不被杀）。
+- **后台任务**：以后台模式提交的任务启动后，用户可以继续对话；任务结束且会话空闲时，Web 服务会主动发起一轮结果汇报。
 - **导出对话**：一键把消息与工具卡片导出为 Markdown 文件下载。
 - **命令审批弹窗**：`权限=危险命令询问`（默认，危险命令才弹）或 `每条命令询问`（==CLI 的
   ask）；点「允许/拒绝」回复 `/api/confirm`，未答复即断开连接会自动拒绝并终止任务。
-- **联网访问**：页面能执行本机命令，默认仅绑定 `127.0.0.1`。远程使用请 SSH 端口转发：
-  `ssh -L 8787:127.0.0.1:8787 <server>`，然后本机浏览器打开 `http://127.0.0.1:8787`；
-  非本也可用 `--host 0.0.0.0`（局域网内可访问，注意风险）。
+- **远程访问**：服务默认只监听 `127.0.0.1`。若 Agent 在远程服务器运行，在自己的电脑上执行
+  `ssh -L 8787:127.0.0.1:8787 <server>`，再用本机浏览器打开 <http://127.0.0.1:8787>。
 - 其他参数：`--port` `--model` `--permission` `--project` `--cwd` `--skills-dir` `--config`。
 - 网页后端复用同一 Agent 引擎，仅入口不同：`webapp/server.py`（Flask）+ `webapp/session.py`
   （事件桥 + 命令确认桥，把线程里的 agent 运行接到 SSE）。
@@ -216,7 +223,7 @@ agent/                        # 本目录即仓库根，也是「项目根」（
 ├── run_web.py              # Web 入口：python3 run_web.py → http://127.0.0.1:8787
 ├── config.json.example     # 配置模板（复制为 config.json 填 api_key）
 ├── skills/                 # 自带技能库（19 个；模型权重 .pth 已 gitignore）
-├── requirements.txt        # requests + PyYAML + flask（**仅 Agent 本体**，本机已预装）
+├── requirements.txt        # Agent 本体的 Python 依赖：requests / PyYAML / Flask
 ├── environment/            # 完整部署环境：README.md（清单/指引）+ check_env.sh（自检）+ Agent.yml/r-gwas.yml
 ├── skill_agent/
 │   ├── config.py           # 配置：环境变量 → config.json → 默认值（不依赖 Claude Code）
@@ -262,6 +269,5 @@ agent/                        # 本目录即仓库根，也是「项目根」（
 
 ## 说明
 
-- 本 Agent 不强依赖网络外服务，工具全部在本机执行；表型提取等需要 `LD_LIBRARY_PATH` 的环境
-  在 skill 指令中已写明，模型会按其执行。
+- 分析脚本在运行 TraitPilot 的机器上执行；模型推理请求发送到 `base_url` 所配置的服务。
 - 需要更多工具（如 WebSearch）时可按 `tools.py` 中 `Tool` 的写法扩展。
